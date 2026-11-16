@@ -1,0 +1,424 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestampsCreate(data) {
+      return data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidTimestampsUpdate() {
+      return incoming().createdAt == existing().createdAt &&
+             incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+    }
+
+    // Standalone entity validation helpers
+    function isValidUserStoreProfile(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.address is string && data.address.size() <= 300 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.businessType is string && data.businessType.size() >= 1 && data.businessType.size() <= 40 &&
+             data.ppnBp is int && data.ppnBp >= 0 && data.ppnBp <= 10000 &&
+             data.receiptFooter is string && data.receiptFooter.size() <= 300 &&
+             data.ownerName is string && data.ownerName.size() <= 120 &&
+             data.ownerEmail is string && data.ownerEmail.size() <= 200 &&
+             data.profileUpdatedAtMillis is int && data.profileUpdatedAtMillis >= 0;
+    }
+
+    function isValidCashAccountDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.accountName is string && data.accountName.size() >= 1 && data.accountName.size() <= 120 &&
+             data.balance is number &&
+             data.accountType is string && data.accountType.size() >= 1 && data.accountType.size() <= 40 &&
+             data.isActive is bool &&
+             data.color is string && data.color.size() <= 30 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.isDefault is bool &&
+             data.sortOrder is int;
+    }
+
+    function isValidCashMutationDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.cashAccountId is int && data.cashAccountId >= 0 &&
+             data.accountName is string && data.accountName.size() >= 1 && data.accountName.size() <= 120 &&
+             data.amount is number &&
+             data.mutationType is string && data.mutationType.size() >= 1 && data.mutationType.size() <= 60 &&
+             data.refType is string && data.refType.size() <= 60 &&
+             data.refId is string && data.refId.size() <= 120 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.mutationTimeMillis is int && data.mutationTimeMillis >= 0;
+    }
+
+    function isValidCashTransferDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.fromAccountName is string && data.fromAccountName.size() <= 120 &&
+             data.toAccountName is string && data.toAccountName.size() <= 120 &&
+             data.amount is number && data.amount >= 0 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.transferDateMillis is int && data.transferDateMillis >= 0 &&
+             data.loggedBy is string && data.loggedBy.size() <= 120;
+    }
+
+    function isValidSaleDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.invoiceNumber is string && data.invoiceNumber.size() >= 1 && data.invoiceNumber.size() <= 100 &&
+             data.saleDateMillis is int && data.saleDateMillis >= 0 &&
+             data.cashierName is string && data.cashierName.size() <= 120 &&
+             data.customerName is string && data.customerName.size() <= 120 &&
+             data.subtotal is number &&
+             data.discount is number &&
+             data.tax is number &&
+             data.finalAmount is number &&
+             data.paymentMethod is string && data.paymentMethod.size() >= 1 && data.paymentMethod.size() <= 60 &&
+             data.amountPaid is number &&
+             data.changeAmount is number &&
+             data.status is string && data.status.size() >= 1 && data.status.size() <= 40 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.storeAdminFee is number &&
+             data.providerAdminFee is number &&
+             data.agentCommission is number &&
+             data.shippingCost is number &&
+             data.additionalFee is number &&
+             data.promoDiscount is number;
+    }
+
+    function isValidExpenseDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 100 &&
+             data.amount is number && data.amount >= 0 &&
+             data.expenseDateMillis is int && data.expenseDateMillis >= 0 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.paymentSource is string && data.paymentSource.size() <= 120 &&
+             data.recordedBy is string && data.recordedBy.size() <= 120;
+    }
+
+    function isValidIncomeDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.source is string && data.source.size() >= 1 && data.source.size() <= 120 &&
+             data.amount is number && data.amount >= 0 &&
+             data.incomeDateMillis is int && data.incomeDateMillis >= 0 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.recordedBy is string && data.recordedBy.size() <= 120;
+    }
+
+    function isValidProductDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.barcode is string && data.barcode.size() <= 120 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+             data.category is string && data.category.size() <= 100 &&
+             data.baseUnit is string && data.baseUnit.size() >= 1 && data.baseUnit.size() <= 40 &&
+             data.purchasePrice is number &&
+             data.sellingPrice is number &&
+             data.stock is number &&
+             data.minStock is number &&
+             data.productType is string && data.productType.size() >= 1 && data.productType.size() <= 40 &&
+             data.isActive is bool &&
+             data.hasNoStock is bool &&
+             data.allowDecimalQty is bool &&
+             data.isFlexiblePrice is bool &&
+             (!('specialPrice' in data) || data.specialPrice == null || data.specialPrice is number) &&
+             (!('strikePrice' in data) || data.strikePrice == null || data.strikePrice is number);
+    }
+
+    function isValidCustomerDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.address is string && data.address.size() <= 300 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.totalReceivable is number &&
+             data.depositBalance is number &&
+             data.loyaltyPoints is int && data.loyaltyPoints >= 0;
+    }
+
+    function isValidSupplierDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.address is string && data.address.size() <= 300 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.totalDebt is number;
+    }
+
+    function isValidDebtPaymentDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.paymentType is string && data.paymentType.size() >= 1 && data.paymentType.size() <= 60 &&
+             data.referenceInvoice is string && data.referenceInvoice.size() <= 120 &&
+             data.partyName is string && data.partyName.size() <= 160 &&
+             data.amount is number && data.amount >= 0 &&
+             data.paymentDateMillis is int && data.paymentDateMillis >= 0 &&
+             data.paymentMethod is string && data.paymentMethod.size() <= 60 &&
+             data.notes is string && data.notes.size() <= 500 &&
+             data.recordedBy is string && data.recordedBy.size() <= 120;
+    }
+
+    function isValidCashierShiftDoc(data, userId) {
+      return data.ownerId is string && data.ownerId == userId &&
+             data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             data.cashierName is string && data.cashierName.size() >= 1 && data.cashierName.size() <= 120 &&
+             data.startTimeMillis is int && data.startTimeMillis >= 0 &&
+             (!('endTimeMillis' in data) || data.endTimeMillis == null || (data.endTimeMillis is int && data.endTimeMillis >= 0)) &&
+             data.startingCash is number &&
+             data.cashIn is number &&
+             data.cashOut is number &&
+             data.totalCashSales is number &&
+             data.expectedClosingCash is number &&
+             (!('actualClosingCash' in data) || data.actualClosingCash == null || data.actualClosingCash is number) &&
+             (!('difference' in data) || data.difference == null || data.difference is number) &&
+             data.status is string && data.status.size() >= 1 && data.status.size() <= 40 &&
+             data.notes is string && data.notes.size() <= 500;
+    }
+
+    // 1. User / Store Profile Document
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) &&
+                       incoming().keys().hasAll(['ownerId', 'name', 'address', 'phone', 'businessType', 'ppnBp', 'receiptFooter', 'ownerName', 'ownerEmail', 'profileUpdatedAtMillis', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['ownerId', 'name', 'address', 'phone', 'businessType', 'ppnBp', 'receiptFooter', 'ownerName', 'ownerEmail', 'profileUpdatedAtMillis', 'createdAt', 'updatedAt']) &&
+                       isValidTimestampsCreate(incoming()) &&
+                       isValidUserStoreProfile(incoming(), userId);
+      allow update: if isSignedIn() && isValidUserStoreProfile(incoming(), userId) &&
+                       isOwner(userId) && isValidId(userId) &&
+                       incoming().ownerId == existing().ownerId &&
+                       isValidTimestampsUpdate() &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'address', 'phone', 'businessType', 'ppnBp', 'receiptFooter', 'ownerName', 'ownerEmail', 'profileUpdatedAtMillis', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // 2. Multi-Cash Accounts
+      match /cashAccounts/{accountId} {
+        allow get: if isOwner(userId) && isValidId(accountId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(accountId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'accountName', 'balance', 'accountType', 'isActive', 'color', 'notes', 'isDefault', 'sortOrder', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'accountName', 'balance', 'accountType', 'isActive', 'color', 'notes', 'isDefault', 'sortOrder', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidCashAccountDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidCashAccountDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(accountId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'accountName', 'balance', 'accountType', 'isActive', 'color', 'notes', 'isDefault', 'sortOrder', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(accountId);
+      }
+
+      // 3. Cash Flow Mutations
+      match /cashMutations/{mutationId} {
+        allow get: if isOwner(userId) && isValidId(mutationId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(mutationId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'cashAccountId', 'accountName', 'amount', 'mutationType', 'refType', 'refId', 'notes', 'mutationTimeMillis', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'cashAccountId', 'accountName', 'amount', 'mutationType', 'refType', 'refId', 'notes', 'mutationTimeMillis', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidCashMutationDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidCashMutationDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(mutationId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'cashAccountId', 'accountName', 'amount', 'mutationType', 'refType', 'refId', 'notes', 'mutationTimeMillis', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(mutationId);
+      }
+
+      // 4. Cash Transfers
+      match /cashTransfers/{transferId} {
+        allow get: if isOwner(userId) && isValidId(transferId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(transferId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'fromAccountName', 'toAccountName', 'amount', 'notes', 'transferDateMillis', 'loggedBy', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'fromAccountName', 'toAccountName', 'amount', 'notes', 'transferDateMillis', 'loggedBy', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidCashTransferDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidCashTransferDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(transferId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'fromAccountName', 'toAccountName', 'amount', 'notes', 'transferDateMillis', 'loggedBy', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(transferId);
+      }
+
+      // 5. Sales Invoices
+      match /sales/{saleId} {
+        allow get: if isOwner(userId) && isValidId(saleId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(saleId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'invoiceNumber', 'saleDateMillis', 'cashierName', 'customerName', 'subtotal', 'discount', 'tax', 'finalAmount', 'paymentMethod', 'amountPaid', 'changeAmount', 'status', 'notes', 'storeAdminFee', 'providerAdminFee', 'agentCommission', 'shippingCost', 'additionalFee', 'promoDiscount', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'invoiceNumber', 'saleDateMillis', 'cashierName', 'customerName', 'subtotal', 'discount', 'tax', 'finalAmount', 'paymentMethod', 'amountPaid', 'changeAmount', 'status', 'notes', 'storeAdminFee', 'providerAdminFee', 'agentCommission', 'shippingCost', 'additionalFee', 'promoDiscount', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidSaleDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidSaleDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(saleId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'invoiceNumber', 'saleDateMillis', 'cashierName', 'customerName', 'subtotal', 'discount', 'tax', 'finalAmount', 'paymentMethod', 'amountPaid', 'changeAmount', 'status', 'notes', 'storeAdminFee', 'providerAdminFee', 'agentCommission', 'shippingCost', 'additionalFee', 'promoDiscount', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(saleId);
+      }
+
+      // 6. Expenses
+      match /expenses/{expenseId} {
+        allow get: if isOwner(userId) && isValidId(expenseId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(expenseId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'category', 'amount', 'expenseDateMillis', 'notes', 'paymentSource', 'recordedBy', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'category', 'amount', 'expenseDateMillis', 'notes', 'paymentSource', 'recordedBy', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidExpenseDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidExpenseDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(expenseId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'category', 'amount', 'expenseDateMillis', 'notes', 'paymentSource', 'recordedBy', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(expenseId);
+      }
+
+      // 7. Incomes
+      match /incomes/{incomeId} {
+        allow get: if isOwner(userId) && isValidId(incomeId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(incomeId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'source', 'amount', 'incomeDateMillis', 'notes', 'recordedBy', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'source', 'amount', 'incomeDateMillis', 'notes', 'recordedBy', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidIncomeDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidIncomeDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(incomeId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'source', 'amount', 'incomeDateMillis', 'notes', 'recordedBy', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(incomeId);
+      }
+
+      // 8. Products
+      match /products/{productId} {
+        allow get: if isOwner(userId) && isValidId(productId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(productId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'barcode', 'name', 'category', 'baseUnit', 'purchasePrice', 'sellingPrice', 'stock', 'minStock', 'productType', 'isActive', 'hasNoStock', 'allowDecimalQty', 'isFlexiblePrice', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'barcode', 'name', 'category', 'baseUnit', 'purchasePrice', 'sellingPrice', 'stock', 'minStock', 'productType', 'isActive', 'hasNoStock', 'allowDecimalQty', 'isFlexiblePrice', 'specialPrice', 'strikePrice', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidProductDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidProductDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(productId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'barcode', 'name', 'category', 'baseUnit', 'purchasePrice', 'sellingPrice', 'stock', 'minStock', 'productType', 'isActive', 'hasNoStock', 'allowDecimalQty', 'isFlexiblePrice', 'specialPrice', 'strikePrice', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(productId);
+      }
+
+      // 9. Customers
+      match /customers/{customerId} {
+        allow get: if isOwner(userId) && isValidId(customerId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(customerId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'name', 'phone', 'address', 'notes', 'totalReceivable', 'depositBalance', 'loyaltyPoints', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'name', 'phone', 'address', 'notes', 'totalReceivable', 'depositBalance', 'loyaltyPoints', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidCustomerDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidCustomerDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(customerId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'name', 'phone', 'address', 'notes', 'totalReceivable', 'depositBalance', 'loyaltyPoints', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(customerId);
+      }
+
+      // 10. Suppliers
+      match /suppliers/{supplierId} {
+        allow get: if isOwner(userId) && isValidId(supplierId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(supplierId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'name', 'phone', 'address', 'notes', 'totalDebt', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'name', 'phone', 'address', 'notes', 'totalDebt', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidSupplierDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidSupplierDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(supplierId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'name', 'phone', 'address', 'notes', 'totalDebt', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(supplierId);
+      }
+
+      // 11. Debt Payments
+      match /debtPayments/{paymentId} {
+        allow get: if isOwner(userId) && isValidId(paymentId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(paymentId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'paymentType', 'referenceInvoice', 'partyName', 'amount', 'paymentDateMillis', 'paymentMethod', 'notes', 'recordedBy', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'paymentType', 'referenceInvoice', 'partyName', 'amount', 'paymentDateMillis', 'paymentMethod', 'notes', 'recordedBy', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidDebtPaymentDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidDebtPaymentDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(paymentId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'paymentType', 'referenceInvoice', 'partyName', 'amount', 'paymentDateMillis', 'paymentMethod', 'notes', 'recordedBy', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(paymentId);
+      }
+
+      // 12. Cashier Shifts
+      match /shifts/{shiftId} {
+        allow get: if isOwner(userId) && isValidId(shiftId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(shiftId) &&
+                         incoming().keys().hasAll(['ownerId', 'deviceId', 'localId', 'cashierName', 'startTimeMillis', 'startingCash', 'cashIn', 'cashOut', 'totalCashSales', 'expectedClosingCash', 'status', 'notes', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerId', 'deviceId', 'localId', 'cashierName', 'startTimeMillis', 'endTimeMillis', 'startingCash', 'cashIn', 'cashOut', 'totalCashSales', 'expectedClosingCash', 'actualClosingCash', 'difference', 'status', 'notes', 'createdAt', 'updatedAt']) &&
+                         isValidTimestampsCreate(incoming()) &&
+                         isValidCashierShiftDoc(incoming(), userId);
+        allow update: if isSignedIn() && isValidCashierShiftDoc(incoming(), userId) &&
+                         isOwner(userId) && isValidId(shiftId) &&
+                         incoming().ownerId == existing().ownerId &&
+                         isValidTimestampsUpdate() &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'cashierName', 'startTimeMillis', 'endTimeMillis', 'startingCash', 'cashIn', 'cashOut', 'totalCashSales', 'expectedClosingCash', 'actualClosingCash', 'difference', 'status', 'notes', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(shiftId);
+      }
+    }
+  }
+}

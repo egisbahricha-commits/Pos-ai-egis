@@ -1,0 +1,316 @@
+{
+  "entities": {
+    "UserStoreProfile": {
+      "title": "UserStoreProfile",
+      "description": "Authenticated owner/store profile and POS store settings synced per user.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "description": "Firebase Auth UID of the store owner." },
+        "name": { "type": "string", "description": "Store display name." },
+        "address": { "type": "string", "description": "Store street address." },
+        "phone": { "type": "string", "description": "Store phone number." },
+        "businessType": { "type": "string", "description": "Business model (retail, grosir, keduanya)." },
+        "ppnBp": { "type": "integer", "description": "Tax basis points (e.g. 1100 = 11%)." },
+        "receiptFooter": { "type": "string", "description": "Receipt footer message." },
+        "ownerName": { "type": "string", "description": "Owner display name." },
+        "ownerEmail": { "type": "string", "description": "Owner Google account email." },
+        "profileUpdatedAtMillis": { "type": "integer", "description": "Client update timestamp in epoch ms." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation (FieldValue.serverTimestamp())." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update (FieldValue.serverTimestamp())." }
+      },
+      "required": ["ownerId", "name", "address", "phone", "businessType", "ppnBp", "receiptFooter", "ownerName", "ownerEmail", "profileUpdatedAtMillis", "createdAt", "updatedAt"]
+    },
+    "CashAccountDoc": {
+      "title": "CashAccountDoc",
+      "description": "Multi-cash drawer/wallet/bank-agent account ledger record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "accountName": { "type": "string" },
+        "balance": { "type": "number" },
+        "accountType": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "color": { "type": "string" },
+        "notes": { "type": "string" },
+        "isDefault": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "accountName", "balance", "accountType", "isActive", "color", "notes", "isDefault", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "CashMutationDoc": {
+      "title": "CashMutationDoc",
+      "description": "Cash flow mutation entry for real-time cash monitoring across devices.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "cashAccountId": { "type": "integer" },
+        "accountName": { "type": "string" },
+        "amount": { "type": "number" },
+        "mutationType": { "type": "string" },
+        "refType": { "type": "string" },
+        "refId": { "type": "string" },
+        "notes": { "type": "string" },
+        "mutationTimeMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "cashAccountId", "accountName", "amount", "mutationType", "refType", "refId", "notes", "mutationTimeMillis", "createdAt", "updatedAt"]
+    },
+    "CashTransferDoc": {
+      "title": "CashTransferDoc",
+      "description": "Inter-account cash transfer record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "fromAccountName": { "type": "string" },
+        "toAccountName": { "type": "string" },
+        "amount": { "type": "number" },
+        "notes": { "type": "string" },
+        "transferDateMillis": { "type": "integer" },
+        "loggedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "fromAccountName", "toAccountName", "amount", "notes", "transferDateMillis", "loggedBy", "createdAt", "updatedAt"]
+    },
+    "SaleDoc": {
+      "title": "SaleDoc",
+      "description": "Completed or held POS sale invoice record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "invoiceNumber": { "type": "string" },
+        "saleDateMillis": { "type": "integer" },
+        "cashierName": { "type": "string" },
+        "customerName": { "type": "string" },
+        "subtotal": { "type": "number" },
+        "discount": { "type": "number" },
+        "tax": { "type": "number" },
+        "finalAmount": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "amountPaid": { "type": "number" },
+        "changeAmount": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "storeAdminFee": { "type": "number" },
+        "providerAdminFee": { "type": "number" },
+        "agentCommission": { "type": "number" },
+        "shippingCost": { "type": "number" },
+        "additionalFee": { "type": "number" },
+        "promoDiscount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "invoiceNumber", "saleDateMillis", "cashierName", "customerName", "subtotal", "discount", "tax", "finalAmount", "paymentMethod", "amountPaid", "changeAmount", "status", "notes", "storeAdminFee", "providerAdminFee", "agentCommission", "shippingCost", "additionalFee", "promoDiscount", "createdAt", "updatedAt"]
+    },
+    "ExpenseDoc": {
+      "title": "ExpenseDoc",
+      "description": "Operational expense record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "expenseDateMillis": { "type": "integer" },
+        "notes": { "type": "string" },
+        "paymentSource": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "category", "amount", "expenseDateMillis", "notes", "paymentSource", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "IncomeDoc": {
+      "title": "IncomeDoc",
+      "description": "Non-sales income / service fee record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "source": { "type": "string" },
+        "amount": { "type": "number" },
+        "incomeDateMillis": { "type": "integer" },
+        "notes": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "source", "amount", "incomeDateMillis", "notes", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "ProductDoc": {
+      "title": "ProductDoc",
+      "description": "POS catalog item or digital service SKU.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "barcode": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "baseUnit": { "type": "string" },
+        "purchasePrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "minStock": { "type": "number" },
+        "productType": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "hasNoStock": { "type": "boolean" },
+        "allowDecimalQty": { "type": "boolean" },
+        "isFlexiblePrice": { "type": "boolean" },
+        "specialPrice": { "type": "number" },
+        "strikePrice": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "barcode", "name", "category", "baseUnit", "purchasePrice", "sellingPrice", "stock", "minStock", "productType", "isActive", "hasNoStock", "allowDecimalQty", "isFlexiblePrice", "createdAt", "updatedAt"]
+    },
+    "CustomerDoc": {
+      "title": "CustomerDoc",
+      "description": "Customer record including receivables and loyalty points.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "notes": { "type": "string" },
+        "totalReceivable": { "type": "number" },
+        "depositBalance": { "type": "number" },
+        "loyaltyPoints": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "name", "phone", "address", "notes", "totalReceivable", "depositBalance", "loyaltyPoints", "createdAt", "updatedAt"]
+    },
+    "SupplierDoc": {
+      "title": "SupplierDoc",
+      "description": "Supplier contact and payable debt record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "notes": { "type": "string" },
+        "totalDebt": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "name", "phone", "address", "notes", "totalDebt", "createdAt", "updatedAt"]
+    },
+    "DebtPaymentDoc": {
+      "title": "DebtPaymentDoc",
+      "description": "Receivable or supplier debt payment settlement record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "paymentType": { "type": "string" },
+        "referenceInvoice": { "type": "string" },
+        "partyName": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentDateMillis": { "type": "integer" },
+        "paymentMethod": { "type": "string" },
+        "notes": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "paymentType", "referenceInvoice", "partyName", "amount", "paymentDateMillis", "paymentMethod", "notes", "recordedBy", "createdAt", "updatedAt"]
+    },
+    "CashierShiftDoc": {
+      "title": "CashierShiftDoc",
+      "description": "Cashier register open/close shift reconciliation record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "cashierName": { "type": "string" },
+        "startTimeMillis": { "type": "integer" },
+        "endTimeMillis": { "type": "integer" },
+        "startingCash": { "type": "number" },
+        "cashIn": { "type": "number" },
+        "cashOut": { "type": "number" },
+        "totalCashSales": { "type": "number" },
+        "expectedClosingCash": { "type": "number" },
+        "actualClosingCash": { "type": "number" },
+        "difference": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "localId", "cashierName", "startTimeMillis", "startingCash", "cashIn", "cashOut", "totalCashSales", "expectedClosingCash", "status", "notes", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserStoreProfile" },
+      "description": "Store profile and owner info scoped by Firebase Auth UID."
+    },
+    "/users/{userId}/cashAccounts/{accountId}": {
+      "schema": { "$ref": "CashAccountDoc" },
+      "description": "Multi-cash accounts owned by the authenticated store owner."
+    },
+    "/users/{userId}/cashMutations/{mutationId}": {
+      "schema": { "$ref": "CashMutationDoc" },
+      "description": "Cash flow mutations owned by the authenticated store owner."
+    },
+    "/users/{userId}/cashTransfers/{transferId}": {
+      "schema": { "$ref": "CashTransferDoc" },
+      "description": "Inter-account cash transfers owned by the authenticated store owner."
+    },
+    "/users/{userId}/sales/{saleId}": {
+      "schema": { "$ref": "SaleDoc" },
+      "description": "POS sale invoices owned by the authenticated store owner."
+    },
+    "/users/{userId}/expenses/{expenseId}": {
+      "schema": { "$ref": "ExpenseDoc" },
+      "description": "Operational expenses owned by the authenticated store owner."
+    },
+    "/users/{userId}/incomes/{incomeId}": {
+      "schema": { "$ref": "IncomeDoc" },
+      "description": "Non-sales income entries owned by the authenticated store owner."
+    },
+    "/users/{userId}/products/{productId}": {
+      "schema": { "$ref": "ProductDoc" },
+      "description": "Store catalog products owned by the authenticated store owner."
+    },
+    "/users/{userId}/customers/{customerId}": {
+      "schema": { "$ref": "CustomerDoc" },
+      "description": "Customers owned by the authenticated store owner."
+    },
+    "/users/{userId}/suppliers/{supplierId}": {
+      "schema": { "$ref": "SupplierDoc" },
+      "description": "Suppliers owned by the authenticated store owner."
+    },
+    "/users/{userId}/debtPayments/{paymentId}": {
+      "schema": { "$ref": "DebtPaymentDoc" },
+      "description": "Debt and receivable payment records owned by the authenticated store owner."
+    },
+    "/users/{userId}/shifts/{shiftId}": {
+      "schema": { "$ref": "CashierShiftDoc" },
+      "description": "Cashier shift open/close records owned by the authenticated store owner."
+    }
+  }
+}

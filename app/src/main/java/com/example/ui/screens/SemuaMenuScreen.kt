@@ -1,0 +1,266 @@
+package com.example.ui.screens
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Inventory
+import androidx.compose.material.icons.filled.LocalShipping
+import androidx.compose.material.icons.filled.MoneyOff
+import androidx.compose.material.icons.filled.Paid
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Store
+import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.ui.components.KasGoSectionHeader
+import com.example.ui.theme.*
+import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.Screen
+
+data class KasGoMenuCategory(
+    val title: String,
+    val items: List<KasGoMenuItem>
+)
+
+data class KasGoMenuItem(
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val color: Color,
+    val destination: Screen
+)
+
+@Composable
+fun SemuaMenuScreen(viewModel: PosViewModel) {
+    val menuGroups = listOf(
+        KasGoMenuCategory(
+            title = "PENJUALAN & TRANSAKSI",
+            items = listOf(
+                KasGoMenuItem("Kasir POS", "Buka kasir & scan barang", Icons.Default.PointOfSale, Sapphire800, Screen.POS_KASIR),
+                KasGoMenuItem("Riwayat Transaksi", "Struk selesai & retur", Icons.AutoMirrored.Filled.ReceiptLong, Emerald700, Screen.RIWAYAT_TRANSAKSI),
+                KasGoMenuItem("Shift Kasir", "Cek saldo kas laci kasir", Icons.Default.AccountBalanceWallet, Sapphire600, Screen.KEUANGAN)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "PRODUK & KATALOG",
+            items = listOf(
+                KasGoMenuItem("Daftar Produk", "Katalog barang aktif", Icons.Default.Category, Sapphire800, Screen.PRODUK),
+                KasGoMenuItem("Kategori & Satuan", "Kelola satuan & konversi", Icons.Default.Store, Sapphire600, Screen.PRODUK),
+                KasGoMenuItem("Barcode Scanner", "Cari produk dengan barcode", Icons.Default.Category, Amber500, Screen.PRODUK)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "PEMBELIAN & SUPLAI",
+            items = listOf(
+                KasGoMenuItem("Pembelian Toko", "Faktur belanja ke grosir", Icons.Default.ShoppingBag, Sapphire800, Screen.PEMBELIAN),
+                KasGoMenuItem("Penerimaan Barang", "Konfirmasi barang (+stok)", Icons.Default.LocalShipping, Emerald700, Screen.PEMBELIAN),
+                KasGoMenuItem("Utang Pemasok", "Kelola utang belanja tempo", Icons.Default.CreditCard, Rose500, Screen.UTANG_PIUTANG)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "INVENTARIS & GUDANG",
+            items = listOf(
+                KasGoMenuItem("Stok Barang", "Status & jumlah persediaan", Icons.Default.Inventory, Sapphire800, Screen.STOK_INVENTARIS),
+                KasGoMenuItem("Stok Opname", "Penyesuaian stok riil", Icons.Default.Edit, Amber500, Screen.STOK_INVENTARIS),
+                KasGoMenuItem("Kartu Stok", "Riwayat mutasi keluar/masuk", Icons.Default.History, Sapphire600, Screen.STOK_INVENTARIS)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "KEUANGAN & MULTI KAS",
+            items = listOf(
+                KasGoMenuItem("Pantau Cloud Firebase", "Sinkronisasi multi-perangkat & arus kas", Icons.Default.CloudQueue, AccentBlue, Screen.CLOUD_MONITOR),
+                KasGoMenuItem("Multi Kas & Saldo Bank", "Kas Toko, Pulsa, Saldo BRILink", Icons.Default.AccountBalanceWallet, Sapphire800, Screen.MULTI_KAS),
+                KasGoMenuItem("Tarif Admin Transfer & PPOB", "Tabel biaya admin & fee agen", Icons.Default.CreditCard, HeaderTeal, Screen.TARIF_ADMIN),
+                KasGoMenuItem("Arus Kas Toko", "Kas masuk vs kas keluar", Icons.Default.AccountBalance, Sapphire800, Screen.KEUANGAN),
+                KasGoMenuItem("Biaya Operasional", "Listrik, air, operasional", Icons.Default.MoneyOff, Rose500, Screen.PENGELUARAN),
+                KasGoMenuItem("Pendapatan Jasa", "Pemasukan non-penjualan", Icons.Default.Paid, Emerald700, Screen.PENGELUARAN),
+                KasGoMenuItem("Piutang Pelanggan", "Daftar bon tempo pelanggan", Icons.Default.CreditCard, Amber500, Screen.UTANG_PIUTANG)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "LAPORAN & ANALITIK",
+            items = listOf(
+                KasGoMenuItem("Laporan Penjualan", "Ringkasan omzet & faktur", Icons.Default.BarChart, Sapphire800, Screen.LAPORAN),
+                KasGoMenuItem("Laporan Laba Rugi", "Margin & estimasi laba", Icons.Default.TrendingUp, Emerald700, Screen.LAPORAN),
+                KasGoMenuItem("Kirim Laporan WA", "Bagikan rekap ke WhatsApp", Icons.Default.Sms, Emerald700, Screen.LAPORAN)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "AI ASSISTANT & WHATSAPP",
+            items = listOf(
+                KasGoMenuItem("AI Chat Gerai Una", "Asisten toko cerdas", Icons.Default.AutoAwesome, Emerald700, Screen.AI_CHAT),
+                KasGoMenuItem("WhatsApp Integration", "Two-way command & webhook", Icons.Default.Chat, Sapphire800, Screen.WHATSAPP)
+            )
+        ),
+        KasGoMenuCategory(
+            title = "SISTEM & PENGATURAN",
+            items = listOf(
+                KasGoMenuItem("Kontak Pelanggan & Grosir", "Buku alamat pelanggan", Icons.Default.People, Sapphire800, Screen.KONTAK),
+                KasGoMenuItem("Pengaturan & Hak Akses", "Profil toko & role kasir", Icons.Default.Settings, Slate700, Screen.PENGATURAN)
+            )
+        )
+    )
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgCanvas)
+            .testTag("semua_menu_screen"),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        item {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                border = BorderStroke(1.dp, BorderDefault),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(SurfaceStrong),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Dashboard, contentDescription = null, tint = ModulePengaturan, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            "Semua Menu & Modul",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                        )
+                        Text(
+                            "Navigasi lengkap seluruh fitur POS & bisnis toko",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
+                        )
+                    }
+                }
+            }
+        }
+
+        items(menuGroups) { group ->
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = group.title,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = Slate500,
+                        letterSpacing = 0.5.sp
+                    ),
+                    modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                )
+
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    border = BorderStroke(1.dp, BorderDefault),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(6.dp)) {
+                        group.items.forEachIndexed { _, item ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { viewModel.navigateTo(item.destination) }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(SurfaceStrong),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(item.icon, contentDescription = null, tint = item.color, modifier = Modifier.size(20.dp))
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.title,
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                    )
+                                    Text(
+                                        text = item.subtitle,
+                                        style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}

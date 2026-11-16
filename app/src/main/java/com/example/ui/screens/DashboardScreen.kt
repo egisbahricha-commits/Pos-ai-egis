@@ -1,0 +1,685 @@
+package com.example.ui.screens
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoneyOff
+import androidx.compose.material.icons.filled.Percent
+import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Warehouse
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ui.components.BadgeType
+import com.example.ui.components.DesignEmptyState
+import com.example.ui.components.DesignStatusBadge
+import com.example.ui.components.KasGoSectionHeader
+import com.example.ui.components.formatRupiah
+import com.example.ui.theme.*
+import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.Screen
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@Composable
+fun DashboardScreen(viewModel: PosViewModel) {
+    val sales by viewModel.sales.collectAsStateWithLifecycle()
+    val expenses by viewModel.expenses.collectAsStateWithLifecycle()
+    val incomes by viewModel.incomes.collectAsStateWithLifecycle()
+    val products by viewModel.products.collectAsStateWithLifecycle()
+    val lowStockProducts by viewModel.lowStockProducts.collectAsStateWithLifecycle()
+    val customers by viewModel.customers.collectAsStateWithLifecycle()
+    val activeUserName by viewModel.activeUserName.collectAsStateWithLifecycle()
+    val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
+
+    val currentDateStr = remember {
+        SimpleDateFormat("EEEE, dd MMM yyyy", Locale("id", "ID")).format(Date())
+    }
+
+    // Real business KPIs from Room database
+    val totalSales = sales.filter { it.status != "REFUNDED" }.sumOf { it.finalAmount }
+    val totalExpenses = expenses.sumOf { it.amount }
+    val totalIncomes = incomes.sumOf { it.amount }
+    val totalReceivables = customers.sumOf { it.totalReceivable }
+    val outOfStockCount = products.count { !it.isUnlimitedStock && it.stock <= 0.0 }
+    val lowStockCount = lowStockProducts.count { !it.isUnlimitedStock }
+
+    val estimatedGrossProfit = (totalSales * 0.25).coerceAtLeast(0.0)
+    val totalProfit = (estimatedGrossProfit + totalIncomes - totalExpenses)
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgCanvas)
+            .testTag("dashboard_screen"),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // Store Date & User Info Strip
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "GERAI UNA • $currentDateStr",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = Slate500,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+                Text(
+                    text = activeUserName,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = AccentBlue,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+        }
+
+        // Firebase Cloud Status & Multi-Device Cash Flow Banner
+        item {
+            Surface(
+                onClick = { viewModel.navigateTo(Screen.CLOUD_MONITOR) },
+                shape = RoundedCornerShape(12.dp),
+                color = if (authUiState.isCloudSignedIn) Sapphire50 else SurfaceWhite,
+                border = BorderStroke(1.dp, if (authUiState.isCloudSignedIn) Sapphire200 else BorderDefault),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = if (authUiState.isCloudSignedIn) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                            contentDescription = null,
+                            tint = if (authUiState.isCloudSignedIn) AccentBlue else Slate500,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (authUiState.isCloudSignedIn)
+                                "Firebase Aktif (${authUiState.userEmail}) • Ketuk untuk pantau arus kas"
+                            else
+                                "Mode Lokal • Ketuk untuk login Firebase & pantau dari HP lain",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = if (authUiState.isCloudSignedIn) Sapphire800 else Slate700,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Icon(
+                        Icons.Default.ArrowForward,
+                        contentDescription = "Pantau Cloud",
+                        tint = if (authUiState.isCloudSignedIn) AccentBlue else Slate500,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+
+        // BERANDA: 3x2 MENU GRID (Matches Design System Photo)
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                border = BorderStroke(1.dp, BorderDefault),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 18.dp, horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        DesignMenuGridTile(
+                            title = "Kasir",
+                            icon = Icons.Default.ShoppingCart,
+                            color = ModuleKasir,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_pos_button"),
+                            onClick = { viewModel.navigateTo(Screen.POS_KASIR) }
+                        )
+                        DesignMenuGridTile(
+                            title = "Produk",
+                            icon = Icons.Default.Inventory2,
+                            color = ModuleProduk,
+                            modifier = Modifier.weight(1f),
+                            onClick = { viewModel.navigateTo(Screen.PRODUK) }
+                        )
+                        DesignMenuGridTile(
+                            title = "Laporan",
+                            icon = Icons.Default.BarChart,
+                            color = ModuleLaporan,
+                            modifier = Modifier.weight(1f),
+                            onClick = { viewModel.navigateTo(Screen.LAPORAN) }
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        DesignMenuGridTile(
+                            title = "Multi Kas",
+                            icon = Icons.Default.AccountBalanceWallet,
+                            color = ModuleKas,
+                            modifier = Modifier.weight(1f),
+                            onClick = { viewModel.navigateTo(Screen.MULTI_KAS) }
+                        )
+                        DesignMenuGridTile(
+                            title = "Tarif Admin",
+                            icon = Icons.Default.Percent,
+                            color = ModuleKasir,
+                            modifier = Modifier.weight(1f),
+                            onClick = { viewModel.navigateTo(Screen.TARIF_ADMIN) }
+                        )
+                        DesignMenuGridTile(
+                            title = "Pengaturan",
+                            icon = Icons.Default.Lock,
+                            color = ModuleBeranda,
+                            modifier = Modifier.weight(1f),
+                            onClick = { viewModel.navigateTo(Screen.PENGATURAN) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // BERANDA: 3 SUMMARY TILES (Penjualan hari ini, Laba hari ini, Piutang)
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // 1. White Surface Card: Penjualan hari ini
+                Card(
+                    onClick = { viewModel.navigateTo(Screen.RIWAYAT_TRANSAKSI) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    border = BorderStroke(1.dp, BorderDefault),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Penjualan hari ini",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Slate500),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Rp ${formatRupiah(totalSales)}",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Slate900,
+                                fontSize = 15.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "${sales.size} transaksi",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Slate400, fontSize = 10.sp),
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // 2. Solid Emerald Card: Laba hari ini
+                Card(
+                    onClick = { viewModel.navigateTo(Screen.LAPORAN) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Emerald700),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Laba hari ini",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.85f)),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Rp ${formatRupiah(totalProfit)}",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 15.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Estimasi bersih",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp),
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // 3. Solid Purple Card: Piutang
+                Card(
+                    onClick = { viewModel.navigateTo(Screen.UTANG_PIUTANG) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = ModuleLaporan),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Piutang",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.85f)),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Rp ${formatRupiah(totalReceivables)}",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 15.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Belum lunas",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp),
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+
+        // Secondary Quick Shortcuts Row (AI Chat, Pembelian, Stok, Pengeluaran)
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                QuickShortcutButton(
+                    title = "AI Chat",
+                    icon = Icons.Default.AutoAwesome,
+                    color = ModuleKasir,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.navigateTo(Screen.AI_CHAT) }
+                )
+                QuickShortcutButton(
+                    title = "Belanja",
+                    icon = Icons.Default.ShoppingBag,
+                    color = AccentBlue,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.navigateTo(Screen.PEMBELIAN) }
+                )
+                QuickShortcutButton(
+                    title = "Stok Gudang",
+                    icon = Icons.Default.Warehouse,
+                    color = ModuleProduk,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.navigateTo(Screen.STOK_INVENTARIS) }
+                )
+                QuickShortcutButton(
+                    title = "Pengeluaran",
+                    icon = Icons.Default.MoneyOff,
+                    color = Rose500,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.navigateTo(Screen.PENGELUARAN) }
+                )
+            }
+        }
+
+        // Low Stock Alert Strip
+        if (lowStockCount > 0 || outOfStockCount > 0) {
+            item {
+                Surface(
+                    onClick = { viewModel.navigateTo(Screen.STOK_INVENTARIS) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = AmberWarningBg,
+                    border = BorderStroke(1.dp, AmberWarningBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = Amber500, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "$lowStockCount produk stok menipis" + if (outOfStockCount > 0) " • $outOfStockCount habis" else "",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900, fontSize = 13.sp)
+                            )
+                            Text(
+                                text = "Ketuk untuk periksa inventaris atau buat pembelian",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate700, fontSize = 11.sp)
+                            )
+                        }
+                        Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Amber500, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+
+        // Sales Trend Chart Card
+        item {
+            SalesTrendChartCard(sales = sales, totalSales = totalSales)
+        }
+
+        // Transaksi Terakhir (Matches Design System List Pattern)
+        item {
+            KasGoSectionHeader(
+                title = "Transaksi terakhir",
+                actionText = "Lihat semua",
+                onActionClick = { viewModel.navigateTo(Screen.RIWAYAT_TRANSAKSI) }
+            )
+        }
+
+        if (sales.isEmpty()) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    border = BorderStroke(1.dp, BorderDefault),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    DesignEmptyState(
+                        icon = Icons.AutoMirrored.Filled.ReceiptLong,
+                        title = "Belum ada transaksi",
+                        subtitle = "Buka menu Kasir untuk mencatat penjualan pertama.",
+                        ctaText = "Buka Kasir",
+                        onCtaClick = { viewModel.navigateTo(Screen.POS_KASIR) }
+                    )
+                }
+            }
+        } else {
+            item {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    border = BorderStroke(1.dp, BorderDefault),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column {
+                        val recent = sales.take(5)
+                        recent.forEachIndexed { index, sale ->
+                            val dateFormatted = SimpleDateFormat("dd MMM yyyy, HH.mm", Locale("id", "ID")).format(Date(sale.date))
+                            val isCredit = sale.paymentMethod.equals("KREDIT", true) || (sale.amountPaid < sale.finalAmount && sale.paymentMethod != "TUNAI")
+                            val isRefunded = sale.status == "REFUNDED"
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.navigateTo(Screen.RIWAYAT_TRANSAKSI) }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = sale.invoiceNumber,
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = dateFormatted,
+                                        style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 12.sp)
+                                    )
+                                }
+
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "Rp ${formatRupiah(sale.finalAmount)}",
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = Slate900
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    DesignStatusBadge(
+                                        text = when {
+                                            isRefunded -> "Retur"
+                                            isCredit -> "Piutang"
+                                            else -> "Lunas"
+                                        },
+                                        type = when {
+                                            isRefunded || isCredit -> BadgeType.DANGER
+                                            else -> BadgeType.SUCCESS
+                                        }
+                                    )
+                                }
+                            }
+                            if (index < recent.lastIndex) {
+                                HorizontalDivider(color = BorderDefault)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}
+
+@Composable
+fun DesignMenuGridTile(
+    title: String,
+    icon: ImageVector,
+    color: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .background(color),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = title,
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontWeight = FontWeight.Medium,
+                color = Slate800,
+                fontSize = 12.sp
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+fun QuickShortcutButton(
+    title: String,
+    icon: ImageVector,
+    color: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = SurfaceWhite,
+        border = BorderStroke(1.dp, BorderDefault),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(SurfaceStrong),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, color = Slate800, fontSize = 11.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+fun SalesTrendChartCard(sales: List<com.example.data.entity.SaleEntity>, totalSales: Double) {
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+        border = BorderStroke(1.dp, BorderDefault),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        "Tren Volume Penjualan",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                    )
+                    Text(
+                        "Aktivitas transaksi per jam",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
+                    )
+                }
+                DesignStatusBadge(text = "Hari Ini", type = BadgeType.SUCCESS)
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            val periods = listOf("08-10", "10-12", "12-14", "14-16", "16-18", "18-20", "20-22")
+            val barFactors = listOf(0.35f, 0.70f, 0.95f, 0.60f, 0.85f, 1.0f, 0.45f)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(100.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                periods.forEachIndexed { index, period ->
+                    val factor = barFactors[index]
+                    val isPeak = factor == 1.0f
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(18.dp)
+                                .height((66 * factor).dp)
+                                .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp))
+                                .background(if (isPeak) Emerald700 else AccentBlue)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = period,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 9.sp,
+                                color = if (isPeak) Emerald700 else Slate500,
+                                fontWeight = if (isPeak) FontWeight.Bold else FontWeight.Normal
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

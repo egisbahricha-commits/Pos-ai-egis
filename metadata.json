@@ -1,0 +1,6 @@
+{
+  "name": "Gerai Una POS AI",
+  "description": "All-in-One Smart POS, Inventaris, Pembelian, Keuangan & WhatsApp AI Assistant oleh Egis Bahricha",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
