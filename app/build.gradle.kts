@@ -151,3 +151,11 @@ tasks.withType<Test> {
     events("passed", "failed", "skipped")
   }
 }
+
+tasks.register<Copy>("exportApkToRepo") {
+  dependsOn("assembleDebug")
+  from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+  into(rootProject.layout.projectDirectory.dir("apk"))
+  rename("app-debug\\.apk", "gerai-una-pos-ai.apk")
+}
+

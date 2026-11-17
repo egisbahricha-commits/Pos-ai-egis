@@ -6,15 +6,14 @@ Aplikasi Kasir Android (Jetpack Compose + Room Offline-First + Firebase Auth & C
 
 ## Download APK
 
-[![Download APK](https://img.shields.io/badge/Download-APK%20Terbaru-0F766E?style=for-the-badge&logo=android&logoColor=white)](../../releases)
+[![Download APK Langsung](https://img.shields.io/badge/Download-APK%20Langsung-0F766E?style=for-the-badge&logo=android&logoColor=white)](apk/gerai-una-pos-ai.apk)
+[![Download dari Releases](https://img.shields.io/badge/Buka-GitHub%20Releases-1E293B?style=for-the-badge&logo=github&logoColor=white)](../../releases)
 
-### Cara Mengunduh APK di GitHub:
-1. Buka tab **[Releases](../../releases)** di sisi kanan halaman repositori ini (atau klik tombol **Download APK Terbaru** di atas).
-2. Pada rilis **Gerai Una POS AI (Latest APK)**, buka bagian **Assets** lalu klik **`gerai-una-pos-ai.apk`** untuk mengunduh.
-3. Instal file APK tersebut di perangkat Android Anda.
+### Cara 1 — Unduh Langsung dari Repositori (Tercepat):
+1. Klik tombol **Download APK Langsung** di atas, atau buka file **`apk/gerai-una-pos-ai.apk`** di daftar file repositori ini.
+2. Pada halaman file APK di GitHub, klik tombol **Download raw file** (ikon panah unduh di kanan atas kotak file) atau **View raw**.
+3. Instal file **`gerai-una-pos-ai.apk`** di perangkat Android Anda.
 
-### Jika Halaman Releases Masih Kosong:
-1. Buka tab **[Actions](../../actions)** di bagian atas repositori GitHub.
-2. Pilih workflow **Build & Publish APK** lalu klik **Run workflow** (jika belum berjalan otomatis) dan tunggu ±2–3 menit hingga centang hijau.
-3. Pastikan izin workflow aktif di GitHub: **Settings → Actions → General → Workflow permissions → pilih "Read and write permissions" → Save**.
-4. Anda juga selalu bisa mengunduh APK langsung dari tab **Actions → klik build yang centang hijau → Artifacts → `gerai-una-pos-ai-apk`**.
+### Cara 2 — Unduh dari Halaman Releases:
+1. Buka tab **[Releases](../../releases)** di sisi kanan halaman repositori ini.
+2. Pilih rilis **Gerai Una POS AI (Latest APK)** → bagian **Assets** → klik **`gerai-una-pos-ai.apk`**.
