@@ -11,6 +11,8 @@ jobs:
   build-apk:
     name: Build Android Debug APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -22,14 +24,20 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK & Accept Licenses
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Accept Android SDK Licenses
+        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Restore debug keystore
         run: |
           if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
           fi
+          test -f debug.keystore
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -51,7 +59,7 @@ jobs:
 
       - name: Publish APK to GitHub Releases
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view latest-apk >/dev/null 2>&1; then
             gh release upload latest-apk gerai-una-pos-ai.apk --clobber
