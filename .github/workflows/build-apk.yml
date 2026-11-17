@@ -2,9 +2,6 @@ name: Build & Publish APK
 
 on:
   push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 permissions:
@@ -24,6 +21,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Setup Android SDK & Accept Licenses
+        uses: android-actions/setup-android@v3
 
       - name: Restore debug keystore
         run: |
@@ -50,12 +50,19 @@ jobs:
           retention-days: 30
 
       - name: Publish APK to GitHub Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest-apk
-          name: Gerai Una POS AI (Latest APK)
-          body: |
-            Unduh file **gerai-una-pos-ai.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda.
-          files: gerai-una-pos-ai.apk
-          make_latest: true
-          overwrite_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest-apk >/dev/null 2>&1; then
+            gh release upload latest-apk gerai-una-pos-ai.apk --clobber
+            gh release edit latest-apk \
+              --title "Gerai Una POS AI (Latest APK)" \
+              --notes "Unduh file **gerai-una-pos-ai.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda." \
+              --latest
+          else
+            gh release create latest-apk gerai-una-pos-ai.apk \
+              --target "${{ github.sha }}" \
+              --title "Gerai Una POS AI (Latest APK)" \
+              --notes "Unduh file **gerai-una-pos-ai.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda." \
+              --latest
+          fi

@@ -6,11 +6,15 @@ Aplikasi Kasir Android (Jetpack Compose + Room Offline-First + Firebase Auth & C
 
 ## Download APK
 
-[![Download APK](https://img.shields.io/badge/Download-APK%20Terbaru-0F766E?style=for-the-badge&logo=android&logoColor=white)](../../releases/latest)
+[![Download APK](https://img.shields.io/badge/Download-APK%20Terbaru-0F766E?style=for-the-badge&logo=android&logoColor=white)](../../releases)
 
 ### Cara Mengunduh APK di GitHub:
-1. Klik tombol **Download APK Terbaru** di atas, atau buka menu **Releases** di sisi kanan halaman repositori GitHub ini.
-2. Pada bagian **Assets**, klik **`gerai-una-pos-ai.apk`** untuk mengunduh file instalasi Android.
-3. Buka file APK di HP Android Anda dan izinkan instalasi dari sumber ini jika diminta.
+1. Buka tab **[Releases](../../releases)** di sisi kanan halaman repositori ini (atau klik tombol **Download APK Terbaru** di atas).
+2. Pada rilis **Gerai Una POS AI (Latest APK)**, buka bagian **Assets** lalu klik **`gerai-una-pos-ai.apk`** untuk mengunduh.
+3. Instal file APK tersebut di perangkat Android Anda.
 
-> **Catatan:** Setelah proyek pertama kali di-push ke GitHub, workflow **Build & Publish APK** di tab **Actions** akan berjalan otomatis selama ±2–3 menit untuk membangun dan menerbitkan file APK ke halaman **Releases**. Anda juga bisa mengunduh APK dari tab **Actions → Build & Publish APK → Artifacts**.
+### Jika Halaman Releases Masih Kosong:
+1. Buka tab **[Actions](../../actions)** di bagian atas repositori GitHub.
+2. Pilih workflow **Build & Publish APK** lalu klik **Run workflow** (jika belum berjalan otomatis) dan tunggu ±2–3 menit hingga centang hijau.
+3. Pastikan izin workflow aktif di GitHub: **Settings → Actions → General → Workflow permissions → pilih "Read and write permissions" → Save**.
+4. Anda juga selalu bisa mengunduh APK langsung dari tab **Actions → klik build yang centang hijau → Artifacts → `gerai-una-pos-ai-apk`**.
