@@ -327,6 +327,30 @@ interface AdminTierDao {
 
     @Query("DELETE FROM admin_tier_ranges WHERE serviceId = :serviceId")
     suspend fun deleteRangesForService(serviceId: Long)
+
+    @Query("""
+        SELECT * FROM admin_tier_ranges
+        WHERE serviceId = :serviceId
+          AND :nominal >= minAmount
+          AND (maxAmount <= 0 OR :nominal <= maxAmount)
+        ORDER BY minAmount DESC
+        LIMIT 1
+    """)
+    suspend fun findMatchingRange(serviceId: Long, nominal: Double): AdminTierRangeEntity?
+
+    @Query("""
+        SELECT COUNT(*) FROM admin_tier_ranges
+        WHERE serviceId = :serviceId
+          AND id != :excludeId
+          AND :minAmount <= (CASE WHEN maxAmount <= 0 THEN 999999999999999.0 ELSE maxAmount END)
+          AND minAmount <= (CASE WHEN :maxAmount <= 0 THEN 999999999999999.0 ELSE :maxAmount END)
+    """)
+    suspend fun countOverlappingRanges(
+        serviceId: Long,
+        excludeId: Long,
+        minAmount: Double,
+        maxAmount: Double
+    ): Int
 }
 
 @Dao

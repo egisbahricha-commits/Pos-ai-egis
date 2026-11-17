@@ -54,6 +54,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.AdminTierRangeEntity
+import com.example.data.entity.AdminTierServiceEntity
+import com.example.data.pricing.TierPricingResolver
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignFilterChip
@@ -74,6 +76,7 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
 
     var simulatorNominalText by remember { mutableStateOf("1500000") }
     var showAddServiceDialog by remember { mutableStateOf(false) }
+    var serviceToDelete by remember { mutableStateOf<AdminTierServiceEntity?>(null) }
 
     val activeRanges = remember(allRanges, selectedServiceId) {
         allRanges.filter { it.serviceId == selectedServiceId }.sortedBy { it.minAmount }
@@ -81,10 +84,7 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
 
     val simNominal = simulatorNominalText.filter { it.isDigit() }.toDoubleOrNull() ?: 0.0
     val matchedSimRange = remember(activeRanges, simNominal) {
-        if (simNominal <= 0.0) null
-        else activeRanges.find { range ->
-            simNominal >= range.minAmount && (range.maxAmount <= 0.0 || simNominal <= range.maxAmount)
-        }
+        TierPricingResolver.findMatchingRange(activeRanges, simNominal)
     }
 
     LazyColumn(
@@ -138,15 +138,21 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
                     ) {
                         Text(
                             "Status Grup: ${selectedService.serviceName}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = Slate800)
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = Slate800),
+                            modifier = Modifier.weight(1f)
                         )
-                        Switch(
-                            checked = selectedService.isActive,
-                            onCheckedChange = { checked ->
-                                viewModel.updateAdminTierService(selectedService.copy(isActive = checked))
-                            },
-                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = AccentBlue)
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Switch(
+                                checked = selectedService.isActive,
+                                onCheckedChange = { checked ->
+                                    viewModel.updateAdminTierService(selectedService.copy(isActive = checked))
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = AccentBlue)
+                            )
+                            IconButton(onClick = { serviceToDelete = selectedService }) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus Grup", tint = Rose500, modifier = Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
             }
@@ -247,7 +253,7 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
                         ctaText = "Tambah rentang",
                         onCtaClick = {
                             if (selectedServiceId > 0L) {
-                                viewModel.createAdminTierRange(selectedServiceId, 0.0, 1000000.0, 5000.0, 5000.0, 2500.0)
+                                viewModel.createAdminTierRange(selectedServiceId, 1.0, 1000000.0, 5000.0, 2500.0, 1000.0)
                             }
                         }
                     )
@@ -277,15 +283,39 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
                 )
             }
 
-            // Soft "+ Tambah rentang" Button (Matches Design System Photo)
+            // Soft "+ Tambah rentang" Button
             item {
                 OutlinedButton(
                     onClick = {
                         if (selectedServiceId > 0L) {
-                            val lastMax = activeRanges.maxOfOrNull { it.maxAmount } ?: 0.0
-                            val nextMin = if (lastMax > 0.0) lastMax + 1.0 else 0.0
-                            val nextMax = nextMin + 1000000.0 - 1.0
-                            viewModel.createAdminTierRange(selectedServiceId, nextMin, nextMax, 5000.0, 5000.0, 2500.0)
+                            val lastRange = activeRanges.maxByOrNull { it.minAmount }
+                            if (lastRange == null) {
+                                viewModel.createAdminTierRange(selectedServiceId, 1.0, 1000000.0, 5000.0, 2500.0, 1000.0)
+                            } else if (lastRange.maxAmount <= 0.0) {
+                                val cappedMax = if (lastRange.minAmount <= 1.0) 1000000.0 else lastRange.minAmount + 2000000.0 - 1.0
+                                val nextMin = cappedMax + 1.0
+                                val nextMax = nextMin + 2000000.0 - 1.0
+                                viewModel.capAndAppendAdminTierRange(
+                                    previousRange = lastRange,
+                                    cappedMaxAmount = cappedMax,
+                                    nextMinAmount = nextMin,
+                                    nextMaxAmount = nextMax,
+                                    nextStoreFee = lastRange.storeAdminFee + 5000.0,
+                                    nextProviderFee = lastRange.providerAdminFee,
+                                    nextAgentFee = lastRange.agentCommission
+                                )
+                            } else {
+                                val nextMin = lastRange.maxAmount + 1.0
+                                val nextMax = nextMin + 2000000.0 - 1.0
+                                viewModel.createAdminTierRange(
+                                    selectedServiceId,
+                                    nextMin,
+                                    nextMax,
+                                    lastRange.storeAdminFee + 5000.0,
+                                    lastRange.providerAdminFee,
+                                    lastRange.agentCommission
+                                )
+                            }
                         }
                     },
                     shape = RoundedCornerShape(10.dp),
@@ -295,7 +325,7 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Tambah rentang", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Text("Tambah rentang biaya admin", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 }
             }
         }
@@ -369,6 +399,41 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
             }
         }
     }
+
+    if (serviceToDelete != null) {
+        Dialog(onDismissRequest = { serviceToDelete = null }) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Hapus Grup Tarif?", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Grup \"${serviceToDelete!!.serviceName}\" dan semua rentang nominal di dalamnya akan dihapus.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { serviceToDelete = null }, modifier = Modifier.weight(1f)) {
+                            Text("Batal")
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.deleteAdminTierService(serviceToDelete!!)
+                                serviceToDelete = null
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Rose500),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Hapus", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -390,11 +455,13 @@ private fun InlineTarifRangeCard(
     val providerVal = providerText.toDoubleOrNull() ?: 0.0
     val agentVal = agentText.toDoubleOrNull() ?: 0.0
     val netProfit = storeVal + agentVal - providerVal
+    val isBoundsDirty = minVal != range.minAmount || maxVal != range.maxAmount
+    val isInvalidBounds = maxVal > 0.0 && minVal > maxVal
 
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
-        border = BorderStroke(1.dp, if (isOverlapping) Rose500.copy(alpha = 0.45f) else BorderDefault),
+        border = BorderStroke(1.dp, if (isOverlapping || isInvalidBounds) Rose500.copy(alpha = 0.45f) else BorderDefault),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
@@ -403,13 +470,11 @@ private fun InlineTarifRangeCard(
                     label = "Dari",
                     value = minText,
                     onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }
-                        minText = digits
-                        onUpdate(range.copy(minAmount = digits.toDoubleOrNull() ?: 0.0))
+                        minText = raw.filter { it.isDigit() }
                     },
                     prefixText = "Rp ",
-                    isError = isOverlapping,
-                    errorMessage = "Rentang tumpang tindih",
+                    isError = isOverlapping || isInvalidBounds,
+                    errorMessage = if (isInvalidBounds) "Dari > Sampai" else "Rentang tumpang tindih",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.weight(1f)
                 )
@@ -418,9 +483,7 @@ private fun InlineTarifRangeCard(
                     label = "Sampai (kosong = seterusnya)",
                     value = maxText,
                     onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }
-                        maxText = digits
-                        onUpdate(range.copy(maxAmount = digits.toDoubleOrNull() ?: 0.0))
+                        maxText = raw.filter { it.isDigit() }
                     },
                     prefixText = "Rp ",
                     placeholder = "Tak terbatas",
@@ -438,7 +501,7 @@ private fun InlineTarifRangeCard(
                     onValueChange = { raw ->
                         val digits = raw.filter { it.isDigit() }
                         storeText = digits
-                        onUpdate(range.copy(storeAdminFee = digits.toDoubleOrNull() ?: 0.0))
+                        onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = digits.toDoubleOrNull() ?: 0.0, providerAdminFee = providerVal, agentCommission = agentVal))
                     },
                     prefixText = "Rp ",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -450,7 +513,7 @@ private fun InlineTarifRangeCard(
                     onValueChange = { raw ->
                         val digits = raw.filter { it.isDigit() }
                         providerText = digits
-                        onUpdate(range.copy(providerAdminFee = digits.toDoubleOrNull() ?: 0.0))
+                        onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = digits.toDoubleOrNull() ?: 0.0, agentCommission = agentVal))
                     },
                     prefixText = "Rp ",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -462,7 +525,7 @@ private fun InlineTarifRangeCard(
                     onValueChange = { raw ->
                         val digits = raw.filter { it.isDigit() }
                         agentText = digits
-                        onUpdate(range.copy(agentCommission = digits.toDoubleOrNull() ?: 0.0))
+                        onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = providerVal, agentCommission = digits.toDoubleOrNull() ?: 0.0))
                     },
                     prefixText = "Rp ",
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -483,17 +546,43 @@ private fun InlineTarifRangeCard(
                         fontWeight = FontWeight.Bold,
                         color = Slate800,
                         fontSize = 12.sp
-                    )
+                    ),
+                    modifier = Modifier.weight(1f)
                 )
                 Row(
-                    modifier = Modifier
-                        .clickable { onDelete() }
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus", tint = AccentBlue, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(3.dp))
-                    Text("Hapus", style = MaterialTheme.typography.bodySmall.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 12.sp))
+                    if (isBoundsDirty && !isInvalidBounds) {
+                        Button(
+                            onClick = {
+                                onUpdate(
+                                    range.copy(
+                                        minAmount = minVal,
+                                        maxAmount = maxVal,
+                                        storeAdminFee = storeVal,
+                                        providerAdminFee = providerVal,
+                                        agentCommission = agentVal
+                                    )
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("Simpan Rentang", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clickable { onDelete() }
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Kurangi / Hapus", tint = Rose500, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("Hapus", style = MaterialTheme.typography.bodySmall.copy(color = Rose500, fontWeight = FontWeight.SemiBold, fontSize = 12.sp))
+                    }
                 }
             }
         }

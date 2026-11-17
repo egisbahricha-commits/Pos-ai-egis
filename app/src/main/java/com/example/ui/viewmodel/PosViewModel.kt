@@ -634,10 +634,15 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 resolvePriceAndSource(product.id, unitName, multiplier, updatedQty, baseSellingPrice)
             }
+            val isDigital = product.productType == "DIGITAL"
             current[index] = existing.copy(
                 quantity = updatedQty,
                 unitPrice = resolvedPrice,
-                priceSource = source
+                priceSource = source,
+                serviceNominal = if (isDigital) resolvedPrice * updatedQty else existing.serviceNominal,
+                storeAdminFee = if (isDigital) existing.storeAdminFee + storeAdminFee else existing.storeAdminFee,
+                providerAdminFee = if (isDigital) existing.providerAdminFee + providerAdminFee else existing.providerAdminFee,
+                agentCommission = if (isDigital) existing.agentCommission + agentCommission else existing.agentCommission
             )
         } else {
             val (resolvedPrice, source) = when {
@@ -713,8 +718,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (index >= 0) {
             val item = current[index]
+            val ratio = if (item.quantity > 0.0) newQty / item.quantity else 1.0
+            val isDigitalItem = baseProduct?.productType == "DIGITAL" || item.serviceNominal != null
             if (item.bundleId != null || item.priceSource == "fleksibel" || item.priceSource == "manual") {
-                current[index] = item.copy(quantity = newQty)
+                current[index] = item.copy(
+                    quantity = newQty,
+                    serviceNominal = if (isDigitalItem) item.unitPrice * newQty else item.serviceNominal,
+                    storeAdminFee = if (isDigitalItem) item.storeAdminFee * ratio else item.storeAdminFee,
+                    providerAdminFee = if (isDigitalItem) item.providerAdminFee * ratio else item.providerAdminFee,
+                    agentCommission = if (isDigitalItem) item.agentCommission * ratio else item.agentCommission
+                )
             } else {
                 val variantPrice = item.variantId?.let { vid -> productVariants.value.find { it.id == vid }?.sellingPrice }
                 val fallback = variantPrice ?: baseProduct?.sellingPrice ?: item.unitPrice
@@ -722,7 +735,11 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 current[index] = item.copy(
                     quantity = newQty,
                     unitPrice = updatedUnitPrice,
-                    priceSource = source
+                    priceSource = source,
+                    serviceNominal = if (isDigitalItem) updatedUnitPrice * newQty else item.serviceNominal,
+                    storeAdminFee = if (isDigitalItem) item.storeAdminFee * ratio else item.storeAdminFee,
+                    providerAdminFee = if (isDigitalItem) item.providerAdminFee * ratio else item.providerAdminFee,
+                    agentCommission = if (isDigitalItem) item.agentCommission * ratio else item.agentCommission
                 )
             }
             _cart.value = current
@@ -1041,9 +1058,24 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteAdminTierService(service: AdminTierServiceEntity) {
+        viewModelScope.launch {
+            repository.deleteAdminTierService(service)
+            _userMessage.value = "Layanan ${service.serviceName} dan seluruh rentang tarifnya dihapus"
+        }
+    }
+
     fun createAdminTierRange(serviceId: Long, minAmt: Double, maxAmt: Double, storeFee: Double, providerFee: Double, agentFee: Double) {
         viewModelScope.launch {
             try {
+                if (minAmt < 0.0 || (maxAmt > 0.0 && minAmt > maxAmt)) {
+                    _userMessage.value = "Rentang tidak valid: nominal 'Dari' tidak boleh melebihi 'Sampai'"
+                    return@launch
+                }
+                if (repository.hasOverlappingAdminTierRange(serviceId, 0L, minAmt, maxAmt)) {
+                    _userMessage.value = "Rentang bertumpukan dengan aturan yang sudah ada!"
+                    return@launch
+                }
                 repository.insertAdminTierRange(
                     AdminTierRangeEntity(
                         serviceId = serviceId,
@@ -1063,6 +1095,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateAdminTierRange(range: AdminTierRangeEntity) {
         viewModelScope.launch {
+            if (range.minAmount < 0.0 || (range.maxAmount > 0.0 && range.minAmount > range.maxAmount)) {
+                _userMessage.value = "Rentang tidak valid: nominal 'Dari' melebihi 'Sampai'"
+                return@launch
+            }
+            if (repository.hasOverlappingAdminTierRange(range.serviceId, range.id, range.minAmount, range.maxAmount)) {
+                _userMessage.value = "Rentang bertumpukan dengan aturan lain di layanan ini!"
+                return@launch
+            }
             repository.updateAdminTierRange(range)
         }
     }
@@ -1071,6 +1111,43 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteAdminTierRange(range)
             _userMessage.value = "Rentang tarif dihapus"
+        }
+    }
+
+    fun replaceAdminTierRanges(serviceId: Long, ranges: List<AdminTierRangeEntity>) {
+        viewModelScope.launch {
+            repository.replaceAdminTierRanges(serviceId, ranges)
+            _userMessage.value = "Daftar tarif berjenjang (${ranges.size} rentang) diperbarui!"
+        }
+    }
+
+    fun capAndAppendAdminTierRange(
+        previousRange: AdminTierRangeEntity,
+        cappedMaxAmount: Double,
+        nextMinAmount: Double,
+        nextMaxAmount: Double,
+        nextStoreFee: Double,
+        nextProviderFee: Double,
+        nextAgentFee: Double
+    ) {
+        viewModelScope.launch {
+            val capped = previousRange.copy(maxAmount = cappedMaxAmount)
+            if (repository.hasOverlappingAdminTierRange(capped.serviceId, capped.id, capped.minAmount, capped.maxAmount)) {
+                _userMessage.value = "Rentang bertumpukan dengan aturan lain di layanan ini!"
+                return@launch
+            }
+            repository.updateAdminTierRange(capped)
+            repository.insertAdminTierRange(
+                AdminTierRangeEntity(
+                    serviceId = previousRange.serviceId,
+                    minAmount = nextMinAmount,
+                    maxAmount = nextMaxAmount,
+                    storeAdminFee = nextStoreFee,
+                    providerAdminFee = nextProviderFee,
+                    agentCommission = nextAgentFee
+                )
+            )
+            _userMessage.value = "Rentang tarif admin baru ditambahkan!"
         }
     }
 
@@ -1093,10 +1170,35 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         conversions: List<UnitConversionEntity>,
         tierPrices: List<ProductTierPriceEntity>,
         variants: List<ProductVariantEntity> = emptyList(),
-        wholesaleTiers: List<WholesaleTierEntity> = emptyList()
+        wholesaleTiers: List<WholesaleTierEntity> = emptyList(),
+        digitalTierRanges: List<AdminTierRangeEntity>? = null
     ) {
         viewModelScope.launch {
-            val finalProduct = product.copy(hasVariants = variants.isNotEmpty())
+            var resolvedTierGroupId = product.adminTierGroupId
+            if (product.productType == "DIGITAL" && digitalTierRanges != null) {
+                if (resolvedTierGroupId != null) {
+                    repository.replaceAdminTierRanges(resolvedTierGroupId, digitalTierRanges)
+                } else if (digitalTierRanges.isNotEmpty()) {
+                    val code = product.name.trim().uppercase(Locale.ROOT)
+                        .replace(Regex("[^A-Z0-9]+"), "_")
+                        .trim('_')
+                        .ifBlank { "DIGITAL_SERVICE" }
+                    val newServiceId = repository.insertAdminTierService(
+                        AdminTierServiceEntity(
+                            serviceName = product.name.trim(),
+                            serviceCode = code,
+                            isActive = true
+                        )
+                    )
+                    repository.replaceAdminTierRanges(newServiceId, digitalTierRanges)
+                    resolvedTierGroupId = newServiceId
+                }
+            }
+
+            val finalProduct = product.copy(
+                hasVariants = variants.isNotEmpty(),
+                adminTierGroupId = if (product.productType == "DIGITAL") resolvedTierGroupId else null
+            )
             val savedId = if (finalProduct.id == 0L) {
                 repository.insertProduct(finalProduct)
             } else {

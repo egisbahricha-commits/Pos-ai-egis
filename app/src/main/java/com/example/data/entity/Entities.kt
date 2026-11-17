@@ -1,6 +1,7 @@
 package com.example.data.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "products")
@@ -273,7 +274,10 @@ data class AdminTierServiceEntity(
     val isActive: Boolean = true
 )
 
-@Entity(tableName = "admin_tier_ranges")
+@Entity(
+    tableName = "admin_tier_ranges",
+    indices = [Index(value = ["serviceId", "minAmount", "maxAmount"])]
+)
 data class AdminTierRangeEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val serviceId: Long,

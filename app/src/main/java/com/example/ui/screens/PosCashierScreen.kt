@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -97,6 +98,7 @@ import com.example.data.entity.ProductTierPriceEntity
 import com.example.data.entity.ProductVariantEntity
 import com.example.data.entity.PromoEntity
 import com.example.data.entity.UnitConversionEntity
+import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignEmptyState
@@ -179,11 +181,12 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     }
 
     val cartSubtotal = remember(cart) { cart.sumOf { it.unitPrice * it.quantity } }
+    val cartItemStoreAdmin = remember(cart) { cart.sumOf { it.storeAdminFee } }
     val cartTax = remember(cartSubtotal, cartDiscount, cartTaxRate) {
         ((cartSubtotal - cartDiscount) * cartTaxRate).coerceAtLeast(0.0)
     }
-    val cartFinalTotal = remember(cartSubtotal, cartDiscount, cartTax) {
-        (cartSubtotal - cartDiscount + cartTax).coerceAtLeast(0.0)
+    val cartFinalTotal = remember(cartSubtotal, cartItemStoreAdmin, cartDiscount, cartTax) {
+        (cartSubtotal + cartItemStoreAdmin - cartDiscount + cartTax).coerceAtLeast(0.0)
     }
 
     // Adaptive Layout: Dual-column on Tablet (maxWidth >= 720dp) vs Single column on Phone
@@ -246,12 +249,23 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         productVariants = productVariants,
                         cart = cart,
                         unitConversions = unitConversions,
+                        adminTiers = adminTiers,
                         onBundleClick = { viewModel.addBundleToCart(it) },
                         onProductClick = { prod, conversions, variants ->
                             when {
                                 prod.hasVariants && variants.isNotEmpty() -> selectedProductForVariant = prod
                                 prod.isFlexiblePrice -> flexiblePriceProduct = prod
                                 conversions.isNotEmpty() -> selectedProductForUnit = prod
+                                prod.productType == "DIGITAL" && prod.adminTierGroupId != null -> {
+                                    val tierSvc = adminTiers.find { it.service.id == prod.adminTierGroupId }
+                                    val calc = TierPricingResolver.calculate(tierSvc, prod.sellingPrice)
+                                    viewModel.addToCart(
+                                        product = prod,
+                                        storeAdminFee = calc.storeAdminFee,
+                                        providerAdminFee = calc.providerAdminFee,
+                                        agentCommission = calc.agentCommission
+                                    )
+                                }
                                 else -> viewModel.addToCart(prod)
                             }
                         },
@@ -342,12 +356,23 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         productVariants = productVariants,
                         cart = cart,
                         unitConversions = unitConversions,
+                        adminTiers = adminTiers,
                         onBundleClick = { viewModel.addBundleToCart(it) },
                         onProductClick = { prod, conversions, variants ->
                             when {
                                 prod.hasVariants && variants.isNotEmpty() -> selectedProductForVariant = prod
                                 prod.isFlexiblePrice -> flexiblePriceProduct = prod
                                 conversions.isNotEmpty() -> selectedProductForUnit = prod
+                                prod.productType == "DIGITAL" && prod.adminTierGroupId != null -> {
+                                    val tierSvc = adminTiers.find { it.service.id == prod.adminTierGroupId }
+                                    val calc = TierPricingResolver.calculate(tierSvc, prod.sellingPrice)
+                                    viewModel.addToCart(
+                                        product = prod,
+                                        storeAdminFee = calc.storeAdminFee,
+                                        providerAdminFee = calc.providerAdminFee,
+                                        agentCommission = calc.agentCommission
+                                    )
+                                }
                                 else -> viewModel.addToCart(prod)
                             }
                         },
@@ -859,6 +884,7 @@ fun ProductCatalogGrid(
     productVariants: List<ProductVariantEntity> = emptyList(),
     cart: List<CartItem>,
     unitConversions: List<UnitConversionEntity>,
+    adminTiers: List<AdminTierWithRanges> = emptyList(),
     onBundleClick: (BundlePackageEntity) -> Unit = {},
     onProductClick: (ProductEntity, List<UnitConversionEntity>, List<ProductVariantEntity>) -> Unit,
     modifier: Modifier = Modifier
@@ -908,12 +934,17 @@ fun ProductCatalogGrid(
                 val conversions = unitConversions.filter { it.productId == product.id }
                 val variants = productVariants.filter { it.productId == product.id && it.isActive }
                 val cartCount = cart.filter { it.productId == product.id }.sumOf { it.quantity.toInt() }
+                val autoAdminFee = if (product.productType == "DIGITAL" && !product.isFlexiblePrice && product.adminTierGroupId != null) {
+                    val tierSvc = adminTiers.find { it.service.id == product.adminTierGroupId }
+                    TierPricingResolver.calculate(tierSvc, product.sellingPrice).storeAdminFee
+                } else 0.0
 
                 KasGoProductCard(
                     product = product,
                     cartCount = cartCount,
                     hasConversions = conversions.isNotEmpty(),
                     hasVariants = variants.isNotEmpty(),
+                    autoAdminFee = autoAdminFee,
                     onClick = { onProductClick(product, conversions, variants) }
                 )
             }
@@ -927,6 +958,7 @@ fun KasGoProductCard(
     cartCount: Int,
     hasConversions: Boolean,
     hasVariants: Boolean = false,
+    autoAdminFee: Double = 0.0,
     onClick: () -> Unit
 ) {
     val isDigital = product.productType == "DIGITAL" || product.isUnlimitedStock || product.hasNoStock
@@ -1014,6 +1046,16 @@ fun KasGoProductCard(
                         color = Slate900
                     )
                 )
+                if (autoAdminFee > 0) {
+                    Text(
+                        text = "+Admin otomatis Rp ${formatRupiah(autoAdminFee)}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = HeaderTeal,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 10.sp
+                        )
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(6.dp))
 
@@ -1201,7 +1243,7 @@ fun KasGoOrderCartPanel(
                     .fillMaxWidth()
                     .weight(1f, fill = false)
             ) {
-                items(cart, key = { "${it.productId}_${it.unitName}_${it.variantId ?: 0}_${it.bundleId ?: 0}" }) { item ->
+                itemsIndexed(cart, key = { idx, it -> "${idx}_${it.productId}_${it.unitName}_${it.variantId ?: 0}_${it.bundleId ?: 0}" }) { _, item ->
                     val isDecimal = decimalProductIds.contains(item.productId)
                     val step = if (isDecimal) 0.5 else 1.0
                     val productTiers = remember(allTierPrices, item.productId) {
@@ -1245,6 +1287,12 @@ fun KasGoOrderCartPanel(
                                     text = "${formatRupiah(item.unitPrice)} per ${item.unitName}$sourceLabel",
                                     style = MaterialTheme.typography.bodySmall.copy(color = if (item.priceSource == "grosir" || item.priceSource == "per_jumlah") Emerald700 else Slate500, fontSize = 11.sp)
                                 )
+                                if (item.storeAdminFee > 0) {
+                                    Text(
+                                        text = "+ Biaya Admin Layanan Rp ${formatRupiah(item.storeAdminFee)}",
+                                        style = MaterialTheme.typography.labelSmall.copy(color = HeaderTeal, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                                    )
+                                }
                             }
 
                             Spacer(modifier = Modifier.width(8.dp))
@@ -1282,7 +1330,7 @@ fun KasGoOrderCartPanel(
                             Spacer(modifier = Modifier.width(10.dp))
 
                             Text(
-                                text = "Rp ${formatRupiah(item.unitPrice * item.quantity)}",
+                                text = "Rp ${formatRupiah(item.unitPrice * item.quantity + item.storeAdminFee)}",
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = Slate900,
@@ -1356,9 +1404,17 @@ fun KasGoOrderCartPanel(
         HorizontalDivider(color = BorderDefault)
         Spacer(modifier = Modifier.height(10.dp))
 
+        val cartItemAdminTotal = remember(cart) { cart.sumOf { it.storeAdminFee } }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Subtotal", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 13.sp))
             Text("Rp ${formatRupiah(cartSubtotal)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate800, fontSize = 13.sp))
+        }
+        if (cartItemAdminTotal > 0) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Biaya Admin Layanan", style = MaterialTheme.typography.bodySmall.copy(color = HeaderTeal, fontSize = 13.sp))
+                Text("+Rp ${formatRupiah(cartItemAdminTotal)}", style = MaterialTheme.typography.bodySmall.copy(color = HeaderTeal, fontWeight = FontWeight.SemiBold, fontSize = 13.sp))
+            }
         }
         if (cartDiscount > 0) {
             Spacer(modifier = Modifier.height(2.dp))
@@ -2155,104 +2211,257 @@ fun FlexiblePriceAndTierDialog(
     onConfirm: (price: Double, storeAdmin: Double, providerAdmin: Double, agentFee: Double) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var nominalText by remember { mutableStateOf("100000") }
-    val nominal = nominalText.toDoubleOrNull() ?: 0.0
-
-    // Prefer explicit product.adminTierGroupId if configured, else fallback to name matching
-    val matchingService = product.adminTierGroupId?.let { gid ->
-        adminTiers.find { it.service.id == gid && it.service.isActive }
-    } ?: adminTiers.find {
-        it.service.isActive && (product.name.contains(it.service.serviceName, ignoreCase = true) ||
-                it.service.serviceName.contains(product.name, ignoreCase = true))
-    } ?: adminTiers.firstOrNull { it.service.isActive } ?: adminTiers.firstOrNull()
-
-    val matchingRange = matchingService?.ranges?.find {
-        nominal >= it.minAmount && (it.maxAmount <= 0.0 || nominal <= it.maxAmount)
+    val defaultService = remember(adminTiers, product.id) {
+        TierPricingResolver.resolveServiceGroup(adminTiers, product.adminTierGroupId, product.name)
+    }
+    var selectedServiceId by remember(defaultService?.service?.id) {
+        mutableStateOf(defaultService?.service?.id)
+    }
+    val activeServiceWithRanges = remember(adminTiers, selectedServiceId) {
+        adminTiers.find { it.service.id == selectedServiceId } ?: defaultService
     }
 
-    val storeAdmin = matchingRange?.storeAdminFee ?: 5000.0
-    val providerAdmin = matchingRange?.providerAdminFee ?: 2500.0
-    val agentFee = matchingRange?.agentCommission ?: 1500.0
-    val netProfit = storeAdmin + agentFee - providerAdmin
-    val totalPrice = nominal + storeAdmin
+    var nominalText by remember { mutableStateOf("345000") }
+    val nominal = nominalText.filter { it.isDigit() }.toDoubleOrNull() ?: 0.0
+
+    val initialCalc = remember(activeServiceWithRanges, nominal) {
+        TierPricingResolver.calculate(activeServiceWithRanges, nominal)
+    }
+
+    var isManualAdminOverride by remember { mutableStateOf(false) }
+    var manualAdminText by remember(initialCalc.matchedRange?.id, selectedServiceId, isManualAdminOverride) {
+        mutableStateOf(
+            if (!isManualAdminOverride) {
+                if (initialCalc.matchedRange != null) initialCalc.storeAdminFee.toLong().toString() else ""
+            } else {
+                ""
+            }
+        )
+    }
+
+    val effectiveOverride = if (isManualAdminOverride || initialCalc.matchedRange == null) {
+        manualAdminText.filter { it.isDigit() }.toDoubleOrNull()
+    } else null
+
+    val result = remember(activeServiceWithRanges, nominal, effectiveOverride) {
+        TierPricingResolver.calculate(activeServiceWithRanges, nominal, effectiveOverride)
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color.White),
-            modifier = Modifier.fillMaxWidth().padding(16.dp)
+            modifier = Modifier.fillMaxWidth().padding(8.dp)
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Text(
-                    product.name,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = HeaderTeal)
-                )
-                Text(
-                    "Layanan ${matchingService?.service?.serviceName ?: "PPOB"} • Arah: ${product.serviceDirection}",
-                    style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
-                )
+            LazyColumn(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Text(
+                        product.name,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = HeaderTeal)
+                    )
+                    Text(
+                        "Tarif Berjenjang Otomatis • Arah: ${product.serviceDirection}",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                    )
+                }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = nominalText,
-                    onValueChange = { nominalText = it },
-                    label = { Text("Nominal Transaksi (Rp)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Breakdown Card
-                Surface(
-                    color = Slate50,
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, Slate200),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Admin Toko (Diterima)", fontSize = 11.sp, color = Slate600)
-                            Text("Rp ${formatRupiah(storeAdmin)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Emerald700)
+                if (adminTiers.isNotEmpty()) {
+                    item {
+                        Text(
+                            "Grup Aturan Tarif:",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, color = Slate700)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(adminTiers.filter { it.service.isActive }) { tier ->
+                                DesignFilterChip(
+                                    label = tier.service.serviceName,
+                                    selected = tier.service.id == activeServiceWithRanges?.service?.id,
+                                    onClick = {
+                                        selectedServiceId = tier.service.id
+                                        isManualAdminOverride = false
+                                    }
+                                )
+                            }
                         }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Biaya Penyedia (Potong Saldo)", fontSize = 11.sp, color = Slate600)
-                            Text("-Rp ${formatRupiah(providerAdmin)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Rose500)
-                        }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Fee Agen Bank", fontSize = 11.sp, color = Slate600)
-                            Text("+Rp ${formatRupiah(agentFee)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Sapphire800)
-                        }
-                        HorizontalDivider(color = Slate200, modifier = Modifier.padding(vertical = 2.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Laba Bersih Agen", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Slate900)
-                            Text("Rp ${formatRupiah(netProfit)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Emerald700)
+
+                        val activeRanges = activeServiceWithRanges?.ranges?.sortedBy { it.minAmount }.orEmpty()
+                        if (activeRanges.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                "Daftar Tarif Berjenjang (${activeRanges.size} tingkat):",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, color = Slate600)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(activeRanges, key = { it.id }) { tierRange ->
+                                    val isMatched = result.matchedRange?.id == tierRange.id
+                                    val maxLabel = if (tierRange.maxAmount <= 0.0) "∞" else formatRupiah(tierRange.maxAmount)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isMatched) Emerald50 else Slate50,
+                                        border = BorderStroke(1.dp, if (isMatched) Emerald500 else BorderDefault)
+                                    ) {
+                                        Text(
+                                            text = "Rp ${formatRupiah(tierRange.minAmount)}–$maxLabel: Rp ${formatRupiah(tierRange.storeAdminFee)}",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 10.sp,
+                                                fontWeight = if (isMatched) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isMatched) Emerald700 else Slate700
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Total Tagihan Pelanggan:", style = MaterialTheme.typography.bodySmall.copy(color = Slate600))
-                    Text("Rp ${formatRupiah(totalPrice)}", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
-                        Text("Batal")
-                    }
-                    Button(
-                        onClick = {
-                            onConfirm(totalPrice, storeAdmin, providerAdmin, agentFee)
+                item {
+                    DesignLabeledTextField(
+                        label = "Nominal Transaksi / Transfer *",
+                        value = nominalText,
+                        onValueChange = { raw ->
+                            val digits = raw.filter { it.isDigit() }
+                            nominalText = digits
+                            val newNominal = digits.toDoubleOrNull() ?: 0.0
+                            val autoMatch = activeServiceWithRanges?.let {
+                                TierPricingResolver.findMatchingRange(it.ranges, newNominal)
+                            }
+                            if (!isManualAdminOverride) {
+                                manualAdminText = autoMatch?.storeAdminFee?.toLong()?.toString() ?: ""
+                            }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = HeaderTeal),
-                        modifier = Modifier.weight(1f)
+                        prefixText = "Rp ",
+                        placeholder = "mis. 345000",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.testTag("digital_nominal_input")
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val presets = listOf(100000L to "100rb", 345000L to "345rb", 500000L to "500rb", 1000000L to "1jt", 2000000L to "2jt", 5000000L to "5jt")
+                        items(presets) { (amt, label) ->
+                            DesignFilterChip(
+                                label = label,
+                                selected = nominal.toLong() == amt,
+                                onClick = {
+                                    nominalText = amt.toString()
+                                    isManualAdminOverride = false
+                                    val autoMatch = activeServiceWithRanges?.let {
+                                        TierPricingResolver.findMatchingRange(it.ranges, amt.toDouble())
+                                    }
+                                    manualAdminText = autoMatch?.storeAdminFee?.toLong()?.toString() ?: ""
+                                }
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    val range = result.matchedRange
+                    if (range != null) {
+                        val maxLabel = if (range.maxAmount <= 0.0) "Seterusnya" else "Rp ${formatRupiah(range.maxAmount)}"
+                        DesignStatusBadge(
+                            text = "✓ Cocok rentang: Rp ${formatRupiah(range.minAmount)} – $maxLabel",
+                            type = BadgeType.SUCCESS
+                        )
+                    } else if (nominal > 0.0) {
+                        DesignStatusBadge(
+                            text = "Nominal di luar tabel tarif — isi tarif admin manual",
+                            type = BadgeType.WARNING
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    DesignLabeledTextField(
+                        label = if (range != null && !isManualAdminOverride) "Tarif Admin / Biaya Layanan (Terisi Otomatis)" else "Tarif Admin / Biaya Layanan (Manual)",
+                        value = if (!isManualAdminOverride && range != null) range.storeAdminFee.toLong().toString() else manualAdminText,
+                        onValueChange = { raw ->
+                            val digits = raw.filter { it.isDigit() }
+                            manualAdminText = digits
+                            isManualAdminOverride = true
+                        },
+                        prefixText = "Rp ",
+                        placeholder = "0",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.testTag("digital_admin_fee_input")
+                    )
+
+                    if (isManualAdminOverride && range != null) {
+                        TextButton(
+                            onClick = {
+                                isManualAdminOverride = false
+                                manualAdminText = range.storeAdminFee.toLong().toString()
+                            },
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                "Kembalikan ke tarif otomatis (Rp ${formatRupiah(range.storeAdminFee)})",
+                                style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Surface(
+                        color = Slate50,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Slate200),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Tambah", fontWeight = FontWeight.Bold, color = Color.White)
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Admin Toko (Diterima)", fontSize = 11.sp, color = Slate600)
+                                Text("Rp ${formatRupiah(result.storeAdminFee)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Emerald700)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Biaya Penyedia (Potong Saldo)", fontSize = 11.sp, color = Slate600)
+                                Text("-Rp ${formatRupiah(result.providerAdminFee)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Rose500)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Fee Agen Bank", fontSize = 11.sp, color = Slate600)
+                                Text("+Rp ${formatRupiah(result.agentCommission)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Sapphire800)
+                            }
+                            HorizontalDivider(color = Slate200, modifier = Modifier.padding(vertical = 2.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Laba Bersih Agen", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Slate900)
+                                Text("Rp ${formatRupiah(result.netProfit)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Emerald700)
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Total Tagihan Pelanggan:", style = MaterialTheme.typography.bodySmall.copy(color = Slate600))
+                        Text("Rp ${formatRupiah(result.totalCustomerPayable)}", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                            Text("Batal")
+                        }
+                        Button(
+                            onClick = {
+                                if (nominal > 0.0) {
+                                    onConfirm(nominal, result.storeAdminFee, result.providerAdminFee, result.agentCommission)
+                                }
+                            },
+                            enabled = nominal > 0.0,
+                            colors = ButtonDefaults.buttonColors(containerColor = HeaderTeal),
+                            modifier = Modifier.weight(1f).testTag("digital_confirm_add_btn")
+                        ) {
+                            Text("Tambah", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
                     }
                 }
             }

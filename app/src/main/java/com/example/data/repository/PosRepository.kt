@@ -1012,11 +1012,28 @@ class PosRepository(private val db: GeraiUnaDatabase) {
     // Admin Tier Services & Ranges
     suspend fun insertAdminTierService(service: AdminTierServiceEntity): Long = adminTierDao.insertService(service)
     suspend fun updateAdminTierService(service: AdminTierServiceEntity) = adminTierDao.updateService(service)
-    suspend fun deleteAdminTierService(service: AdminTierServiceEntity) = adminTierDao.deleteService(service)
+    suspend fun deleteAdminTierService(service: AdminTierServiceEntity) = withContext(Dispatchers.IO) {
+        adminTierDao.deleteRangesForService(service.id)
+        adminTierDao.deleteService(service)
+    }
     suspend fun insertAdminTierRange(range: AdminTierRangeEntity): Long = adminTierDao.insertRange(range)
     suspend fun updateAdminTierRange(range: AdminTierRangeEntity) = adminTierDao.updateRange(range)
     suspend fun deleteAdminTierRange(range: AdminTierRangeEntity) = adminTierDao.deleteRange(range)
+    suspend fun replaceAdminTierRanges(serviceId: Long, ranges: List<AdminTierRangeEntity>) = withContext(Dispatchers.IO) {
+        adminTierDao.deleteRangesForService(serviceId)
+        ranges.sortedBy { it.minAmount }.forEach { r ->
+            adminTierDao.insertRange(r.copy(id = 0L, serviceId = serviceId))
+        }
+    }
     suspend fun getTierRangesForService(serviceId: Long): List<AdminTierRangeEntity> = adminTierDao.getRangesList(serviceId)
+    suspend fun findMatchingAdminTierRange(serviceId: Long, nominal: Double): AdminTierRangeEntity? =
+        adminTierDao.findMatchingRange(serviceId, nominal)
+    suspend fun hasOverlappingAdminTierRange(
+        serviceId: Long,
+        excludeId: Long,
+        minAmount: Double,
+        maxAmount: Double
+    ): Boolean = adminTierDao.countOverlappingRanges(serviceId, excludeId, minAmount, maxAmount) > 0
 
     // Quantity Tier Pricing (harga_per_jumlah)
     fun getTierPricesForProduct(productId: Long): Flow<List<ProductTierPriceEntity>> = productDao.getTierPricesForProduct(productId)
