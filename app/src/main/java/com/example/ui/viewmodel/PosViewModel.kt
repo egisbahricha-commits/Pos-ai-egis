@@ -27,6 +27,7 @@ import com.example.firebase.SyncMode
 import com.example.whatsapp.WhatsAppCommandCenter
 import com.example.whatsapp.WhatsAppMessageResponse
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
@@ -96,8 +97,15 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val whatsAppCommandCenter = WhatsAppCommandCenter(repository, aiEngine)
 
     val firebaseSessionStore = FirebaseSessionStore(application)
-    val firebaseSyncRepository = FirebaseSyncRepository(application, database, firebaseSessionStore)
-    private val auth: FirebaseAuth = Firebase.auth
+    private val isFirebaseConfigured: Boolean = runCatching {
+        FirebaseApp.getApps(application).isNotEmpty() || FirebaseApp.initializeApp(application) != null
+    }.getOrDefault(false)
+    val firebaseSyncRepository: FirebaseSyncRepository? = if (isFirebaseConfigured) {
+        runCatching { FirebaseSyncRepository(application, database, firebaseSessionStore) }.getOrNull()
+    } else null
+    private val auth: FirebaseAuth? = if (isFirebaseConfigured) {
+        runCatching { Firebase.auth }.getOrNull()
+    } else null
 
     private val _authUiState = MutableStateFlow(
         FirebaseAuthUiState(
@@ -289,12 +297,23 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     _authUiState.update { it.copy(storeName = profile.name) }
                 }
 
-                auth.addAuthStateListener(authStateListener)
-                val currentUser = auth.currentUser
-                if (currentUser != null) {
-                    applyAuthenticatedUser(currentUser)
-                    startCloudListeners(currentUser.uid)
-                    syncNowWithFirebase(SyncMode.TWO_WAY, silent = true)
+                val activeAuth = auth
+                if (activeAuth != null) {
+                    activeAuth.addAuthStateListener(authStateListener)
+                    val currentUser = activeAuth.currentUser
+                    if (currentUser != null) {
+                        applyAuthenticatedUser(currentUser)
+                        startCloudListeners(currentUser.uid)
+                        syncNowWithFirebase(SyncMode.TWO_WAY, silent = true)
+                    } else if (firebaseSessionStore.isOfflineBypass()) {
+                        _authUiState.update {
+                            it.copy(
+                                hasEnteredApp = true,
+                                isOfflineMode = true,
+                                isCloudSignedIn = false
+                            )
+                        }
+                    }
                 } else if (firebaseSessionStore.isOfflineBypass()) {
                     _authUiState.update {
                         it.copy(
@@ -336,12 +355,13 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startCloudListeners(userId: String) {
+        val syncRepo = firebaseSyncRepository ?: return
         if (listeningUid == userId && cloudAccountsJob != null) return
         stopCloudListeners()
         listeningUid = userId
 
         cloudAccountsJob = viewModelScope.launch {
-            firebaseSyncRepository.observeCashAccounts(userId)
+            syncRepo.observeCashAccounts(userId)
                 .catch { /* logged by handler or ignored on tear-down */ }
                 .collect { accounts ->
                     _cloudCashAccounts.value = accounts
@@ -349,7 +369,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         cloudMutationsJob = viewModelScope.launch {
-            firebaseSyncRepository.observeCashMutations(userId)
+            syncRepo.observeCashMutations(userId)
                 .catch { /* logged by handler or ignored on tear-down */ }
                 .collect { mutations ->
                     _cloudCashMutations.value = mutations
@@ -369,7 +389,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        auth.removeAuthStateListener(authStateListener)
+        auth?.removeAuthStateListener(authStateListener)
         stopCloudListeners()
     }
 
@@ -397,8 +417,10 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         repository.saveStoreProfile(currentProfile.copy(name = trimmedStore))
                     }
                 }
+                val activeAuth = auth
+                    ?: throw IllegalStateException("Firebase belum terkonfigurasi di build APK ini. Gunakan Mode Offline.")
                 val credential = GoogleAuthProvider.getCredential(payload.idToken, null)
-                val authResult = auth.signInWithCredential(credential).await()
+                val authResult = activeAuth.signInWithCredential(credential).await()
                 val firebaseUser = authResult.user
                     ?: throw IllegalStateException("Akun Firebase tidak ditemukan setelah login Google.")
                 applyAuthenticatedUser(firebaseUser)
@@ -436,7 +458,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     fun logoutToLoginScreen() {
         viewModelScope.launch {
             stopCloudListeners()
-            auth.signOut()
+            auth?.signOut()
             firebaseSessionStore.setOfflineBypass(false)
             GoogleAuthHelper.clearCredentialState(getApplication())
             _currentScreen.value = Screen.DASHBOARD
@@ -464,10 +486,15 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         isInitialLoginPull: Boolean = false,
         silent: Boolean = false
     ) {
-        val currentUser = auth.currentUser
-        if (currentUser == null) {
+        val currentUser = auth?.currentUser
+        val syncRepo = firebaseSyncRepository
+        if (currentUser == null || syncRepo == null) {
             if (!silent) {
-                _userMessage.value = "Silakan login dengan akun Google (Firebase) untuk menyinkronkan data."
+                _userMessage.value = if (syncRepo == null) {
+                    "Sinkronisasi cloud belum aktif karena google-services.json belum terpasang di build APK ini."
+                } else {
+                    "Silakan login dengan akun Google (Firebase) untuk menyinkronkan data."
+                }
             }
             return
         }
@@ -477,7 +504,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             val ownerName = currentUser.displayName?.takeIf { it.isNotBlank() }
                 ?: _authUiState.value.fullName.ifBlank { "Pemilik Toko" }
             val ownerEmail = currentUser.email ?: _authUiState.value.userEmail
-            val result = firebaseSyncRepository.sync(
+            val result = syncRepo.sync(
                 userId = currentUser.uid,
                 ownerName = ownerName,
                 ownerEmail = ownerEmail,
@@ -512,7 +539,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun scheduleAutoSync() {
         val state = _authUiState.value
-        if (state.isCloudSignedIn && state.autoSyncEnabled && auth.currentUser != null && !state.isSyncing) {
+        if (state.isCloudSignedIn && state.autoSyncEnabled && auth?.currentUser != null && !state.isSyncing) {
             syncNowWithFirebase(SyncMode.TWO_WAY, silent = true)
         }
     }

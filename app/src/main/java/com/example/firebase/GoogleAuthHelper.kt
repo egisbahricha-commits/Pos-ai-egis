@@ -8,7 +8,6 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
-import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -25,7 +24,7 @@ object GoogleAuthHelper {
 
     suspend fun signInWithGoogle(activityContext: Context): Result<GoogleSignInPayload> = runCatching {
         val credentialManager = CredentialManager.create(activityContext)
-        val webClientId = activityContext.getString(R.string.default_web_client_id)
+        val webClientId = resolveWebClientId(activityContext)
 
         val googleOption = GetSignInWithGoogleOption.Builder(webClientId)
             .build()
@@ -66,7 +65,7 @@ object GoogleAuthHelper {
     suspend fun trySilentGoogleSignIn(activityContext: Context): GoogleSignInPayload? {
         return try {
             val credentialManager = CredentialManager.create(activityContext)
-            val webClientId = activityContext.getString(R.string.default_web_client_id)
+            val webClientId = resolveWebClientId(activityContext)
 
             val autoOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(true)
@@ -108,5 +107,18 @@ object GoogleAuthHelper {
             throw e
         } catch (_: Exception) {
         }
+    }
+
+    private fun resolveWebClientId(context: Context): String {
+        val resId = context.resources.getIdentifier(
+            "default_web_client_id",
+            "string",
+            context.packageName
+        )
+        val clientId = if (resId != 0) context.getString(resId).trim() else ""
+        check(clientId.isNotBlank()) {
+            "Konfigurasi google-services.json tidak ditemukan pada build APK ini. Gunakan Mode Offline atau tambahkan Secret GOOGLE_SERVICES_JSON di GitHub."
+        }
+        return clientId
     }
 }
