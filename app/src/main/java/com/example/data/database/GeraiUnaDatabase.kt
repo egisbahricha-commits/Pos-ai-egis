@@ -55,7 +55,7 @@ import java.security.MessageDigest
         ShiftCashMovementEntity::class,
         CloudSyncMappingEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class GeraiUnaDatabase : RoomDatabase() {
@@ -305,6 +305,12 @@ abstract class GeraiUnaDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE products ADD COLUMN imageUri TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getDatabase(context: Context): GeraiUnaDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -312,7 +318,7 @@ abstract class GeraiUnaDatabase : RoomDatabase() {
                     GeraiUnaDatabase::class.java,
                     "gerai_una_database.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .addCallback(DatabaseCallback())
                     .fallbackToDestructiveMigration()
                     .build()

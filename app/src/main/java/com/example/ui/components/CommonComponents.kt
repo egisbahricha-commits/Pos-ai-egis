@@ -17,17 +17,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -63,9 +66,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,6 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.entity.SaleEntity
+import com.example.data.entity.StoreProfileEntity
 import com.example.data.repository.CartItem
 import com.example.ui.theme.*
 import java.text.NumberFormat
@@ -633,11 +643,23 @@ fun KasGoSearchBar(
     onQueryChange: (String) -> Unit,
     placeholder: String = "Cari...",
     onBarcodeScanClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onBarcodeSubmit: ((String) -> Unit)? = null
 ) {
     OutlinedTextField(
         value = query,
-        onValueChange = onQueryChange,
+        onValueChange = { raw ->
+            if ((raw.contains('\n') || raw.contains('\r')) && onBarcodeSubmit != null) {
+                val cleaned = raw.replace("\r", "").replace("\n", "").trim()
+                if (cleaned.isNotEmpty()) {
+                    onBarcodeSubmit(cleaned)
+                } else {
+                    onQueryChange("")
+                }
+            } else {
+                onQueryChange(raw)
+            }
+        },
         placeholder = { Text(placeholder, style = MaterialTheme.typography.bodyMedium.copy(color = Slate400)) },
         leadingIcon = {
             Icon(Icons.Default.Search, contentDescription = "Cari", tint = Slate500)
@@ -654,12 +676,13 @@ fun KasGoSearchBar(
                         .size(34.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(SurfaceStrong)
-                        .clickable { onBarcodeScanClick() },
+                        .clickable { onBarcodeScanClick() }
+                        .testTag("search_barcode_scan_btn"),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.Default.QrCodeScanner,
-                        contentDescription = "Scan Barcode",
+                        contentDescription = "Scan Barcode (Kamera / Foto)",
                         tint = Slate700,
                         modifier = Modifier.size(19.dp)
                     )
@@ -667,14 +690,39 @@ fun KasGoSearchBar(
             }
         },
         singleLine = true,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(
+            onSearch = {
+                val cleaned = query.trim()
+                if (cleaned.isNotEmpty()) onBarcodeSubmit?.invoke(cleaned)
+            },
+            onDone = {
+                val cleaned = query.trim()
+                if (cleaned.isNotEmpty()) onBarcodeSubmit?.invoke(cleaned)
+            }
+        ),
         colors = OutlinedTextFieldDefaults.colors(
             focusedContainerColor = SurfaceWhite,
             unfocusedContainerColor = SurfaceWhite,
             focusedBorderColor = AccentBlue,
-            unfocusedBorderColor = BorderInput
+            unfocusedBorderColor = BorderInput,
+            focusedTextColor = Slate900,
+            unfocusedTextColor = Slate900
         ),
         shape = RoundedCornerShape(10.dp),
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier
+            .fillMaxWidth()
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyUp && keyEvent.key == Key.Enter && onBarcodeSubmit != null) {
+                    val cleaned = query.trim()
+                    if (cleaned.isNotEmpty()) {
+                        onBarcodeSubmit(cleaned)
+                        true
+                    } else false
+                } else {
+                    false
+                }
+            }
     )
 }
 
@@ -722,13 +770,20 @@ fun KasGoSectionHeader(
 fun ReceiptDialog(
     sale: SaleEntity,
     items: List<CartItem>,
+    storeProfile: StoreProfileEntity? = null,
     onDismiss: () -> Unit,
-    onShareWhatsApp: (receiptText: String) -> Unit
+    onShareWhatsApp: (receiptText: String) -> Unit,
+    onPrintReceipt: (() -> Unit)? = null
 ) {
-    val dateStr = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(sale.date))
+    val dateStr = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(Date(sale.date))
+    val storeTitle = storeProfile?.name?.ifBlank { "GERAI UNA SMART POS" } ?: "GERAI UNA SMART POS"
+    val storeSub = listOfNotNull(
+        storeProfile?.address?.takeIf { it.isNotBlank() },
+        storeProfile?.phone?.takeIf { it.isNotBlank() }?.let { "Telp: $it" }
+    ).joinToString(" • ")
 
     val receiptText = buildString {
-        append("🧾 *STRUK PEMBELIAN GERAI UNA*\n")
+        append("🧾 *STRUK PEMBELIAN ${storeTitle}*\n")
         append("Creator: Egis Bahricha\n")
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         append("No. Faktur: ${sale.invoiceNumber}\n")
@@ -739,27 +794,33 @@ fun ReceiptDialog(
         items.forEach { item ->
             append("${item.productName}\n")
             append("  ${item.quantity.toInt()} x Rp ${formatRupiah(item.unitPrice)} = Rp ${formatRupiah(item.quantity * item.unitPrice)}\n")
+            if (item.storeAdminFee > 0.0) {
+                append("  + Admin Layanan: Rp ${formatRupiah(item.storeAdminFee)}\n")
+            }
         }
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         append("Subtotal   : Rp ${formatRupiah(sale.subtotal)}\n")
-        if (sale.discount > 0) append("Diskon     : -Rp ${formatRupiah(sale.discount)}\n")
+        if (sale.storeAdminFee > 0) append("Admin Jasa : +Rp ${formatRupiah(sale.storeAdminFee)}\n")
+        if (sale.discount + sale.promoDiscount > 0) append("Diskon     : -Rp ${formatRupiah(sale.discount + sale.promoDiscount)}\n")
         if (sale.tax > 0) append("Pajak      : +Rp ${formatRupiah(sale.tax)}\n")
         append("*TOTAL     : Rp ${formatRupiah(sale.finalAmount)}*\n")
         append("Metode     : ${sale.paymentMethod}\n")
-        if (sale.paymentMethod == "TUNAI") {
+        if (sale.paymentMethod == "TUNAI" || sale.paymentMethod == "SPLIT") {
             append("Bayar      : Rp ${formatRupiah(sale.amountPaid)}\n")
             append("Kembalian  : Rp ${formatRupiah(sale.changeAmount)}\n")
         }
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-        append("Terima kasih telah berbelanja di Gerai Una!\n")
+        append("${storeProfile?.receiptFooter?.ifBlank { "Terima kasih telah berbelanja di Gerai Una!" } ?: "Terima kasih telah berbelanja di Gerai Una!"}\n")
     }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(18.dp),
             color = SurfaceWhite,
             tonalElevation = 6.dp,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("post_payment_receipt_dialog")
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
                 Row(
@@ -767,25 +828,45 @@ fun ReceiptDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "Struk Transaksi",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(Emerald100),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Emerald700, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = if (sale.status == "PRE_ORDER") "Pre-Order Disimpan" else "Pembayaran Berhasil!",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                            )
+                            Text(
+                                text = "Pilih cetak struk, kirim WA, atau selesai",
+                                style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
+                            )
+                        }
+                    }
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "Tutup", tint = Slate400)
                     }
                 }
 
-                // Thermal Monospace Receipt Ticket (Matches Design System Screenshot)
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Thermal Monospace Receipt Ticket
                 Surface(
                     color = Slate50,
                     shape = RoundedCornerShape(10.dp),
                     border = BorderStroke(1.dp, BorderDefault),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
+                    Column(modifier = Modifier.padding(14.dp)) {
                         Text(
-                            "GERAI UNA SMART POS",
+                            storeTitle,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
@@ -793,6 +874,16 @@ fun ReceiptDialog(
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        if (storeSub.isNotBlank()) {
+                            Text(
+                                storeSub,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                color = Slate500,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                         Text(
                             "${sale.invoiceNumber} • $dateStr",
                             fontFamily = FontFamily.Monospace,
@@ -837,6 +928,15 @@ fun ReceiptDialog(
                                     color = Slate900
                                 )
                             }
+                            if (item.storeAdminFee > 0.0) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("  + Admin Layanan", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Slate600)
+                                    Text(formatRupiah(item.storeAdminFee), fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Slate600)
+                                }
+                            }
                         }
 
                         Text(
@@ -851,24 +951,24 @@ fun ReceiptDialog(
                                 .padding(vertical = 4.dp)
                         )
 
-                        if (sale.discount > 0) {
+                        if (sale.discount + sale.promoDiscount > 0) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Diskon", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Rose500)
-                                Text("-${formatRupiah(sale.discount)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Rose500)
+                                Text("-${formatRupiah(sale.discount + sale.promoDiscount)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Rose500)
                             }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Total", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
-                            Text(formatRupiah(sale.finalAmount), fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
+                            Text("TOTAL", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
+                            Text("Rp ${formatRupiah(sale.finalAmount)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
                         }
                         if (sale.paymentMethod == "TUNAI" || sale.paymentMethod == "SPLIT") {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Bayar", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
-                                Text(formatRupiah(sale.amountPaid), fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                                Text("Rp ${formatRupiah(sale.amountPaid)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
                             }
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Kembali", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
-                                Text(formatRupiah(sale.changeAmount), fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                                Text("Kembalian", fontFamily = FontFamily.Monospace, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Emerald700)
+                                Text("Rp ${formatRupiah(sale.changeAmount)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Emerald700)
                             }
                         } else {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -879,29 +979,51 @@ fun ReceiptDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        border = BorderStroke(1.dp, BorderInput),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Tutup", color = Slate700, fontWeight = FontWeight.SemiBold)
+                    if (onPrintReceipt != null) {
+                        OutlinedButton(
+                            onClick = onPrintReceipt,
+                            border = BorderStroke(1.dp, AccentBlue),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("print_receipt_button")
+                        ) {
+                            Icon(Icons.Default.Print, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Cetak Struk", color = AccentBlue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                     Button(
                         onClick = { onShareWhatsApp(receiptText) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Emerald700),
+                        colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
-                            .weight(1.5f)
+                            .weight(1f)
                             .testTag("share_whatsapp_receipt_button")
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Kirim WhatsApp", fontWeight = FontWeight.Bold)
+                        Text("Kirim WA", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .testTag("finish_receipt_button")
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Selesai & Transaksi Baru", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -1083,9 +1205,10 @@ fun BarcodeSearchBar(
     onQueryChange: (String) -> Unit,
     placeholder: String = "Cari produk atau scan barcode...",
     onBarcodeScanClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onBarcodeSubmit: ((String) -> Unit)? = null
 ) {
-    KasGoSearchBar(query, onQueryChange, placeholder, onBarcodeScanClick, modifier)
+    KasGoSearchBar(query, onQueryChange, placeholder, onBarcodeScanClick, modifier, onBarcodeSubmit)
 }
 
 fun formatRupiah(amount: Double): String {

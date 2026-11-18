@@ -64,10 +64,18 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PriceCheck
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.AdminTierRangeEntity
@@ -84,12 +92,15 @@ import com.example.data.entity.UnitConversionEntity
 import com.example.data.entity.WholesaleTierEntity
 import com.example.data.pricing.TierPricingResolver
 import com.example.ui.components.BadgeType
+import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.BarcodeSearchBar
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
+import com.example.ui.components.ProductThumbnail
+import com.example.ui.components.copyUriToInternalProductImage
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -117,6 +128,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
     var productToEdit by remember { mutableStateOf<ProductEntity?>(null) }
     var productToDelete by remember { mutableStateOf<ProductEntity?>(null) }
     var showTierManagerDialog by remember { mutableStateOf(false) }
+    var showSearchScanner by remember { mutableStateOf(false) }
 
     var showAddBundleDialog by remember { mutableStateOf(false) }
     var showAddPromoDialog by remember { mutableStateOf(false) }
@@ -195,10 +207,8 @@ fun ProductsScreen(viewModel: PosViewModel) {
                         query = searchQuery,
                         onQueryChange = { searchQuery = it },
                         placeholder = "Cari nama produk atau barcode...",
-                        onBarcodeScanClick = {
-                            val p = products.firstOrNull()
-                            if (p != null) searchQuery = p.barcode
-                        }
+                        onBarcodeScanClick = { showSearchScanner = true },
+                        onBarcodeSubmit = { searchQuery = it }
                     )
 
                     DesignSegmentedTabs(
@@ -454,20 +464,14 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(42.dp)
-                                                    .clip(RoundedCornerShape(10.dp))
-                                                    .background(if (isDigital) AccentBlueSoft else SurfaceStrong),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    if (isDigital) Icons.Default.PhoneAndroid else Icons.Default.Inventory2,
-                                                    contentDescription = null,
-                                                    tint = if (isDigital) AccentBlue else Slate600,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
+                                            ProductThumbnail(
+                                                imageUri = product.imageUri,
+                                                contentDescription = product.name,
+                                                isDigital = isDigital,
+                                                size = 46.dp,
+                                                shape = RoundedCornerShape(10.dp),
+                                                iconSize = 22.dp
+                                            )
 
                                             Spacer(modifier = Modifier.width(12.dp))
 
@@ -513,7 +517,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                                     }
                                                     Text(
                                                         text = if (product.isFlexiblePrice) "Harga fleksibel" else "Rp ${formatRupiah(product.sellingPrice)} / ${product.baseUnit}",
-                                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular()
                                                     )
                                                 }
                                                 if (product.specialPrice != null && product.specialPrice > 0) {
@@ -811,6 +815,17 @@ fun ProductsScreen(viewModel: PosViewModel) {
             }
         }
     }
+
+    if (showSearchScanner) {
+        BarcodeScannerDialog(
+            title = "Cari Produk via Barcode",
+            onBarcodeDetected = { code ->
+                showSearchScanner = false
+                searchQuery = code
+            },
+            onDismiss = { showSearchScanner = false }
+        )
+    }
 }
 
 private data class TierRowDraft(val qtyText: String, val totalPriceText: String)
@@ -846,10 +861,25 @@ fun AddEditProductDialog(
         List<AdminTierRangeEntity>?
     ) -> Unit
 ) {
+    val context = LocalContext.current
     var name by remember { mutableStateOf(product?.name ?: "") }
     var nameError by remember { mutableStateOf(false) }
     var barcode by remember { mutableStateOf(product?.barcode ?: "") }
     var autoBarcode by remember { mutableStateOf(product?.autoBarcode ?: false) }
+    var imageUri by remember(product?.id) { mutableStateOf(product?.imageUri ?: "") }
+    var showBarcodeScanner by remember { mutableStateOf(false) }
+    var expandedTierIdx by remember(product?.id) { mutableStateOf<Int?>(0) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { pickedUri ->
+        if (pickedUri != null) {
+            copyUriToInternalProductImage(context, pickedUri)?.let { savedPath ->
+                imageUri = savedPath
+            }
+        }
+    }
+
     var category by remember { mutableStateOf(product?.category ?: if (defaultDigital) "Layanan Digital" else "Makanan & Minuman") }
     var baseUnit by remember { mutableStateOf(product?.baseUnit ?: if (defaultDigital) "transaksi" else "pcs") }
     var purchasePriceText by remember { mutableStateOf(product?.purchasePrice?.let { "${it.toLong()}" } ?: "") }
@@ -993,6 +1023,72 @@ fun AddEditProductDialog(
                         selectedKey = if (isDigitalProduct) "DIGITAL" else "FISIK",
                         onSelect = { isDigitalProduct = (it == "DIGITAL") }
                     )
+                }
+
+                // Product Photo Picker Row (Fisik & Digital)
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = BgCanvas,
+                        border = BorderStroke(1.dp, BorderDefault),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            ProductThumbnail(
+                                imageUri = imageUri,
+                                contentDescription = name.ifBlank { "Foto Produk" },
+                                isDigital = isDigitalProduct,
+                                size = 56.dp,
+                                shape = RoundedCornerShape(10.dp),
+                                iconSize = 26.dp
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Foto Produk (${if (isDigitalProduct) "Digital" else "Fisik"})",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                )
+                                Text(
+                                    text = if (imageUri.isBlank()) "Opsional • Tampil di kasir & daftar produk" else "Foto siap ditampilkan",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            photoPickerLauncher.launch(
+                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, AccentBlue),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.testTag("product_pick_photo_btn")
+                                    ) {
+                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (imageUri.isBlank()) "Pilih Foto" else "Ganti Foto",
+                                            color = AccentBlue,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    if (imageUri.isNotBlank()) {
+                                        TextButton(
+                                            onClick = { imageUri = "" },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Hapus", color = Rose500, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 item {
@@ -1189,10 +1285,15 @@ fun AddEditProductDialog(
 
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             digitalTierRows.forEachIndexed { idx, row ->
+                                val isExpanded = expandedTierIdx == idx
+                                val minLabel = row.minText.toDoubleOrNull()?.let { "Rp ${formatRupiah(it)}" } ?: "Rp 0"
+                                val maxLabel = row.maxText.toDoubleOrNull()?.takeIf { it > 0.0 }?.let { "Rp ${formatRupiah(it)}" } ?: "∞"
+                                val feeLabel = row.storeFeeText.toDoubleOrNull()?.let { "Rp ${formatRupiah(it)}" } ?: "Rp 0"
+
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
                                     color = BgCanvas,
-                                    border = BorderStroke(1.dp, BorderDefault),
+                                    border = BorderStroke(1.dp, if (isExpanded) AccentBlue.copy(alpha = 0.6f) else BorderDefault),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(
@@ -1200,98 +1301,119 @@ fun AddEditProductDialog(
                                         verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { expandedTierIdx = if (isExpanded) null else idx },
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                "Biaya Admin #${idx + 1}",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Slate800)
-                                            )
-                                            IconButton(
-                                                onClick = {
-                                                    digitalTierModified = true
-                                                    digitalTierRows.removeAt(idx)
-                                                },
-                                                modifier = Modifier
-                                                    .size(32.dp)
-                                                    .testTag("product_digital_remove_tier_$idx")
-                                            ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    "Tingkat #${idx + 1}: $minLabel – $maxLabel",
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular(),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    "Admin Toko $feeLabel",
+                                                    style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 11.sp).tabular()
+                                                )
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                IconButton(
+                                                    onClick = {
+                                                        digitalTierModified = true
+                                                        digitalTierRows.removeAt(idx)
+                                                        if (expandedTierIdx == idx) expandedTierIdx = null
+                                                    },
+                                                    modifier = Modifier
+                                                        .size(32.dp)
+                                                        .testTag("product_digital_remove_tier_$idx")
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.DeleteOutline,
+                                                        contentDescription = "Kurangi / Hapus Biaya Admin",
+                                                        tint = Rose500,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
                                                 Icon(
-                                                    Icons.Default.DeleteOutline,
-                                                    contentDescription = "Kurangi / Hapus Biaya Admin",
-                                                    tint = Rose500,
-                                                    modifier = Modifier.size(18.dp)
+                                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                    contentDescription = if (isExpanded) "Tutup rincian" else "Edit rincian",
+                                                    tint = Slate500,
+                                                    modifier = Modifier.size(20.dp)
                                                 )
                                             }
                                         }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            DesignLabeledTextField(
-                                                label = "Dari",
-                                                value = row.minText,
-                                                onValueChange = { v ->
-                                                    digitalTierModified = true
-                                                    digitalTierRows[idx] = row.copy(minText = v.filter { it.isDigit() })
-                                                },
-                                                prefixText = "Rp ",
-                                                placeholder = "1",
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            DesignLabeledTextField(
-                                                label = "Sampai",
-                                                value = row.maxText,
-                                                onValueChange = { v ->
-                                                    digitalTierModified = true
-                                                    digitalTierRows[idx] = row.copy(maxText = v.filter { it.isDigit() })
-                                                },
-                                                prefixText = "Rp ",
-                                                placeholder = "Seterusnya",
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            DesignLabeledTextField(
-                                                label = "Biaya Admin",
-                                                value = row.storeFeeText,
-                                                onValueChange = { v ->
-                                                    digitalTierModified = true
-                                                    digitalTierRows[idx] = row.copy(storeFeeText = v.filter { it.isDigit() })
-                                                },
-                                                prefixText = "Rp ",
-                                                placeholder = "5000",
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                modifier = Modifier.weight(1.2f)
-                                            )
-                                            DesignLabeledTextField(
-                                                label = "Penyedia",
-                                                value = row.providerFeeText,
-                                                onValueChange = { v ->
-                                                    digitalTierModified = true
-                                                    digitalTierRows[idx] = row.copy(providerFeeText = v.filter { it.isDigit() })
-                                                },
-                                                prefixText = "Rp ",
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            DesignLabeledTextField(
-                                                label = "Fee Agen",
-                                                value = row.agentFeeText,
-                                                onValueChange = { v ->
-                                                    digitalTierModified = true
-                                                    digitalTierRows[idx] = row.copy(agentFeeText = v.filter { it.isDigit() })
-                                                },
-                                                prefixText = "Rp ",
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                modifier = Modifier.weight(0.9f)
-                                            )
+                                        if (isExpanded) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                DesignLabeledTextField(
+                                                    label = "Dari",
+                                                    value = row.minText,
+                                                    onValueChange = { v ->
+                                                        digitalTierModified = true
+                                                        digitalTierRows[idx] = row.copy(minText = v.filter { it.isDigit() })
+                                                    },
+                                                    prefixText = "Rp ",
+                                                    placeholder = "1",
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                DesignLabeledTextField(
+                                                    label = "Sampai",
+                                                    value = row.maxText,
+                                                    onValueChange = { v ->
+                                                        digitalTierModified = true
+                                                        digitalTierRows[idx] = row.copy(maxText = v.filter { it.isDigit() })
+                                                    },
+                                                    prefixText = "Rp ",
+                                                    placeholder = "Seterusnya",
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                DesignLabeledTextField(
+                                                    label = "Biaya Admin",
+                                                    value = row.storeFeeText,
+                                                    onValueChange = { v ->
+                                                        digitalTierModified = true
+                                                        digitalTierRows[idx] = row.copy(storeFeeText = v.filter { it.isDigit() })
+                                                    },
+                                                    prefixText = "Rp ",
+                                                    placeholder = "5000",
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    modifier = Modifier.weight(1.2f)
+                                                )
+                                                DesignLabeledTextField(
+                                                    label = "Penyedia",
+                                                    value = row.providerFeeText,
+                                                    onValueChange = { v ->
+                                                        digitalTierModified = true
+                                                        digitalTierRows[idx] = row.copy(providerFeeText = v.filter { it.isDigit() })
+                                                    },
+                                                    prefixText = "Rp ",
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                DesignLabeledTextField(
+                                                    label = "Fee Agen",
+                                                    value = row.agentFeeText,
+                                                    onValueChange = { v ->
+                                                        digitalTierModified = true
+                                                        digitalTierRows[idx] = row.copy(agentFeeText = v.filter { it.isDigit() })
+                                                    },
+                                                    prefixText = "Rp ",
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    modifier = Modifier.weight(0.9f)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1332,6 +1454,7 @@ fun AddEditProductDialog(
                                             )
                                         )
                                     }
+                                    expandedTierIdx = digitalTierRows.lastIndex
                                 },
                                 border = BorderStroke(1.dp, AccentBlue.copy(alpha = 0.45f)),
                                 colors = ButtonDefaults.outlinedButtonColors(containerColor = Sapphire50, contentColor = AccentBlue),
@@ -1483,16 +1606,29 @@ fun AddEditProductDialog(
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.Bottom
                     ) {
                         DesignLabeledTextField(
                             label = "Barcode / SKU",
                             value = barcode,
                             onValueChange = { barcode = it },
-                            placeholder = "Opsional",
+                            placeholder = "Scan atau ketik kode",
                             modifier = Modifier.weight(1f)
                         )
+                        OutlinedButton(
+                            onClick = { showBarcodeScanner = true },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AccentBlue),
+                            contentPadding = PaddingValues(horizontal = 10.dp),
+                            modifier = Modifier
+                                .height(50.dp)
+                                .testTag("product_dialog_scan_barcode_btn")
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Scan", fontSize = 12.sp, color = AccentBlue, fontWeight = FontWeight.Bold)
+                        }
                         OutlinedButton(
                             onClick = {
                                 barcode = onGenerateBarcode()
@@ -1500,6 +1636,7 @@ fun AddEditProductDialog(
                             },
                             shape = RoundedCornerShape(10.dp),
                             border = BorderStroke(1.dp, BorderInput),
+                            contentPadding = PaddingValues(horizontal = 10.dp),
                             modifier = Modifier.height(50.dp)
                         ) {
                             Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1716,6 +1853,7 @@ fun AddEditProductDialog(
                                         autoBarcode = autoBarcode,
                                         specialPrice = specialPriceText.toDoubleOrNull(),
                                         strikePrice = strikePriceText.toDoubleOrNull(),
+                                        imageUri = imageUri,
                                         adminTierGroupId = if (isDigitalProduct) selectedTierGroupId else null,
                                         serviceCashAccountId = if (isDigitalProduct) selectedServiceCashId else null,
                                         serviceDirection = if (isDigitalProduct) serviceDirection else "SETOR"
@@ -1774,6 +1912,18 @@ fun AddEditProductDialog(
                 }
             }
         }
+    }
+
+    if (showBarcodeScanner) {
+        BarcodeScannerDialog(
+            title = "Scan Barcode Produk",
+            onBarcodeDetected = { code ->
+                barcode = code
+                autoBarcode = false
+                showBarcodeScanner = false
+            },
+            onDismiss = { showBarcodeScanner = false }
+        )
     }
 }
 

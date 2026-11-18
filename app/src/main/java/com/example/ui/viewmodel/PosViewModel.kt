@@ -1,11 +1,16 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AIIntent
 import com.example.ai.AIParseResult
 import com.example.ai.GeraiUnaAIEngine
+import com.example.data.backup.KasGoBackupImporter
+import com.example.data.backup.KasGoImportOptions
+import com.example.data.backup.KasGoImportSummary
+import com.example.data.backup.KasGoInspectResult
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.*
 import com.example.data.repository.CartItem
@@ -73,6 +78,14 @@ data class ChatMessage(
     val draftResult: AIParseResult? = null,
     val isActionPending: Boolean = false,
     val isActionResolved: Boolean = false
+)
+
+data class KasGoImportUiState(
+    val isInspecting: Boolean = false,
+    val isImporting: Boolean = false,
+    val inspectResult: KasGoInspectResult? = null,
+    val lastImportSummary: KasGoImportSummary? = null,
+    val errorMessage: String? = null
 )
 
 class PosViewModel(application: Application) : AndroidViewModel(application) {
@@ -149,6 +162,26 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _activeUserId = MutableStateFlow(1L)
     val activeUserId: StateFlow<Long> = _activeUserId.asStateFlow()
+
+    private val _themeMode = MutableStateFlow("SYSTEM") // "SYSTEM", "LIGHT", "DARK"
+    val themeMode: StateFlow<String> = _themeMode.asStateFlow()
+
+    fun setThemeMode(mode: String) {
+        val normalized = when (mode.uppercase()) {
+            "DARK", "LIGHT" -> mode.uppercase()
+            else -> "SYSTEM"
+        }
+        _themeMode.value = normalized
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.setSetting("theme_mode", normalized)
+        }
+        val label = when (normalized) {
+            "DARK" -> "Mode Gelap"
+            "LIGHT" -> "Mode Terang"
+            else -> "Ikuti Sistem"
+        }
+        _userMessage.value = "Tema diubah ke $label"
+    }
 
     fun switchRole(role: String, userName: String) {
         _activeRole.value = role
@@ -246,6 +279,10 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 val profile = database.extendedPosDao().getStoreProfileSync()
                 if (profile != null && profile.ppnBp > 0) {
                     _cartTaxRate.value = profile.ppnBp / 10000.0
+                }
+                val savedTheme = repository.getSetting("theme_mode")
+                if (!savedTheme.isNullOrBlank()) {
+                    _themeMode.value = savedTheme
                 }
                 if (profile != null && profile.name.isNotBlank()) {
                     firebaseSessionStore.setStoreNameHint(profile.name)
@@ -1691,6 +1728,57 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 _userMessage.value = "Gagal reset: ${e.message}"
             }
+        }
+    }
+
+    // --- Import Backup KasGo (.kasgo) ---
+    private val _kasGoImportState = MutableStateFlow(KasGoImportUiState())
+    val kasGoImportState: StateFlow<KasGoImportUiState> = _kasGoImportState.asStateFlow()
+
+    fun inspectKasGoBackupUri(uri: Uri) {
+        viewModelScope.launch {
+            _kasGoImportState.update {
+                it.copy(isInspecting = true, inspectResult = null, errorMessage = null)
+            }
+            val res = KasGoBackupImporter.inspectBackup(getApplication(), uri)
+            if (res.isValid) {
+                _kasGoImportState.update {
+                    it.copy(isInspecting = false, inspectResult = res, errorMessage = null)
+                }
+            } else {
+                _kasGoImportState.update {
+                    it.copy(isInspecting = false, inspectResult = null, errorMessage = res.errorMessage ?: "Gagal membaca file .kasgo")
+                }
+            }
+        }
+    }
+
+    fun confirmKasGoImport(options: KasGoImportOptions) {
+        val currentInspect = _kasGoImportState.value.inspectResult ?: return
+        viewModelScope.launch {
+            _kasGoImportState.update { it.copy(isImporting = true, errorMessage = null) }
+            try {
+                val summary = KasGoBackupImporter.importBackup(
+                    context = getApplication(),
+                    db = database,
+                    inspectResult = currentInspect,
+                    options = options
+                )
+                _kasGoImportState.value = KasGoImportUiState(lastImportSummary = summary)
+                _userMessage.value = "Import .kasgo berhasil: ${summary.productsImported} produk, ${summary.salesImported} transaksi, ${summary.photosCopied} foto!"
+                scheduleAutoSync()
+            } catch (e: Exception) {
+                _kasGoImportState.update {
+                    it.copy(isImporting = false, errorMessage = "Gagal mengimpor backup: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun dismissKasGoImportPreview() {
+        _kasGoImportState.value.inspectResult?.let { KasGoBackupImporter.cleanupTemp(it) }
+        _kasGoImportState.update {
+            it.copy(isInspecting = false, isImporting = false, inspectResult = null, errorMessage = null)
         }
     }
 

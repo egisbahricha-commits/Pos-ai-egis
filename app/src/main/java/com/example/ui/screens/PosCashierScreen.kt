@@ -101,12 +101,14 @@ import com.example.data.entity.UnitConversionEntity
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
 import com.example.ui.components.BadgeType
+import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.KasGoSearchBar
+import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -141,6 +143,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var selectedProductType by remember { mutableStateOf("SEMUA") } // SEMUA, FISIK, DIGITAL, PAKET
+    var showBarcodeScanner by remember { mutableStateOf(false) }
 
     var isCartSheetOpen by remember { mutableStateOf(false) }
     var isPaymentModalOpen by remember { mutableStateOf(false) }
@@ -154,6 +157,59 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     var isCloseShiftDialogOpen by remember { mutableStateOf(false) }
     var isShiftCashDialogOpen by remember { mutableStateOf(false) }
     var flexiblePriceProduct by remember { mutableStateOf<ProductEntity?>(null) }
+
+    val productImageMap = remember(products) { products.associate { it.id to it.imageUri } }
+    val cashAccountNameMap = remember(cashAccounts) { cashAccounts.associate { it.id to it.accountName } }
+
+    fun handleProductClick(
+        prod: ProductEntity,
+        conversions: List<UnitConversionEntity>,
+        variants: List<ProductVariantEntity>
+    ) {
+        when {
+            prod.hasVariants && variants.isNotEmpty() -> selectedProductForVariant = prod
+            prod.isFlexiblePrice -> flexiblePriceProduct = prod
+            conversions.isNotEmpty() -> selectedProductForUnit = prod
+            prod.productType == "DIGITAL" && prod.adminTierGroupId != null -> {
+                val tierSvc = adminTiers.find { it.service.id == prod.adminTierGroupId }
+                val calc = TierPricingResolver.calculate(tierSvc, prod.sellingPrice)
+                viewModel.addToCart(
+                    product = prod,
+                    storeAdminFee = calc.storeAdminFee,
+                    providerAdminFee = calc.providerAdminFee,
+                    agentCommission = calc.agentCommission
+                )
+            }
+            else -> viewModel.addToCart(prod)
+        }
+    }
+
+    fun handleBarcodeScanned(rawCode: String) {
+        val code = rawCode.trim()
+        if (code.isEmpty()) return
+        val matchedVariant = productVariants.firstOrNull {
+            it.isActive && it.barcode.isNotBlank() && it.barcode.equals(code, ignoreCase = true)
+        }
+        if (matchedVariant != null) {
+            val parentProd = products.firstOrNull { it.id == matchedVariant.productId && it.isActive }
+            if (parentProd != null) {
+                viewModel.addToCart(parentProd, variant = matchedVariant)
+                searchQuery = ""
+                return
+            }
+        }
+        val matchedProd = products.firstOrNull {
+            it.isActive && it.barcode.isNotBlank() && it.barcode.equals(code, ignoreCase = true)
+        }
+        if (matchedProd != null) {
+            val convs = unitConversions.filter { it.productId == matchedProd.id }
+            val vars = productVariants.filter { it.productId == matchedProd.id && it.isActive }
+            handleProductClick(matchedProd, convs, vars)
+            searchQuery = ""
+        } else {
+            searchQuery = code
+        }
+    }
 
     val filteredProducts = remember(products, searchQuery, selectedCategory, selectedProductType) {
         if (selectedProductType == "PAKET") emptyList()
@@ -224,10 +280,8 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                             query = searchQuery,
                             onQueryChange = { searchQuery = it },
                             placeholder = "Cari produk atau scan barcode...",
-                            onBarcodeScanClick = {
-                                val p = products.firstOrNull()
-                                if (p != null) searchQuery = p.barcode
-                            }
+                            onBarcodeScanClick = { showBarcodeScanner = true },
+                            onBarcodeSubmit = { handleBarcodeScanned(it) }
                         )
 
                         ProductTypePillsRow(
@@ -250,24 +304,10 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         cart = cart,
                         unitConversions = unitConversions,
                         adminTiers = adminTiers,
+                        cashAccountNameMap = cashAccountNameMap,
                         onBundleClick = { viewModel.addBundleToCart(it) },
                         onProductClick = { prod, conversions, variants ->
-                            when {
-                                prod.hasVariants && variants.isNotEmpty() -> selectedProductForVariant = prod
-                                prod.isFlexiblePrice -> flexiblePriceProduct = prod
-                                conversions.isNotEmpty() -> selectedProductForUnit = prod
-                                prod.productType == "DIGITAL" && prod.adminTierGroupId != null -> {
-                                    val tierSvc = adminTiers.find { it.service.id == prod.adminTierGroupId }
-                                    val calc = TierPricingResolver.calculate(tierSvc, prod.sellingPrice)
-                                    viewModel.addToCart(
-                                        product = prod,
-                                        storeAdminFee = calc.storeAdminFee,
-                                        providerAdminFee = calc.providerAdminFee,
-                                        agentCommission = calc.agentCommission
-                                    )
-                                }
-                                else -> viewModel.addToCart(prod)
-                            }
+                            handleProductClick(prod, conversions, variants)
                         },
                         modifier = Modifier.weight(1f)
                     )
@@ -290,6 +330,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                 ) {
                     KasGoOrderCartPanel(
                         cart = cart,
+                        productImages = productImageMap,
                         decimalProductIds = decimalProductIds,
                         allTierPrices = allProductTierPrices,
                         selectedCustomer = selectedCustomer,
@@ -329,11 +370,9 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                     KasGoSearchBar(
                         query = searchQuery,
                         onQueryChange = { searchQuery = it },
-                        placeholder = "Cari produk atau barcode...",
-                        onBarcodeScanClick = {
-                            val p = products.firstOrNull()
-                            if (p != null) searchQuery = p.barcode
-                        }
+                        placeholder = "Cari produk atau scan barcode...",
+                        onBarcodeScanClick = { showBarcodeScanner = true },
+                        onBarcodeSubmit = { handleBarcodeScanned(it) }
                     )
 
                     ProductTypePillsRow(
@@ -357,33 +396,21 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         cart = cart,
                         unitConversions = unitConversions,
                         adminTiers = adminTiers,
+                        cashAccountNameMap = cashAccountNameMap,
                         onBundleClick = { viewModel.addBundleToCart(it) },
                         onProductClick = { prod, conversions, variants ->
-                            when {
-                                prod.hasVariants && variants.isNotEmpty() -> selectedProductForVariant = prod
-                                prod.isFlexiblePrice -> flexiblePriceProduct = prod
-                                conversions.isNotEmpty() -> selectedProductForUnit = prod
-                                prod.productType == "DIGITAL" && prod.adminTierGroupId != null -> {
-                                    val tierSvc = adminTiers.find { it.service.id == prod.adminTierGroupId }
-                                    val calc = TierPricingResolver.calculate(tierSvc, prod.sellingPrice)
-                                    viewModel.addToCart(
-                                        product = prod,
-                                        storeAdminFee = calc.storeAdminFee,
-                                        providerAdminFee = calc.providerAdminFee,
-                                        agentCommission = calc.agentCommission
-                                    )
-                                }
-                                else -> viewModel.addToCart(prod)
-                            }
+                            handleProductClick(prod, conversions, variants)
                         },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
 
-                // Phone Sticky Bottom Bar
+                // Phone Elevated Sticky Floating Cart Bar
                 Surface(
-                    color = SurfaceWhite,
-                    border = BorderStroke(1.dp, BorderDefault),
+                    color = if (cart.isNotEmpty()) Sapphire900 else SurfaceWhite,
+                    shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+                    shadowElevation = 8.dp,
+                    border = BorderStroke(1.dp, if (cart.isNotEmpty()) ModuleKasir.copy(alpha = 0.45f) else BorderDefault),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -403,25 +430,36 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                                 BadgedBox(
                                     badge = {
                                         if (cart.isNotEmpty()) {
-                                            Badge(containerColor = AccentBlue, contentColor = Color.White) {
+                                            Badge(containerColor = ModuleKasir, contentColor = Color.White) {
                                                 Text("${cart.sumOf { it.quantity.toInt() }}", fontWeight = FontWeight.Bold)
                                             }
                                         }
                                     }
                                 ) {
-                                    Icon(Icons.Default.ShoppingCart, contentDescription = null, tint = AccentBlue)
+                                    Icon(
+                                        Icons.Default.ShoppingCart,
+                                        contentDescription = "Lihat Keranjang",
+                                        tint = if (cart.isNotEmpty()) Color.White else AccentBlue
+                                    )
                                 }
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
                                 Text(
                                     "Rp ${formatRupiah(cartFinalTotal)}",
-                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (cart.isNotEmpty()) Color.White else Slate900
+                                    ).tabular()
                                 )
                             }
                             Text(
-                                if (cart.isEmpty()) {
+                                text = if (cart.isEmpty()) {
                                     if (pendingSales.isNotEmpty()) "${pendingSales.size} transaksi tertahan" else "Keranjang kosong • Ketuk lihat"
-                                } else "${cart.size} item • Lihat keranjang",
-                                style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
+                                } else {
+                                    "${cart.size} item • Ketuk rincian keranjang"
+                                },
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = if (cart.isNotEmpty()) Color.White.copy(alpha = 0.78f) else Slate500
+                                )
                             )
                         }
 
@@ -443,13 +481,14 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                                     else isCartSheetOpen = true
                                 },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = AccentBlue,
+                                    containerColor = if (cart.isNotEmpty()) ModuleKasir else AccentBlue,
                                     contentColor = Color.White,
                                     disabledContainerColor = DisabledBg,
                                     disabledContentColor = DisabledText
                                 ),
-                                shape = RoundedCornerShape(10.dp),
+                                shape = RoundedCornerShape(12.dp),
                                 enabled = cart.isNotEmpty(),
+                                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
                                 modifier = Modifier.testTag("pos_pay_button")
                             ) {
                                 Text("Bayar", fontWeight = FontWeight.Bold)
@@ -459,6 +498,17 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                 }
             }
         }
+    }
+
+    if (showBarcodeScanner) {
+        BarcodeScannerDialog(
+            title = "Scan Barcode Kasir",
+            onBarcodeDetected = { code ->
+                showBarcodeScanner = false
+                handleBarcodeScanned(code)
+            },
+            onDismiss = { showBarcodeScanner = false }
+        )
     }
 
     // Modal Bottom Sheet: Full Cart Details (on Phone)
@@ -475,6 +525,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
             ) {
                 KasGoOrderCartPanel(
                     cart = cart,
+                    productImages = productImageMap,
                     decimalProductIds = decimalProductIds,
                     allTierPrices = allProductTierPrices,
                     selectedCustomer = selectedCustomer,
@@ -556,7 +607,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
         val prod = selectedProductForVariant!!
         val variants = productVariants.filter { it.productId == prod.id && it.isActive }
         Dialog(onDismissRequest = { selectedProductForVariant = null }) {
-            Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                 Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Pilih Varian: ${prod.name}", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800))
                     variants.forEach { v ->
@@ -885,6 +936,7 @@ fun ProductCatalogGrid(
     cart: List<CartItem>,
     unitConversions: List<UnitConversionEntity>,
     adminTiers: List<AdminTierWithRanges> = emptyList(),
+    cashAccountNameMap: Map<Long, String> = emptyMap(),
     onBundleClick: (BundlePackageEntity) -> Unit = {},
     onProductClick: (ProductEntity, List<UnitConversionEntity>, List<ProductVariantEntity>) -> Unit,
     modifier: Modifier = Modifier
@@ -923,7 +975,10 @@ fun ProductCatalogGrid(
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(bundle.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Slate900, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text("Rp ${formatRupiah(bundle.sellingPrice)}", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Slate900)
+                        Text(
+                            "Rp ${formatRupiah(bundle.sellingPrice)}",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Slate900).tabular()
+                        )
                         Spacer(modifier = Modifier.height(6.dp))
                         DesignStatusBadge(text = if (bCount > 0) "$bCount di keranjang" else "Paket Bundling", type = BadgeType.SUCCESS)
                     }
@@ -938,6 +993,7 @@ fun ProductCatalogGrid(
                     val tierSvc = adminTiers.find { it.service.id == product.adminTierGroupId }
                     TierPricingResolver.calculate(tierSvc, product.sellingPrice).storeAdminFee
                 } else 0.0
+                val linkedAccountName = product.serviceCashAccountId?.let { cashAccountNameMap[it] }
 
                 KasGoProductCard(
                     product = product,
@@ -945,6 +1001,7 @@ fun ProductCatalogGrid(
                     hasConversions = conversions.isNotEmpty(),
                     hasVariants = variants.isNotEmpty(),
                     autoAdminFee = autoAdminFee,
+                    linkedAccountName = linkedAccountName,
                     onClick = { onProductClick(product, conversions, variants) }
                 )
             }
@@ -959,6 +1016,7 @@ fun KasGoProductCard(
     hasConversions: Boolean,
     hasVariants: Boolean = false,
     autoAdminFee: Double = 0.0,
+    linkedAccountName: String? = null,
     onClick: () -> Unit
 ) {
     val isDigital = product.productType == "DIGITAL" || product.isUnlimitedStock || product.hasNoStock
@@ -987,21 +1045,16 @@ fun KasGoProductCard(
                 .alpha(if (isOutOfStock) 0.78f else 1f)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Box(
+                ProductThumbnail(
+                    imageUri = product.imageUri,
+                    contentDescription = product.name,
+                    isDigital = isDigital,
+                    shape = RoundedCornerShape(10.dp),
+                    iconSize = 28.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(68.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (isDigital) Sapphire50 else SurfaceStrong),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isDigital) Icons.Default.PhoneAndroid else Icons.Default.Inventory2,
-                        contentDescription = null,
-                        tint = if (isDigital) AccentBlue else Slate500,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
+                        .height(74.dp)
+                )
 
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -1044,7 +1097,7 @@ fun KasGoProductCard(
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = Slate900
-                    )
+                    ).tabular()
                 )
                 if (autoAdminFee > 0) {
                     Text(
@@ -1053,7 +1106,29 @@ fun KasGoProductCard(
                             color = HeaderTeal,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 10.sp
-                        )
+                        ).tabular()
+                    )
+                } else if (isDigital && product.adminTierGroupId != null) {
+                    Text(
+                        text = "Tarif Berjenjang Otomatis",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = HeaderTeal,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 10.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (!linkedAccountName.isNullOrBlank()) {
+                    Text(
+                        text = "Kas: $linkedAccountName",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = Slate500,
+                            fontSize = 10.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
@@ -1112,6 +1187,7 @@ fun KasGoProductCard(
 @Composable
 fun KasGoOrderCartPanel(
     cart: List<CartItem>,
+    productImages: Map<Long, String> = emptyMap(),
     decimalProductIds: Set<Long> = emptySet(),
     allTierPrices: List<ProductTierPriceEntity> = emptyList(),
     selectedCustomer: CustomerEntity?,
@@ -1265,6 +1341,15 @@ fun KasGoOrderCartPanel(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            ProductThumbnail(
+                                imageUri = productImages[item.productId] ?: "",
+                                contentDescription = item.productName,
+                                isDigital = item.serviceNominal != null || item.storeAdminFee > 0.0,
+                                size = 36.dp,
+                                shape = RoundedCornerShape(8.dp),
+                                iconSize = 18.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = if (item.variantName.isNotBlank()) "${item.productName} [${item.variantName}]" else item.productName,
@@ -1285,12 +1370,12 @@ fun KasGoOrderCartPanel(
                                 }
                                 Text(
                                     text = "${formatRupiah(item.unitPrice)} per ${item.unitName}$sourceLabel",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = if (item.priceSource == "grosir" || item.priceSource == "per_jumlah") Emerald700 else Slate500, fontSize = 11.sp)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = if (item.priceSource == "grosir" || item.priceSource == "per_jumlah") Emerald700 else Slate500, fontSize = 11.sp).tabular()
                                 )
                                 if (item.storeAdminFee > 0) {
                                     Text(
                                         text = "+ Biaya Admin Layanan Rp ${formatRupiah(item.storeAdminFee)}",
-                                        style = MaterialTheme.typography.labelSmall.copy(color = HeaderTeal, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                                        style = MaterialTheme.typography.labelSmall.copy(color = HeaderTeal, fontWeight = FontWeight.SemiBold, fontSize = 11.sp).tabular()
                                     )
                                 }
                             }
@@ -1311,7 +1396,7 @@ fun KasGoOrderCartPanel(
 
                                 Text(
                                     text = if (isDecimal) "${item.quantity}" else "${item.quantity.toInt()}",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = Slate900),
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular(),
                                     modifier = Modifier.padding(horizontal = 10.dp)
                                 )
 
@@ -1327,7 +1412,7 @@ fun KasGoOrderCartPanel(
                                 }
                             }
 
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
 
                             Text(
                                 text = "Rp ${formatRupiah(item.unitPrice * item.quantity + item.storeAdminFee)}",
@@ -1335,7 +1420,7 @@ fun KasGoOrderCartPanel(
                                     fontWeight = FontWeight.Bold,
                                     color = Slate900,
                                     fontSize = 13.sp
-                                ),
+                                ).tabular(),
                                 textAlign = TextAlign.End
                             )
                         }
@@ -1441,7 +1526,7 @@ fun KasGoOrderCartPanel(
             Text("Total", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold, color = Slate900))
             Text(
                 "Rp ${formatRupiah(cartFinalTotal)}",
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular()
             )
         }
 
@@ -1884,7 +1969,7 @@ fun HoldSaleDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
             modifier = Modifier.fillMaxWidth().padding(16.dp)
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
@@ -1950,7 +2035,7 @@ fun PendingSalesListDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
             modifier = Modifier.fillMaxWidth().padding(16.dp)
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
@@ -2043,7 +2128,7 @@ fun StartShiftDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
             modifier = Modifier.fillMaxWidth().padding(16.dp)
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
@@ -2115,7 +2200,7 @@ fun CloseShiftDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
             modifier = Modifier.fillMaxWidth().padding(16.dp)
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
@@ -2249,9 +2334,9 @@ fun FlexiblePriceAndTierDialog(
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            modifier = Modifier.fillMaxWidth().padding(8.dp)
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+            modifier = Modifier.fillMaxWidth().padding(6.dp)
         ) {
             LazyColumn(
                 modifier = Modifier.padding(18.dp),
@@ -2266,6 +2351,44 @@ fun FlexiblePriceAndTierDialog(
                         "Tarif Berjenjang Otomatis • Arah: ${product.serviceDirection}",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
                     )
+                }
+
+                // Highlighted Top Total Tagihan Pelanggan Banner
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = ModuleKasir,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                "TOTAL TAGIHAN PELANGGAN",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.6.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Rp ${formatRupiah(result.totalCustomerPayable)}",
+                                style = MaterialTheme.typography.headlineMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                ).tabular()
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Nominal Rp ${formatRupiah(nominal)} + Admin Rp ${formatRupiah(result.storeAdminFee)}",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = Color.White.copy(alpha = 0.9f)
+                                ).tabular()
+                            )
+                        }
+                    }
                 }
 
                 if (adminTiers.isNotEmpty()) {
@@ -2311,7 +2434,7 @@ fun FlexiblePriceAndTierDialog(
                                                 fontSize = 10.sp,
                                                 fontWeight = if (isMatched) FontWeight.Bold else FontWeight.Medium,
                                                 color = if (isMatched) Emerald700 else Slate700
-                                            ),
+                                            ).tabular(),
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                         )
                                     }
@@ -2342,22 +2465,46 @@ fun FlexiblePriceAndTierDialog(
                         modifier = Modifier.testTag("digital_nominal_input")
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        val presets = listOf(100000L to "100rb", 345000L to "345rb", 500000L to "500rb", 1000000L to "1jt", 2000000L to "2jt", 5000000L to "5jt")
-                        items(presets) { (amt, label) ->
-                            DesignFilterChip(
-                                label = label,
-                                selected = nominal.toLong() == amt,
-                                onClick = {
-                                    nominalText = amt.toString()
-                                    isManualAdminOverride = false
-                                    val autoMatch = activeServiceWithRanges?.let {
-                                        TierPricingResolver.findMatchingRange(it.ranges, amt.toDouble())
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // 2-Row 8-Button Quick Nominal Grid
+                    val presetRows = listOf(
+                        listOf(50000L to "50rb", 100000L to "100rb", 200000L to "200rb", 500000L to "500rb"),
+                        listOf(1000000L to "1jt", 2000000L to "2jt", 3000000L to "3jt", 5000000L to "5jt")
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        presetRows.forEach { rowPresets ->
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                rowPresets.forEach { (amt, label) ->
+                                    val isSel = nominal.toLong() == amt
+                                    Surface(
+                                        onClick = {
+                                            nominalText = amt.toString()
+                                            isManualAdminOverride = false
+                                            val autoMatch = activeServiceWithRanges?.let {
+                                                TierPricingResolver.findMatchingRange(it.ranges, amt.toDouble())
+                                            }
+                                            manualAdminText = autoMatch?.storeAdminFee?.toLong()?.toString() ?: ""
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSel) ChipActive else SurfaceStrong,
+                                        border = BorderStroke(1.dp, if (isSel) ChipActive else BorderDefault),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.padding(vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isSel) Color.White else Slate800
+                                                ).tabular()
+                                            )
+                                        }
                                     }
-                                    manualAdminText = autoMatch?.storeAdminFee?.toLong()?.toString() ?: ""
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -2488,7 +2635,7 @@ fun CustomerPickerDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
@@ -2577,7 +2724,7 @@ fun CustomerPickerDialog(
                         Surface(
                             onClick = { onSelect(customer) },
                             shape = RoundedCornerShape(10.dp),
-                            color = if (isSelected) Sapphire50 else Color.White,
+                            color = if (isSelected) Sapphire50 else SurfaceWhite,
                             border = BorderStroke(
                                 1.dp,
                                 if (isSelected) Sapphire600 else Slate200
@@ -2654,7 +2801,7 @@ fun MultiUnitPickerDialog(
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
@@ -2724,8 +2871,8 @@ fun MultiUnitPickerDialog(
                                 onSelectUnit(conv.unitName, conv.multiplier, effectivePrice)
                             },
                             shape = RoundedCornerShape(10.dp),
-                            color = Color.White,
-                            border = BorderStroke(1.dp, Slate200),
+                            color = SurfaceWhite,
+                            border = BorderStroke(1.dp, BorderDefault),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(

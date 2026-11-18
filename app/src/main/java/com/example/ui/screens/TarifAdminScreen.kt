@@ -24,6 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PriceCheck
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -176,6 +178,18 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
 
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val quickTests = listOf(345000L to "345rb", 1000000L to "1jt", 1500000L to "1.5jt", 4200000L to "4.2jt")
+                        items(quickTests) { (amt, label) ->
+                            DesignFilterChip(
+                                label = label,
+                                selected = simNominal.toLong() == amt,
+                                onClick = { simulatorNominalText = amt.toString() }
+                            )
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(12.dp))
 
                     if (simNominal > 0.0 && matchedSimRange == null) {
@@ -190,24 +204,24 @@ fun TarifAdminScreen(viewModel: PosViewModel) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Admin toko", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 13.sp))
-                                Text("Rp ${formatRupiah(matchedSimRange.storeAdminFee)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate900, fontSize = 13.sp))
+                                Text("Rp ${formatRupiah(matchedSimRange.storeAdminFee)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate900, fontSize = 13.sp).tabular())
                             }
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Admin penyedia", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 13.sp))
-                                Text("Rp ${formatRupiah(matchedSimRange.providerAdminFee)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate900, fontSize = 13.sp))
+                                Text("Rp ${formatRupiah(matchedSimRange.providerAdminFee)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate900, fontSize = 13.sp).tabular())
                             }
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Fee", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 13.sp))
-                                Text("Rp ${formatRupiah(matchedSimRange.agentCommission)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate900, fontSize = 13.sp))
+                                Text("Rp ${formatRupiah(matchedSimRange.agentCommission)}", style = MaterialTheme.typography.bodySmall.copy(color = Slate900, fontSize = 13.sp).tabular())
                             }
                             HorizontalDivider(color = BorderDefault, modifier = Modifier.padding(vertical = 4.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Dibayar pelanggan", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
-                                Text("Rp ${formatRupiah(customerTotal)}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                                Text("Rp ${formatRupiah(customerTotal)}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular())
                             }
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Laba layanan", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Emerald700))
-                                Text("Rp ${formatRupiah(netProfit)}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Emerald700))
+                                Text("Rp ${formatRupiah(netProfit)}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Emerald700).tabular())
                             }
                         }
                     } else {
@@ -457,131 +471,174 @@ private fun InlineTarifRangeCard(
     val netProfit = storeVal + agentVal - providerVal
     val isBoundsDirty = minVal != range.minAmount || maxVal != range.maxAmount
     val isInvalidBounds = maxVal > 0.0 && minVal > maxVal
+    var isExpanded by remember(range.id) { mutableStateOf(isOverlapping || isInvalidBounds) }
+
+    val rangeSummaryLabel = if (maxVal > 0.0) {
+        "Rp ${formatRupiah(minVal)} – Rp ${formatRupiah(maxVal)}"
+    } else {
+        "Rp ${formatRupiah(minVal)} – Seterusnya"
+    }
 
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
-        border = BorderStroke(1.dp, if (isOverlapping || isInvalidBounds) Rose500.copy(alpha = 0.45f) else BorderDefault),
+        border = BorderStroke(
+            1.dp,
+            when {
+                isOverlapping || isInvalidBounds -> Rose500.copy(alpha = 0.55f)
+                isExpanded -> AccentBlue.copy(alpha = 0.5f)
+                else -> BorderDefault
+            }
+        ),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DesignLabeledTextField(
-                    label = "Dari",
-                    value = minText,
-                    onValueChange = { raw ->
-                        minText = raw.filter { it.isDigit() }
-                    },
-                    prefixText = "Rp ",
-                    isError = isOverlapping || isInvalidBounds,
-                    errorMessage = if (isInvalidBounds) "Dari > Sampai" else "Rentang tumpang tindih",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-
-                DesignLabeledTextField(
-                    label = "Sampai (kosong = seterusnya)",
-                    value = maxText,
-                    onValueChange = { raw ->
-                        maxText = raw.filter { it.isDigit() }
-                    },
-                    prefixText = "Rp ",
-                    placeholder = "Tak terbatas",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DesignLabeledTextField(
-                    label = "Admin toko",
-                    value = storeText,
-                    onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }
-                        storeText = digits
-                        onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = digits.toDoubleOrNull() ?: 0.0, providerAdminFee = providerVal, agentCommission = agentVal))
-                    },
-                    prefixText = "Rp ",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-                DesignLabeledTextField(
-                    label = "Admin penyedia",
-                    value = providerText,
-                    onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }
-                        providerText = digits
-                        onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = digits.toDoubleOrNull() ?: 0.0, agentCommission = agentVal))
-                    },
-                    prefixText = "Rp ",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-                DesignLabeledTextField(
-                    label = "Fee",
-                    value = agentText,
-                    onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }
-                        agentText = digits
-                        onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = providerVal, agentCommission = digits.toDoubleOrNull() ?: 0.0))
-                    },
-                    prefixText = "Rp ",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded },
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Laba per transaksi: Rp ${formatRupiah(netProfit)}",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = Slate800,
-                        fontSize = 12.sp
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (isBoundsDirty && !isInvalidBounds) {
-                        Button(
-                            onClick = {
-                                onUpdate(
-                                    range.copy(
-                                        minAmount = minVal,
-                                        maxAmount = maxVal,
-                                        storeAdminFee = storeVal,
-                                        providerAdminFee = providerVal,
-                                        agentCommission = agentVal
-                                    )
-                                )
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text("Simpan Rentang", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = rangeSummaryLabel,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900, fontSize = 13.sp).tabular()
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Admin: Rp ${formatRupiah(storeVal)}",
+                            style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold).tabular()
+                        )
+                        DesignStatusBadge(
+                            text = "Laba Rp ${formatRupiah(netProfit)}",
+                            type = if (netProfit >= 0.0) BadgeType.SUCCESS else BadgeType.DANGER
+                        )
                     }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus Rentang", tint = Rose500, modifier = Modifier.size(18.dp))
+                    }
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (isExpanded) "Tutup rincian" else "Ubah rentang",
+                        tint = Slate500,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = BorderDefault)
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DesignLabeledTextField(
+                        label = "Dari",
+                        value = minText,
+                        onValueChange = { raw -> minText = raw.filter { it.isDigit() } },
+                        prefixText = "Rp ",
+                        isError = isOverlapping || isInvalidBounds,
+                        errorMessage = if (isInvalidBounds) "Dari > Sampai" else "Rentang tumpang tindih",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    DesignLabeledTextField(
+                        label = "Sampai (kosong = seterusnya)",
+                        value = maxText,
+                        onValueChange = { raw -> maxText = raw.filter { it.isDigit() } },
+                        prefixText = "Rp ",
+                        placeholder = "Tak terbatas",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DesignLabeledTextField(
+                        label = "Admin toko",
+                        value = storeText,
+                        onValueChange = { raw ->
+                            val digits = raw.filter { it.isDigit() }
+                            storeText = digits
+                            onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = digits.toDoubleOrNull() ?: 0.0, providerAdminFee = providerVal, agentCommission = agentVal))
+                        },
+                        prefixText = "Rp ",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    DesignLabeledTextField(
+                        label = "Admin penyedia",
+                        value = providerText,
+                        onValueChange = { raw ->
+                            val digits = raw.filter { it.isDigit() }
+                            providerText = digits
+                            onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = digits.toDoubleOrNull() ?: 0.0, agentCommission = agentVal))
+                        },
+                        prefixText = "Rp ",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    DesignLabeledTextField(
+                        label = "Fee",
+                        value = agentText,
+                        onValueChange = { raw ->
+                            val digits = raw.filter { it.isDigit() }
+                            agentText = digits
+                            onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = providerVal, agentCommission = digits.toDoubleOrNull() ?: 0.0))
+                        },
+                        prefixText = "Rp ",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Laba per transaksi: Rp ${formatRupiah(netProfit)}",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = Slate800,
+                            fontSize = 12.sp
+                        ).tabular(),
+                        modifier = Modifier.weight(1f)
+                    )
                     Row(
-                        modifier = Modifier
-                            .clickable { onDelete() }
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = "Kurangi / Hapus", tint = Rose500, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text("Hapus", style = MaterialTheme.typography.bodySmall.copy(color = Rose500, fontWeight = FontWeight.SemiBold, fontSize = 12.sp))
+                        if (isBoundsDirty && !isInvalidBounds) {
+                            Button(
+                                onClick = {
+                                    onUpdate(
+                                        range.copy(
+                                            minAmount = minVal,
+                                            maxAmount = maxVal,
+                                            storeAdminFee = storeVal,
+                                            providerAdminFee = providerVal,
+                                            agentCommission = agentVal
+                                        )
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Simpan Rentang", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }

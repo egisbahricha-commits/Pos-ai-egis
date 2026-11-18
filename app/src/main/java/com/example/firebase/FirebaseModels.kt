@@ -188,6 +188,7 @@ data class ProductDoc(
     @field:JvmField val isFlexiblePrice: Boolean = false,
     val specialPrice: Double? = null,
     val strikePrice: Double? = null,
+    val imageUri: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )

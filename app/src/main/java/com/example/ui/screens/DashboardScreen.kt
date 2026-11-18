@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,6 +57,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.pricing.ProfitLossCalculator
+import com.example.data.pricing.ProfitLossPeriod
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignStatusBadge
@@ -76,6 +79,8 @@ fun DashboardScreen(viewModel: PosViewModel) {
     val products by viewModel.products.collectAsStateWithLifecycle()
     val lowStockProducts by viewModel.lowStockProducts.collectAsStateWithLifecycle()
     val customers by viewModel.customers.collectAsStateWithLifecycle()
+    val cashAccounts by viewModel.cashAccounts.collectAsStateWithLifecycle()
+    val allSaleItems by viewModel.allSaleItems.collectAsStateWithLifecycle()
     val activeUserName by viewModel.activeUserName.collectAsStateWithLifecycle()
     val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
 
@@ -84,15 +89,22 @@ fun DashboardScreen(viewModel: PosViewModel) {
     }
 
     // Real business KPIs from Room database
+    val todaySummary = remember(sales, allSaleItems, expenses, incomes, products) {
+        ProfitLossCalculator.calculate(
+            period = ProfitLossPeriod.HARIAN,
+            offset = 0,
+            sales = sales,
+            saleItems = allSaleItems,
+            expenses = expenses,
+            incomes = incomes,
+            products = products
+        )
+    }
     val totalSales = sales.filter { it.status != "REFUNDED" }.sumOf { it.finalAmount }
-    val totalExpenses = expenses.sumOf { it.amount }
-    val totalIncomes = incomes.sumOf { it.amount }
     val totalReceivables = customers.sumOf { it.totalReceivable }
     val outOfStockCount = products.count { !it.isUnlimitedStock && it.stock <= 0.0 }
     val lowStockCount = lowStockProducts.count { !it.isUnlimitedStock }
-
-    val estimatedGrossProfit = (totalSales * 0.25).coerceAtLeast(0.0)
-    val totalProfit = (estimatedGrossProfit + totalIncomes - totalExpenses)
+    val activeCashAccounts = remember(cashAccounts) { cashAccounts.filter { it.isActive } }
 
     LazyColumn(
         modifier = Modifier
@@ -269,52 +281,54 @@ fun DashboardScreen(viewModel: PosViewModel) {
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Rp ${formatRupiah(totalSales)}",
+                            text = "Rp ${formatRupiah(todaySummary.netSales)}",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Slate900,
                                 fontSize = 15.sp
-                            ),
+                            ).tabular(),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "${sales.size} transaksi",
-                            style = MaterialTheme.typography.labelSmall.copy(color = Slate400, fontSize = 10.sp),
+                            text = "${todaySummary.transactionCount} transaksi",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Slate400, fontSize = 10.sp).tabular(),
                             maxLines = 1
                         )
                     }
                 }
 
-                // 2. Solid Emerald Card: Laba hari ini
+                // 2. Solid Emerald / Rose Card: Laba hari ini
                 Card(
                     onClick = { viewModel.navigateTo(Screen.LAPORAN) },
                     shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = Emerald700),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (todaySummary.isProfit) Emerald800 else Color(0xFF991B1B)
+                    ),
                     modifier = Modifier.weight(1f)
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
-                            text = "Laba hari ini",
+                            text = if (todaySummary.isProfit) "Laba hari ini" else "Rugi hari ini",
                             style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.85f)),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Rp ${formatRupiah(totalProfit)}",
+                            text = formatSignedRupiah(todaySummary.netProfit),
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
                                 fontSize = 15.sp
-                            ),
+                            ).tabular(),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Estimasi bersih",
+                            text = "Aktual hari ini",
                             style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp),
                             maxLines = 1
                         )
@@ -342,7 +356,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
                                 fontSize = 15.sp
-                            ),
+                            ).tabular(),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -351,6 +365,106 @@ fun DashboardScreen(viewModel: PosViewModel) {
                             text = "Belum lunas",
                             style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp),
                             maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+
+        // Saldo Multi-Kas Horizontal Strip
+        if (activeCashAccounts.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KasGoSectionHeader(
+                        title = "Saldo Multi-Kas",
+                        actionText = "Kelola",
+                        onActionClick = { viewModel.navigateTo(Screen.MULTI_KAS) }
+                    )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(activeCashAccounts, key = { it.id }) { acc ->
+                            Surface(
+                                onClick = { viewModel.navigateTo(Screen.MULTI_KAS) },
+                                shape = RoundedCornerShape(12.dp),
+                                color = SurfaceWhite,
+                                border = BorderStroke(1.dp, BorderDefault),
+                                modifier = Modifier.width(156.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = acc.accountName,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Slate500,
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Rp ${formatRupiah(acc.balance)}",
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            color = ModuleKas,
+                                            fontWeight = FontWeight.Bold
+                                        ).tabular(),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = acc.accountType,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Slate400,
+                                            fontSize = 10.sp
+                                        ),
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Unpaid Receivables Alert Pill
+        if (totalReceivables > 0.0) {
+            val debtorCount = customers.count { it.totalReceivable > 0.0 }
+            item {
+                Surface(
+                    onClick = { viewModel.navigateTo(Screen.UTANG_PIUTANG) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = Rose100,
+                    border = BorderStroke(1.dp, Rose500.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "$debtorCount Pelanggan Masih Kasbon",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = Rose500
+                                )
+                            )
+                            Text(
+                                text = "Total piutang aktif: Rp ${formatRupiah(totalReceivables)}",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = Slate700,
+                                    fontSize = 11.sp
+                                ).tabular()
+                            )
+                        }
+                        Icon(
+                            Icons.Default.ArrowForward,
+                            contentDescription = "Lihat Piutang",
+                            tint = Rose500,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
@@ -498,7 +612,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
                                         style = MaterialTheme.typography.titleSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             color = Slate900
-                                        )
+                                        ).tabular()
                                     )
                                     Spacer(modifier = Modifier.height(3.dp))
                                     DesignStatusBadge(

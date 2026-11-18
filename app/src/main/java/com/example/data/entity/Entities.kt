@@ -32,7 +32,8 @@ data class ProductEntity(
     val hasVariants: Boolean = false,
     val adminTierGroupId: Long? = null,
     val serviceCashAccountId: Long? = null,
-    val serviceDirection: String = "SETOR" // "SETOR" (saldo layanan turun) atau "TARIK" (saldo layanan naik)
+    val serviceDirection: String = "SETOR", // "SETOR" (saldo layanan turun) atau "TARIK" (saldo layanan naik)
+    val imageUri: String = ""
 )
 
 @Entity(tableName = "categories")

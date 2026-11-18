@@ -460,6 +460,7 @@ class FirebaseSyncRepository(
                     isFlexiblePrice = p.isFlexiblePrice,
                     specialPrice = p.specialPrice,
                     strikePrice = p.strikePrice,
+                    imageUri = p.imageUri,
                     createdAt = createdMap[rid],
                     updatedAt = null
                 )
@@ -836,7 +837,8 @@ class FirebaseSyncRepository(
                     allowDecimalQty = item.allowDecimalQty,
                     isFlexiblePrice = item.isFlexiblePrice,
                     specialPrice = item.specialPrice,
-                    strikePrice = item.strikePrice
+                    strikePrice = item.strikePrice,
+                    imageUri = item.imageUri
                 )
                 val localId = productDao.insertProduct(entity)
                 if (mapped == null) {

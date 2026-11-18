@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -12,12 +14,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -30,22 +35,26 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -69,6 +78,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.backup.KasGoImportOptions
+import com.example.data.backup.KasGoInspectResult
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.CashierDeviceEntity
 import com.example.data.entity.PrinterEntity
@@ -95,6 +106,16 @@ fun SettingsScreen(viewModel: PosViewModel) {
     val menuPermissions by viewModel.menuPermissions.collectAsStateWithLifecycle()
     val printers by viewModel.printers.collectAsStateWithLifecycle()
     val cashierDevices by viewModel.cashierDevices.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val kasGoImportState by viewModel.kasGoImportState.collectAsStateWithLifecycle()
+
+    val kasGoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.inspectKasGoBackupUri(uri)
+        }
+    }
 
     var showResetConfirmDialog by remember { mutableStateOf(false) }
     var showPinDialog by remember { mutableStateOf(false) }
@@ -116,6 +137,48 @@ fun SettingsScreen(viewModel: PosViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Section: Tampilan & Mode Gelap
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                Icon(Icons.Default.Palette, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    "Tampilan & Tema Aplikasi",
+                    style = MaterialTheme.typography.labelMedium.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold)
+                )
+            }
+        }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                border = BorderStroke(1.dp, BorderDefault),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Mode Warna Layar",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                    )
+                    Text(
+                        "Pilih mode terang untuk kondisi toko cerah atau mode gelap agar nyaman di mata",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp)
+                    )
+                    DesignSegmentedTabs(
+                        options = listOf(
+                            "SYSTEM" to "Sistem",
+                            "LIGHT" to "Terang",
+                            "DARK" to "Gelap"
+                        ),
+                        selectedKey = themeMode,
+                        onSelect = { viewModel.setThemeMode(it) },
+                        modifier = Modifier.testTag("settings_theme_selector")
+                    )
+                }
+            }
+        }
+
         // Section: Firebase Cloud & Multi-Perangkat
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
@@ -217,6 +280,21 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         badgeText = backupStatus,
                         badgeType = BadgeType.SUCCESS,
                         onClick = { backupStatus = "Tersimpan" }
+                    )
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.Default.UploadFile,
+                        title = if (kasGoImportState.isInspecting) "Membaca file .kasgo..." else "Import Backup KasGo (.kasgo)",
+                        subtitle = kasGoImportState.lastImportSummary?.let { s ->
+                            "Terakhir impor: ${s.productsImported} produk, ${s.salesImported} transaksi, ${s.photosCopied} foto"
+                        } ?: "Pulihkan produk, stok, pelanggan, foto & transaksi dari file .kasgo",
+                        badgeText = if (kasGoImportState.isInspecting) "Proses..." else "Pilih File",
+                        badgeType = BadgeType.INFO,
+                        onClick = {
+                            if (!kasGoImportState.isInspecting && !kasGoImportState.isImporting) {
+                                kasGoPickerLauncher.launch(arrayOf("*/*"))
+                            }
+                        }
                     )
                     HorizontalDivider(color = BorderDefault)
                     SettingsMenuRow(
@@ -667,6 +745,318 @@ fun SettingsScreen(viewModel: PosViewModel) {
                     }
                 }
             }
+        }
+    }
+
+    if (kasGoImportState.isInspecting) {
+        Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = SurfaceWhite,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), color = AccentBlue)
+                    Column {
+                        Text(
+                            "Menganalisis Backup .kasgo",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                        )
+                        Text(
+                            "Membaca database.db, prefs, & folder photos...",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    kasGoImportState.inspectResult?.let { inspect ->
+        KasGoImportPreviewDialog(
+            inspect = inspect,
+            isImporting = kasGoImportState.isImporting,
+            errorMessage = kasGoImportState.errorMessage,
+            onConfirm = { options -> viewModel.confirmKasGoImport(options) },
+            onDismiss = { if (!kasGoImportState.isImporting) viewModel.dismissKasGoImportPreview() }
+        )
+    }
+
+    if (kasGoImportState.inspectResult == null && kasGoImportState.errorMessage != null) {
+        Dialog(onDismissRequest = { viewModel.dismissKasGoImportPreview() }) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = SurfaceWhite,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "File Backup Tidak Valid",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Rose500)
+                    )
+                    Text(
+                        kasGoImportState.errorMessage ?: "",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
+                    )
+                    Button(
+                        onClick = { viewModel.dismissKasGoImportPreview() },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Tutup", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KasGoImportPreviewDialog(
+    inspect: KasGoInspectResult,
+    isImporting: Boolean,
+    errorMessage: String?,
+    onConfirm: (KasGoImportOptions) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var replaceExisting by remember { mutableStateOf(false) }
+    var importStoreProfile by remember { mutableStateOf(true) }
+    var showTables by remember { mutableStateOf(false) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = SurfaceWhite,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(18.dp)
+                    .heightIn(max = 580.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(AccentBlueSoft),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.UploadFile, contentDescription = null, tint = AccentBlue)
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Pratinjau Backup KasGo",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                        )
+                        Text(
+                            inspect.fileName,
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp)
+                        )
+                    }
+                }
+
+                if (inspect.storePreview.storeName.isNotBlank() || inspect.manifestSummary.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Sapphire50,
+                        border = BorderStroke(1.dp, Sapphire200),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            if (inspect.storePreview.storeName.isNotBlank()) {
+                                Text(
+                                    "Toko: ${inspect.storePreview.storeName}",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800)
+                                )
+                            }
+                            if (inspect.manifestSummary.isNotBlank()) {
+                                Text(
+                                    inspect.manifestSummary,
+                                    style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontSize = 10.sp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KasGoCountPill("Produk", "${inspect.productCount}", Modifier.weight(1f))
+                    KasGoCountPill("Transaksi", "${inspect.saleCount}", Modifier.weight(1f))
+                    KasGoCountPill("Pelanggan", "${inspect.customerCount}", Modifier.weight(1f))
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KasGoCountPill("Akun Kas", "${inspect.cashAccountCount}", Modifier.weight(1f))
+                    KasGoCountPill("Pengeluaran", "${inspect.expenseCount}", Modifier.weight(1f))
+                    KasGoCountPill("Foto", "${inspect.photoCount}", Modifier.weight(1f))
+                }
+
+                TextButton(
+                    onClick = { showTables = !showTables },
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                ) {
+                    Text(
+                        text = if (showTables) "Sembunyikan daftar tabel (${inspect.discoveredTables.size})" else "Lihat semua tabel di database.db (${inspect.discoveredTables.size})",
+                        style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                if (showTables) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Slate50,
+                        border = BorderStroke(1.dp, BorderDefault),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            inspect.discoveredTables.forEach { tbl ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "${tbl.tableName} (${tbl.mappedRole})",
+                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate800, fontSize = 11.sp),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "${tbl.rowCount} baris",
+                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp).tabular()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = BorderDefault)
+
+                Text(
+                    "Metode Pengisian Data",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate800)
+                )
+
+                Surface(
+                    onClick = { replaceExisting = false },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (!replaceExisting) AccentBlueSoft.copy(alpha = 0.45f) else Slate50,
+                    border = BorderStroke(1.dp, if (!replaceExisting) AccentBlue else BorderDefault),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = !replaceExisting, onClick = { replaceExisting = false })
+                        Column {
+                            Text("Gabungkan (Merge) • Disarankan", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
+                            Text("Tambah data baru dari .kasgo tanpa menghapus data yang sudah ada", fontSize = 10.sp, color = Slate600)
+                        }
+                    }
+                }
+
+                Surface(
+                    onClick = { replaceExisting = true },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (replaceExisting) Rose100.copy(alpha = 0.55f) else Slate50,
+                    border = BorderStroke(1.dp, if (replaceExisting) Rose500 else BorderDefault),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = replaceExisting, onClick = { replaceExisting = true })
+                        Column {
+                            Text("Ganti Data Lama (Replace)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Rose500)
+                            Text("Hapus data bisnis saat ini lalu isi penuh dari backup .kasgo", fontSize = 10.sp, color = Slate600)
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { importStoreProfile = !importStoreProfile },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = importStoreProfile, onCheckedChange = { importStoreProfile = it })
+                    Text(
+                        "Terapkan profil toko dari kasgo_settings.json",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate800)
+                    )
+                }
+
+                if (!errorMessage.isNullOrBlank()) {
+                    Text(
+                        text = errorMessage,
+                        style = MaterialTheme.typography.bodySmall.copy(color = Rose500, fontWeight = FontWeight.SemiBold)
+                    )
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        enabled = !isImporting,
+                        border = BorderStroke(1.dp, BorderInput),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Batal", color = Slate700)
+                    }
+                    Button(
+                        onClick = {
+                            onConfirm(
+                                KasGoImportOptions(
+                                    replaceExisting = replaceExisting,
+                                    importStoreProfile = importStoreProfile
+                                )
+                            )
+                        },
+                        enabled = !isImporting,
+                        colors = ButtonDefaults.buttonColors(containerColor = Emerald800, contentColor = Color.White),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("kasgo_confirm_import_btn")
+                    ) {
+                        if (isImporting) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Mengimpor...", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        } else {
+                            Text("Mulai Import", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KasGoCountPill(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = Slate50,
+        border = BorderStroke(1.dp, BorderDefault),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(label, fontSize = 10.sp, color = Slate500)
+            Text(
+                value,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular()
+            )
         }
     }
 }

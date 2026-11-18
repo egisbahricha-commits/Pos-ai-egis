@@ -1,14 +1,35 @@
 package com.example
 
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.net.Uri
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
 import com.example.ai.GeraiUnaAIEngine
+import com.example.data.backup.KasGoBackupImporter
+import com.example.data.backup.KasGoImportOptions
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.AdminTierRangeEntity
 import com.example.data.entity.AdminTierServiceEntity
 import com.example.data.entity.AdminTierWithRanges
+import com.example.data.entity.ExpenseEntity
+import com.example.data.entity.IncomeEntity
 import com.example.data.entity.ProductAliasEntity
 import com.example.data.entity.ProductEntity
+import com.example.data.entity.SaleEntity
+import com.example.data.entity.SaleItemEntity
+import com.example.data.pricing.ProfitLossCalculator
+import com.example.data.pricing.ProfitLossPeriod
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.PosRepository
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import java.io.File
+import java.io.FileOutputStream
+import java.util.Calendar
+import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -191,5 +212,236 @@ class ExampleRobolectricTest {
         assertEquals(0.0, removedNominal.storeAdminFee, 0.01)
         // Tingkat lainnya tetap aktif
         assertEquals(15_000.0, TierPricingResolver.calculate(reducedGroup, 4_200_000.0).storeAdminFee, 0.01)
+    }
+
+    @Test
+    fun `test ProfitLossCalculator harian mingguan bulanan tahunan`() {
+        val idLocale = Locale("id", "ID")
+        val refCal = Calendar.getInstance(idLocale).apply {
+            set(2026, Calendar.NOVEMBER, 17, 14, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val refTime = refCal.timeInMillis
+
+        // Kemarin: 16 Nov 2026 (masih dalam minggu yg sama 16-22 Nov 2026)
+        val yesterdayCal = (refCal.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
+        // Bulan lalu: 10 Okt 2026 (masih dalam tahun 2026)
+        val lastMonthCal = Calendar.getInstance(idLocale).apply {
+            set(2026, Calendar.OCTOBER, 10, 11, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+
+        val products = listOf(
+            ProductEntity(id = 1L, name = "Beras 5kg", purchasePrice = 60_000.0, sellingPrice = 75_000.0, productType = "FISIK"),
+            ProductEntity(id = 2L, name = "Transfer Bank", purchasePrice = 0.0, sellingPrice = 0.0, productType = "DIGITAL", isFlexiblePrice = true)
+        )
+
+        val sales = listOf(
+            // Hari ini (17 Nov): jual 2 Beras (150rb, HPP 120rb -> laba 30rb) + Transfer 345rb (admin toko 5rb, penyedia 2.5rb, fee 1rb -> laba 3.5rb)
+            SaleEntity(
+                id = 101L,
+                invoiceNumber = "TRX-001",
+                date = refTime,
+                subtotal = 495_000.0,
+                finalAmount = 500_000.0,
+                storeAdminFee = 5_000.0,
+                providerAdminFee = 2_500.0,
+                agentCommission = 1_000.0,
+                status = "COMPLETED"
+            ),
+            // Hari ini REFUNDED (harus diabaikan)
+            SaleEntity(
+                id = 102L,
+                invoiceNumber = "TRX-002",
+                date = refTime,
+                subtotal = 100_000.0,
+                finalAmount = 100_000.0,
+                status = "REFUNDED"
+            ),
+            // Kemarin (16 Nov): jual 1 Beras (75rb, HPP 60rb -> laba 15rb)
+            SaleEntity(
+                id = 103L,
+                invoiceNumber = "TRX-003",
+                date = yesterdayCal.timeInMillis,
+                subtotal = 75_000.0,
+                finalAmount = 75_000.0,
+                status = "COMPLETED"
+            ),
+            // Bulan lalu (10 Okt): jual 10 Beras (750rb, HPP 600rb -> laba 150rb)
+            SaleEntity(
+                id = 104L,
+                invoiceNumber = "TRX-004",
+                date = lastMonthCal.timeInMillis,
+                subtotal = 750_000.0,
+                finalAmount = 750_000.0,
+                status = "COMPLETED"
+            )
+        )
+
+        val saleItems = listOf(
+            SaleItemEntity(id = 1L, saleId = 101L, productId = 1L, productName = "Beras 5kg", quantity = 2.0, unit = "pcs", unitPrice = 75_000.0, subtotal = 150_000.0, purchasePriceSnapshot = 60_000.0),
+            SaleItemEntity(id = 2L, saleId = 101L, productId = 2L, productName = "Transfer Bank", quantity = 1.0, unit = "trx", unitPrice = 345_000.0, subtotal = 345_000.0, purchasePriceSnapshot = 0.0, serviceNominal = 345_000.0, storeAdminFee = 5_000.0, providerAdminFee = 2_500.0, agentCommission = 1_000.0),
+            SaleItemEntity(id = 3L, saleId = 102L, productId = 1L, productName = "Beras 5kg", quantity = 1.0, unit = "pcs", unitPrice = 100_000.0, subtotal = 100_000.0, purchasePriceSnapshot = 60_000.0),
+            SaleItemEntity(id = 4L, saleId = 103L, productId = 1L, productName = "Beras 5kg", quantity = 1.0, unit = "pcs", unitPrice = 75_000.0, subtotal = 75_000.0, purchasePriceSnapshot = 60_000.0),
+            SaleItemEntity(id = 5L, saleId = 104L, productId = 1L, productName = "Beras 5kg", quantity = 10.0, unit = "pcs", unitPrice = 75_000.0, subtotal = 750_000.0, purchasePriceSnapshot = 60_000.0)
+        )
+
+        val expenses = listOf(
+            ExpenseEntity(id = 1L, category = "Listrik", amount = 10_000.0, date = refTime),
+            ExpenseEntity(id = 2L, category = "Sewa", amount = 25_000.0, date = yesterdayCal.timeInMillis)
+        )
+        val incomes = listOf(
+            IncomeEntity(id = 1L, source = "Jasa Parkir", amount = 5_000.0, date = refTime)
+        )
+
+        // 1. HARIAN (17 Nov): netSales 500k, COGS 120k + 345k = 465k, prov 2.5k => grossProfit 32.5k; + agent 1k + income 5k - expense 10k => netProfit 28.5k
+        val daily = ProfitLossCalculator.calculate(ProfitLossPeriod.HARIAN, 0, sales, saleItems, expenses, incomes, products, refTime)
+        assertEquals(1, daily.transactionCount)
+        assertEquals(500_000.0, daily.netSales, 0.01)
+        assertEquals(465_000.0, daily.cogs, 0.01)
+        assertEquals(28_500.0, daily.netProfit, 0.01)
+        assertEquals(150_000.0, daily.physicalSales, 0.01)
+        assertEquals(30_000.0, daily.physicalNetProfit, 0.01)
+        assertEquals(350_000.0, daily.digitalSales, 0.01)
+        assertEquals(3_500.0, daily.digitalNetProfit, 0.01)
+        assertEquals("", ProductEntity(name = "Test").imageUri)
+        assertTrue(daily.isProfit)
+        assertEquals(7, daily.subBuckets.size)
+
+        // Kemarin (16 Nov): laba kotor 15k - expense 25k => RUGI -10k
+        val yesterday = ProfitLossCalculator.calculate(ProfitLossPeriod.HARIAN, -1, sales, saleItems, expenses, incomes, products, refTime)
+        assertEquals(-10_000.0, yesterday.netProfit, 0.01)
+        assertFalse(yesterday.isProfit)
+
+        // 2. MINGGUAN (16-22 Nov): hari ini (28.5k) + kemarin (-10k) = 18.5k
+        val weekly = ProfitLossCalculator.calculate(ProfitLossPeriod.MINGGUAN, 0, sales, saleItems, expenses, incomes, products, refTime)
+        assertEquals(2, weekly.transactionCount)
+        assertEquals(575_000.0, weekly.netSales, 0.01)
+        assertEquals(18_500.0, weekly.netProfit, 0.01)
+        assertEquals(7, weekly.subBuckets.size)
+
+        // 3. BULANAN (Nov 2026): sama dgn mingguan = 18.5k
+        val monthly = ProfitLossCalculator.calculate(ProfitLossPeriod.BULANAN, 0, sales, saleItems, expenses, incomes, products, refTime)
+        assertEquals(2, monthly.transactionCount)
+        assertEquals(18_500.0, monthly.netProfit, 0.01)
+        assertEquals(5, monthly.subBuckets.size)
+
+        // 4. TAHUNAN (2026): Nov (18.5k) + Okt (150k) = 168.5k
+        val yearly = ProfitLossCalculator.calculate(ProfitLossPeriod.TAHUNAN, 0, sales, saleItems, expenses, incomes, products, refTime)
+        assertEquals(3, yearly.transactionCount)
+        assertEquals(1_325_000.0, yearly.netSales, 0.01)
+        assertEquals(168_500.0, yearly.netProfit, 0.01)
+        assertEquals(12, yearly.subBuckets.size)
+    }
+
+    @Test
+    fun `test KasGo kasgo backup inspect and import into Room`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val tempBuildDir = File(context.cacheDir, "kasgo_test_builder").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+
+        // 1. Create sample SQLite database.db with Indonesian KasGo-style tables
+        val sampleDbFile = File(tempBuildDir, "database.db")
+        val sqlite = SQLiteDatabase.openOrCreateDatabase(sampleDbFile, null)
+        try {
+            sqlite.execSQL("CREATE TABLE kategori (id INTEGER PRIMARY KEY, nama TEXT)")
+            sqlite.execSQL("INSERT INTO kategori (id, nama) VALUES (1, 'Aksesoris HP')")
+
+            sqlite.execSQL("CREATE TABLE produk (id INTEGER PRIMARY KEY, nama_produk TEXT, kode_barcode TEXT, kategori_id INTEGER, satuan TEXT, harga_beli REAL, harga_jual REAL, stok REAL, foto TEXT)")
+            sqlite.execSQL("INSERT INTO produk VALUES (10, 'Kabel Data Type-C Fast', '899001122', 1, 'pcs', 12000, 25000, 18, 'photos/kabel.jpg')")
+
+            sqlite.execSQL("CREATE TABLE pelanggan (id INTEGER PRIMARY KEY, nama TEXT, no_hp TEXT, piutang REAL)")
+            sqlite.execSQL("INSERT INTO pelanggan VALUES (20, 'Pak Budi', '081299887766', 15000)")
+
+            sqlite.execSQL("CREATE TABLE akun_kas (id INTEGER PRIMARY KEY, nama_akun TEXT, saldo REAL, tipe TEXT)")
+            sqlite.execSQL("INSERT INTO akun_kas VALUES (1, 'Kas Konter Cell', 2500000, 'CASH')")
+
+            sqlite.execSQL("CREATE TABLE transaksi (id INTEGER PRIMARY KEY, no_nota TEXT, tanggal TEXT, nama_pelanggan TEXT, total_akhir REAL, metode_bayar TEXT, status TEXT)")
+            sqlite.execSQL("INSERT INTO transaksi VALUES (100, 'TRX-0099', '2026-11-18 10:30:00', 'Pak Budi', 50000, 'TUNAI', 'selesai')")
+
+            sqlite.execSQL("CREATE TABLE detail_transaksi (id INTEGER PRIMARY KEY, transaksi_id INTEGER, produk_id INTEGER, nama_produk TEXT, qty REAL, harga_jual REAL, subtotal REAL, harga_beli REAL)")
+            sqlite.execSQL("INSERT INTO detail_transaksi VALUES (1, 100, 10, 'Kabel Data Type-C Fast', 2, 25000, 50000, 12000)")
+
+            sqlite.execSQL("CREATE TABLE pengeluaran (id INTEGER PRIMARY KEY, kategori TEXT, nominal REAL, catatan TEXT)")
+            sqlite.execSQL("INSERT INTO pengeluaran VALUES (1, 'Token Listrik', 50000, 'Isi ulang konter')")
+        } finally {
+            sqlite.close()
+        }
+
+        // 2. Pack into kasgo-cell-data-test.kasgo ZIP archive
+        val kasgoArchive = File(tempBuildDir, "kasgo-cell-data-18112026-1703.kasgo")
+        ZipOutputStream(FileOutputStream(kasgoArchive)).use { zos ->
+            zos.putNextEntry(ZipEntry("manifest.json"))
+            zos.write("""{"appName":"KasGo Cell","versionName":"2.4","createdAt":"2026-11-18"}""".toByteArray())
+            zos.closeEntry()
+
+            zos.putNextEntry(ZipEntry("prefs/kasgo_settings.json"))
+            zos.write("""{"store_name":"UNA CELL BACKUP","store_phone":"0855123456","store_address":"Jl. Merdeka 1"}""".toByteArray())
+            zos.closeEntry()
+
+            zos.putNextEntry(ZipEntry("prefs/kasgo_document_number.json"))
+            zos.write("""{"last_trx":99}""".toByteArray())
+            zos.closeEntry()
+
+            zos.putNextEntry(ZipEntry("photos/kabel.jpg"))
+            zos.write(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte()))
+            zos.closeEntry()
+
+            zos.putNextEntry(ZipEntry("database.db"))
+            zos.write(sampleDbFile.readBytes())
+            zos.closeEntry()
+        }
+
+        // 3. Inspect .kasgo
+        val inspect = KasGoBackupImporter.inspectBackup(context, Uri.fromFile(kasgoArchive))
+        assertTrue("Inspect failed: ${inspect.errorMessage}", inspect.isValid)
+        assertEquals("UNA CELL BACKUP", inspect.storePreview.storeName)
+        assertEquals(1, inspect.productCount)
+        assertEquals(1, inspect.customerCount)
+        assertEquals(1, inspect.saleCount)
+        assertEquals(1, inspect.saleItemCount)
+        assertEquals(1, inspect.expenseCount)
+        assertEquals(1, inspect.photoCount)
+
+        // 4. Import into Room in-memory DB
+        val roomDb = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val summary = KasGoBackupImporter.importBackup(
+                context = context,
+                db = roomDb,
+                inspectResult = inspect,
+                options = KasGoImportOptions(replaceExisting = false, importStoreProfile = true)
+            )
+            assertEquals(1, summary.productsImported)
+            assertEquals(1, summary.customersImported)
+            assertEquals(1, summary.salesImported)
+            assertEquals(1, summary.saleItemsImported)
+            assertEquals(1, summary.expensesImported)
+            assertEquals(1, summary.photosCopied)
+            assertTrue(summary.storeProfileUpdated)
+
+            val importedProducts = roomDb.productDao().getAllProductsList()
+            val importedProduct = importedProducts.first { it.name == "Kabel Data Type-C Fast" }
+            assertEquals("Aksesoris HP", importedProduct.category)
+            assertEquals(25000.0, importedProduct.sellingPrice, 0.01)
+            assertTrue(importedProduct.imageUri.isNotBlank())
+            assertTrue(File(importedProduct.imageUri).exists())
+
+            val store = roomDb.extendedPosDao().getStoreProfileSync()
+            assertEquals("UNA CELL BACKUP", store?.name)
+            assertEquals(99L, roomDb.extendedPosDao().getCounter("transaksi")?.value)
+
+            val importedSales = roomDb.saleDao().getAllSales().first()
+            assertEquals(1, importedSales.size)
+            assertEquals("TRX-0099", importedSales.first().invoiceNumber)
+            assertEquals(50000.0, importedSales.first().finalAmount, 0.01)
+        } finally {
+            roomDb.close()
+            tempBuildDir.deleteRecursively()
+        }
     }
 }

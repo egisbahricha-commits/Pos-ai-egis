@@ -126,6 +126,9 @@ import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
 import kotlinx.coroutines.launch
 
+import androidx.compose.foundation.isSystemInDarkTheme
+import com.example.ui.components.ReceiptPrintHelper
+
 class MainActivity : ComponentActivity() {
 
     private val viewModel: PosViewModel by viewModels()
@@ -134,7 +137,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            GeraiUnaTheme {
+            val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+            val darkTheme = when (themeMode) {
+                "DARK" -> true
+                "LIGHT" -> false
+                else -> isSystemInDarkTheme()
+            }
+            GeraiUnaTheme(darkTheme = darkTheme) {
                 MainAppContent(viewModel = viewModel)
             }
         }
@@ -818,9 +827,18 @@ fun MainAppContent(viewModel: PosViewModel) {
         ReceiptDialog(
             sale = lastCompletedSale!!,
             items = lastCompletedSaleItems,
+            storeProfile = storeProfile,
             onDismiss = { viewModel.dismissReceiptModal() },
             onShareWhatsApp = { text ->
                 viewModel.whatsAppCommandCenter.shareViaWhatsApp(context, text)
+            },
+            onPrintReceipt = {
+                ReceiptPrintHelper.printReceipt(
+                    context = context,
+                    sale = lastCompletedSale!!,
+                    items = lastCompletedSaleItems,
+                    storeProfile = storeProfile
+                )
             }
         )
     }

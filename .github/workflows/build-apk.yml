@@ -82,7 +82,8 @@ jobs:
             --no-configuration-cache \
             --console=plain \
             --stacktrace \
-            -Dorg.gradle.workers.max=2 \
+            --max-workers=1 \
+            -Pkotlin.compiler.execution.strategy=out-of-process \
             -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=1024m -Djava.awt.headless=true -Dfile.encoding=UTF-8" \
             2>&1 | tee /tmp/gradle-build.log; then
             echo "## Build Debug APK Gagal" >> "$GITHUB_STEP_SUMMARY"
