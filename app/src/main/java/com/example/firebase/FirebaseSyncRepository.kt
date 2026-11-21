@@ -645,7 +645,7 @@ class FirebaseSyncRepository(
                 extDao.upsertStoreProfile(
                     StoreProfileEntity(
                         id = 1L,
-                        name = remoteStoreProfile.name.ifBlank { "GERAI UNA SMART POS" },
+                        name = remoteStoreProfile.name.ifBlank { "Toko Saya" },
                         address = remoteStoreProfile.address,
                         phone = remoteStoreProfile.phone,
                         businessType = remoteStoreProfile.businessType.ifBlank { "keduanya" },
@@ -657,20 +657,34 @@ class FirebaseSyncRepository(
                 pulledCount++
             }
 
+            val existingCashAccounts = cashAccountDao.getAllAccountsList()
+            val cashByName = existingCashAccounts.associateBy { it.accountName.trim().lowercase() }.toMutableMap()
+            var hasDefaultAccount = existingCashAccounts.any { it.isDefault }
+
             for (item in remoteCashAccounts) {
                 val mapped = extDao.getMappingByRemote("CASH_ACCOUNT", item.id)
+                val nameKey = item.accountName.trim().lowercase()
+                val existingByName = cashByName[nameKey]
+                val resolvedId = mapped?.localId ?: existingByName?.id ?: 0L
+                val isDefaultResolved = if (item.isDefault && (!hasDefaultAccount || existingByName?.isDefault == true || mapped?.localId != null && existingCashAccounts.any { it.id == mapped.localId && it.isDefault })) {
+                    hasDefaultAccount = true
+                    true
+                } else {
+                    false
+                }
                 val entity = CashAccountEntity(
-                    id = mapped?.localId ?: 0L,
+                    id = resolvedId,
                     accountName = item.accountName,
                     balance = item.balance,
                     accountType = item.accountType,
                     isActive = item.isActive,
                     color = item.color,
                     notes = item.notes,
-                    isDefault = item.isDefault,
+                    isDefault = isDefaultResolved,
                     sortOrder = item.sortOrder.toInt()
                 )
                 val localId = cashAccountDao.insertCashAccount(entity)
+                cashByName[nameKey] = entity.copy(id = localId)
                 if (mapped == null) {
                     extDao.upsertCloudMapping(
                         CloudSyncMappingEntity(
@@ -683,11 +697,15 @@ class FirebaseSyncRepository(
                 pulledCount++
             }
 
+            val allCashById = cashByName.values.associateBy { it.id }
             for (item in remoteMutations) {
                 val mapped = extDao.getMappingByRemote("CASH_MUTATION", item.id)
+                val resolvedCashId = cashByName[item.accountName.trim().lowercase()]?.id
+                    ?: allCashById[item.cashAccountId]?.id
+                    ?: item.cashAccountId
                 val entity = CashMutationEntity(
                     id = mapped?.localId ?: 0L,
-                    cashAccountId = item.cashAccountId,
+                    cashAccountId = resolvedCashId,
                     accountName = item.accountName,
                     amount = item.amount,
                     mutationType = item.mutationType,
@@ -711,11 +729,13 @@ class FirebaseSyncRepository(
 
             for (item in remoteTransfers) {
                 val mapped = extDao.getMappingByRemote("CASH_TRANSFER", item.id)
+                val fromId = cashByName[item.fromAccountName.trim().lowercase()]?.id ?: 0L
+                val toId = cashByName[item.toAccountName.trim().lowercase()]?.id ?: 0L
                 val entity = CashTransferEntity(
                     id = mapped?.localId ?: 0L,
-                    fromAccountId = 0L,
+                    fromAccountId = fromId,
                     fromAccountName = item.fromAccountName,
-                    toAccountId = 0L,
+                    toAccountId = toId,
                     toAccountName = item.toAccountName,
                     amount = item.amount,
                     notes = item.notes,

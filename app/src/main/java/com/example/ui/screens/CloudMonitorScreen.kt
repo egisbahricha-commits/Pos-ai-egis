@@ -93,7 +93,8 @@ fun CloudMonitorScreen(viewModel: PosViewModel) {
     val totalCashOut = cashMutations.filter { it.amount < 0 }.sumOf { kotlin.math.abs(it.amount) }
     val netCashFlow = totalCashIn - totalCashOut
 
-    val totalSalesRevenue = sales.filter { it.status != "REFUNDED" && it.status != "CANCELLED" }.sumOf { it.finalAmount }
+    val completedSales = remember(sales) { sales.filter { it.status == "COMPLETED" } }
+    val totalSalesRevenue = completedSales.sumOf { it.finalAmount }
     val totalExpensesAmt = expenses.sumOf { it.amount }
     val totalIncomesAmt = incomes.sumOf { it.amount }
     val totalReceivables = customers.sumOf { it.totalReceivable }
@@ -300,9 +301,9 @@ fun CloudMonitorScreen(viewModel: PosViewModel) {
                                     onClick = { viewModel.logoutToLoginScreen() },
                                     border = BorderStroke(1.dp, Rose100),
                                     shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.height(44.dp)
+                                    modifier = Modifier.height(48.dp)
                                 ) {
-                                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Rose500, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Keluar Firebase", tint = Rose500, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text("Keluar", color = Rose500, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
@@ -348,7 +349,7 @@ fun CloudMonitorScreen(viewModel: PosViewModel) {
                 MonitorMetricCard(
                     title = "Total Penjualan",
                     value = "Rp ${formatRupiah(totalSalesRevenue)}",
-                    subtitle = "${sales.size} transaksi",
+                    subtitle = "${completedSales.size} transaksi selesai",
                     containerColor = SurfaceWhite,
                     contentColor = Slate900,
                     borderColor = BorderDefault,

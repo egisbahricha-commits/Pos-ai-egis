@@ -4,7 +4,13 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "products")
+@Entity(
+    tableName = "products",
+    indices = [
+        Index(value = ["barcode"]),
+        Index(value = ["name"])
+    ]
+)
 data class ProductEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val barcode: String = "",
@@ -333,13 +339,13 @@ data class PendingSaleEntity(
 @Entity(tableName = "store_profiles")
 data class StoreProfileEntity(
     @PrimaryKey val id: Long = 1L,
-    val name: String = "GERAI UNA SMART POS",
-    val address: String = "Jl. Garuda No. 8, Jakarta",
-    val phone: String = "081234567890",
+    val name: String = "Toko Saya",
+    val address: String = "",
+    val phone: String = "",
     val logoUri: String? = null,
     val businessType: String = "keduanya", // retail, grosir, keduanya
     val ppnBp: Int = 0, // basis poin: 1100 = 11%
-    val receiptFooter: String = "Terima Kasih Telah Berbelanja di Gerai Una!",
+    val receiptFooter: String = "Terima kasih telah berbelanja!",
     val updatedAt: Long = System.currentTimeMillis()
 )
 
@@ -373,7 +379,7 @@ data class MenuPermissionEntity(
 data class PrinterEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val bluetoothAddress: String = "00:11:22:33:44:55",
+    val bluetoothAddress: String = "",
     val type: String = "struk", // struk, stiker
     val language: String = "escpos", // escpos, tspl
     val widthMm: Int = 58, // 40, 58, 80
@@ -394,7 +400,13 @@ data class CashierDeviceEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "product_variants")
+@Entity(
+    tableName = "product_variants",
+    indices = [
+        Index(value = ["barcode"]),
+        Index(value = ["productId"])
+    ]
+)
 data class ProductVariantEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val productId: Long,
@@ -488,6 +500,26 @@ data class CloudSyncMappingEntity(
     val remoteId: String,
     val localId: Long,
     val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "barcode_scan_logs",
+    indices = [
+        Index(value = ["barcode"]),
+        Index(value = ["scannedAt"])
+    ]
+)
+data class BarcodeScanLogEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val barcode: String,
+    val productId: Long? = null,
+    val variantId: Long? = null,
+    val productName: String = "",
+    val matchedPrice: Double = 0.0,
+    val matchedStock: Double = 0.0,
+    val matched: Boolean = false,
+    val source: String = "CAMERA",
+    val scannedAt: Long = System.currentTimeMillis()
 )
 
 data class AdminTierWithRanges(

@@ -16,13 +16,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -30,6 +35,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -59,6 +65,7 @@ import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
+import com.example.ui.components.KasGoSearchBar
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -69,14 +76,36 @@ fun ContactsScreen(viewModel: PosViewModel) {
     val suppliers by viewModel.suppliers.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf("CUSTOMER") } // CUSTOMER, SUPPLIER
+    var searchQuery by remember { mutableStateOf("") }
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingCustomer by remember { mutableStateOf<CustomerEntity?>(null) }
+    var editingSupplier by remember { mutableStateOf<SupplierEntity?>(null) }
+    var customerToDelete by remember { mutableStateOf<CustomerEntity?>(null) }
+    var supplierToDelete by remember { mutableStateOf<SupplierEntity?>(null) }
     var topUpCustomer by remember { mutableStateOf<CustomerEntity?>(null) }
+
+    val filteredCustomers = remember(customers, searchQuery) {
+        if (searchQuery.isBlank()) customers
+        else customers.filter {
+            it.name.contains(searchQuery, ignoreCase = true) || it.phone.contains(searchQuery, ignoreCase = true)
+        }
+    }
+    val filteredSuppliers = remember(suppliers, searchQuery) {
+        if (searchQuery.isBlank()) suppliers
+        else suppliers.filter {
+            it.name.contains(searchQuery, ignoreCase = true) || it.phone.contains(searchQuery, ignoreCase = true)
+        }
+    }
 
     Scaffold(
         containerColor = BgCanvas,
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { showAddDialog = true },
+                onClick = {
+                    editingCustomer = null
+                    editingSupplier = null
+                    showAddDialog = true
+                },
                 containerColor = AccentBlue,
                 contentColor = Color.White,
                 modifier = Modifier.testTag("add_contact_fab")
@@ -96,8 +125,16 @@ fun ContactsScreen(viewModel: PosViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(SurfaceWhite)
-                    .padding(16.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                KasGoSearchBar(
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    placeholder = "Cari nama atau no. HP kontak...",
+                    onBarcodeScanClick = null
+                )
+
                 DesignSegmentedTabs(
                     options = listOf(
                         "CUSTOMER" to "Pelanggan (${customers.size})",
@@ -110,14 +147,18 @@ fun ContactsScreen(viewModel: PosViewModel) {
             HorizontalDivider(color = BorderDefault)
 
             if (activeTab == "CUSTOMER") {
-                if (customers.isEmpty()) {
+                if (filteredCustomers.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                         DesignEmptyState(
                             icon = Icons.Default.Person,
-                            title = "Belum ada pelanggan",
+                            title = if (searchQuery.isBlank()) "Belum ada pelanggan" else "Pelanggan tidak ditemukan",
                             subtitle = "Tambahkan kontak pelanggan untuk memantau transaksi dan piutang.",
                             ctaText = "Tambah pelanggan",
-                            onCtaClick = { showAddDialog = true }
+                            onCtaClick = {
+                                editingCustomer = null
+                                editingSupplier = null
+                                showAddDialog = true
+                            }
                         )
                     }
                 } else {
@@ -126,7 +167,7 @@ fun ContactsScreen(viewModel: PosViewModel) {
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        items(customers, key = { it.id }) { c ->
+                        items(filteredCustomers, key = { it.id }) { c ->
                             val loyaltyTier = when {
                                 c.loyaltyPoints >= 100 -> "VIP"
                                 c.loyaltyPoints >= 50 -> "Gold"
@@ -184,15 +225,27 @@ fun ContactsScreen(viewModel: PosViewModel) {
                                             "Deposit: Rp ${formatRupiah(c.depositBalance)}",
                                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = Emerald700)
                                         )
-                                        OutlinedButton(
-                                            onClick = { topUpCustomer = c },
-                                            shape = RoundedCornerShape(8.dp),
-                                            border = BorderStroke(1.dp, BorderDefault),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                        ) {
-                                            Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Top Up Deposit", fontSize = 11.sp, color = AccentBlue, fontWeight = FontWeight.SemiBold)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            OutlinedButton(
+                                                onClick = { topUpCustomer = c },
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = BorderStroke(1.dp, BorderDefault),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                            ) {
+                                                Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Top Up", fontSize = 11.sp, color = AccentBlue, fontWeight = FontWeight.SemiBold)
+                                            }
+                                            IconButton(onClick = {
+                                                editingCustomer = c
+                                                editingSupplier = null
+                                                showAddDialog = true
+                                            }) {
+                                                Icon(Icons.Default.Edit, contentDescription = "Ubah pelanggan", tint = Slate600, modifier = Modifier.size(18.dp))
+                                            }
+                                            IconButton(onClick = { customerToDelete = c }) {
+                                                Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus pelanggan", tint = Rose500, modifier = Modifier.size(18.dp))
+                                            }
                                         }
                                     }
                                 }
@@ -201,14 +254,18 @@ fun ContactsScreen(viewModel: PosViewModel) {
                     }
                 }
             } else {
-                if (suppliers.isEmpty()) {
+                if (filteredSuppliers.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                         DesignEmptyState(
                             icon = Icons.Default.Business,
-                            title = "Belum ada pemasok",
+                            title = if (searchQuery.isBlank()) "Belum ada pemasok" else "Pemasok tidak ditemukan",
                             subtitle = "Tambahkan pemasok atau grosir untuk memudahkan kulakan stok.",
                             ctaText = "Tambah pemasok",
-                            onCtaClick = { showAddDialog = true }
+                            onCtaClick = {
+                                editingCustomer = null
+                                editingSupplier = null
+                                showAddDialog = true
+                            }
                         )
                     }
                 } else {
@@ -217,7 +274,7 @@ fun ContactsScreen(viewModel: PosViewModel) {
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        items(suppliers, key = { it.id }) { s ->
+                        items(filteredSuppliers, key = { it.id }) { s ->
                             Card(
                                 shape = RoundedCornerShape(14.dp),
                                 colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
@@ -252,6 +309,16 @@ fun ContactsScreen(viewModel: PosViewModel) {
                                         }
                                         Text(s.phone.ifBlank { "Tanpa kontak" }, style = MaterialTheme.typography.bodySmall.copy(color = Slate500))
                                         if (s.address.isNotBlank()) Text(s.address, style = MaterialTheme.typography.bodySmall.copy(color = Slate600))
+                                    }
+                                    IconButton(onClick = {
+                                        editingSupplier = s
+                                        editingCustomer = null
+                                        showAddDialog = true
+                                    }) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Ubah pemasok", tint = Slate600, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(onClick = { supplierToDelete = s }) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus pemasok", tint = Rose500, modifier = Modifier.size(18.dp))
                                     }
                                 }
                             }
@@ -302,17 +369,90 @@ fun ContactsScreen(viewModel: PosViewModel) {
         }
     }
 
+    if (customerToDelete != null) {
+        val cust = customerToDelete!!
+        val hasBalance = cust.totalReceivable > 0 || cust.depositBalance > 0
+        AlertDialog(
+            onDismissRequest = { customerToDelete = null },
+            title = { Text("Hapus Pelanggan?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    if (hasBalance) "${cust.name} masih memiliki piutang Rp ${formatRupiah(cust.totalReceivable)} atau deposit Rp ${formatRupiah(cust.depositBalance)}. Lunasi/kosongkan terlebih dahulu sebelum menghapus."
+                    else "Yakin ingin menghapus data pelanggan \"${cust.name}\"?"
+                )
+            },
+            confirmButton = {
+                if (!hasBalance) {
+                    Button(
+                        onClick = {
+                            viewModel.deleteCustomer(cust)
+                            customerToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Rose500, contentColor = Color.White)
+                    ) {
+                        Text("Hapus", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { customerToDelete = null }) { Text(if (hasBalance) "Mengerti" else "Batal") }
+            }
+        )
+    }
+
+    if (supplierToDelete != null) {
+        val supp = supplierToDelete!!
+        val hasDebt = supp.totalDebt > 0
+        AlertDialog(
+            onDismissRequest = { supplierToDelete = null },
+            title = { Text("Hapus Pemasok?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    if (hasDebt) "${supp.name} masih memiliki sisa utang Rp ${formatRupiah(supp.totalDebt)}. Lunasi utang terlebih dahulu sebelum menghapus."
+                    else "Yakin ingin menghapus data pemasok \"${supp.name}\"?"
+                )
+            },
+            confirmButton = {
+                if (!hasDebt) {
+                    Button(
+                        onClick = {
+                            viewModel.deleteSupplier(supp)
+                            supplierToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Rose500, contentColor = Color.White)
+                    ) {
+                        Text("Hapus", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { supplierToDelete = null }) { Text(if (hasDebt) "Mengerti" else "Batal") }
+            }
+        )
+    }
+
     if (showAddDialog) {
+        val isCustMode = editingCustomer != null || (editingSupplier == null && activeTab == "CUSTOMER")
         AddContactDialog(
-            isCustomer = activeTab == "CUSTOMER",
-            onDismiss = { showAddDialog = false },
-            onSaveCustomer = { name, phone, address, notes ->
-                viewModel.saveCustomer(CustomerEntity(name = name, phone = phone, address = address, notes = notes))
+            isCustomer = isCustMode,
+            existingCustomer = editingCustomer,
+            existingSupplier = editingSupplier,
+            onDismiss = {
                 showAddDialog = false
+                editingCustomer = null
+                editingSupplier = null
+            },
+            onSaveCustomer = { name, phone, address, notes ->
+                val base = editingCustomer ?: CustomerEntity(name = name)
+                viewModel.saveCustomer(base.copy(name = name, phone = phone, address = address, notes = notes))
+                showAddDialog = false
+                editingCustomer = null
             },
             onSaveSupplier = { name, phone, address, notes ->
-                viewModel.saveSupplier(SupplierEntity(name = name, phone = phone, address = address, notes = notes))
+                val base = editingSupplier ?: SupplierEntity(name = name)
+                viewModel.saveSupplier(base.copy(name = name, phone = phone, address = address, notes = notes))
                 showAddDialog = false
+                editingSupplier = null
             }
         )
     }
@@ -321,21 +461,33 @@ fun ContactsScreen(viewModel: PosViewModel) {
 @Composable
 fun AddContactDialog(
     isCustomer: Boolean,
+    existingCustomer: CustomerEntity? = null,
+    existingSupplier: SupplierEntity? = null,
     onDismiss: () -> Unit,
     onSaveCustomer: (name: String, phone: String, addr: String, notes: String) -> Unit,
     onSaveSupplier: (name: String, phone: String, addr: String, notes: String) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var address by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
-    var showError by remember { mutableStateOf(false) }
+    val key = existingCustomer?.id ?: existingSupplier?.id ?: if (isCustomer) -1L else -2L
+    var name by remember(key) { mutableStateOf(existingCustomer?.name ?: existingSupplier?.name ?: "") }
+    var phone by remember(key) { mutableStateOf(existingCustomer?.phone ?: existingSupplier?.phone ?: "") }
+    var address by remember(key) { mutableStateOf(existingCustomer?.address ?: existingSupplier?.address ?: "") }
+    var notes by remember(key) { mutableStateOf(existingCustomer?.notes ?: existingSupplier?.notes ?: "") }
+    var showError by remember(key) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(18.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(20.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(
-                    if (isCustomer) "Tambah Pelanggan Baru" else "Tambah Pemasok Baru",
+                    when {
+                        existingCustomer != null -> "Ubah Data Pelanggan"
+                        existingSupplier != null -> "Ubah Data Pemasok"
+                        isCustomer -> "Tambah Pelanggan Baru"
+                        else -> "Tambah Pemasok Baru"
+                    },
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
                 )
                 Spacer(modifier = Modifier.height(14.dp))
@@ -356,6 +508,7 @@ fun AddContactDialog(
                     label = "No. HP / WhatsApp",
                     value = phone,
                     onValueChange = { phone = it },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(10.dp))

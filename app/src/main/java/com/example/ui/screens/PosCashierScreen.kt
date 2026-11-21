@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.PauseCircleOutline
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShoppingBag
@@ -112,7 +113,10 @@ import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.Screen
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.roundToLong
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -276,13 +280,37 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                             onShiftCashMovement = { isShiftCashDialogOpen = true }
                         )
 
-                        KasGoSearchBar(
-                            query = searchQuery,
-                            onQueryChange = { searchQuery = it },
-                            placeholder = "Cari produk atau scan barcode...",
-                            onBarcodeScanClick = { showBarcodeScanner = true },
-                            onBarcodeSubmit = { handleBarcodeScanned(it) }
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            KasGoSearchBar(
+                                query = searchQuery,
+                                onQueryChange = { searchQuery = it },
+                                placeholder = "Cari produk atau scan barcode...",
+                                onBarcodeScanClick = { showBarcodeScanner = true },
+                                onBarcodeSubmit = { handleBarcodeScanned(it) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            Surface(
+                                onClick = { viewModel.navigateTo(Screen.SCAN_BARCODE) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = ModuleKasir,
+                                modifier = Modifier
+                                    .heightIn(min = 52.dp)
+                                    .testTag("pos_open_scan_cart_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                ) {
+                                    Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan Keranjang", tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Mode Scan", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
 
                         ProductTypePillsRow(
                             selectedType = selectedProductType,
@@ -367,13 +395,37 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         onShiftCashMovement = { isShiftCashDialogOpen = true }
                     )
 
-                    KasGoSearchBar(
-                        query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        placeholder = "Cari produk atau scan barcode...",
-                        onBarcodeScanClick = { showBarcodeScanner = true },
-                        onBarcodeSubmit = { handleBarcodeScanned(it) }
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        KasGoSearchBar(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            placeholder = "Cari produk atau scan barcode...",
+                            onBarcodeScanClick = { showBarcodeScanner = true },
+                            onBarcodeSubmit = { handleBarcodeScanned(it) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            onClick = { viewModel.navigateTo(Screen.SCAN_BARCODE) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = ModuleKasir,
+                            modifier = Modifier
+                                .heightIn(min = 52.dp)
+                                .testTag("pos_open_scan_cart_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan Keranjang", tint = Color.White, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Scan", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
 
                     ProductTypePillsRow(
                         selectedType = selectedProductType,
@@ -431,7 +483,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                                     badge = {
                                         if (cart.isNotEmpty()) {
                                             Badge(containerColor = ModuleKasir, contentColor = Color.White) {
-                                                Text("${cart.sumOf { it.quantity.toInt() }}", fontWeight = FontWeight.Bold)
+                                                Text("${cart.sumOf { ceil(it.quantity).toInt().coerceAtLeast(1) }}", fontWeight = FontWeight.Bold)
                                             }
                                         }
                                     }
@@ -1581,9 +1633,11 @@ fun KasGoPaymentDialog(
         isPreOrder: Boolean
     ) -> Unit
 ) {
+    var isManualAdminOverride by remember { mutableStateOf(false) }
     var paymentMethod by remember { mutableStateOf("TUNAI") } // TUNAI, QRIS, TRANSFER, SPLIT, KREDIT
-    val defaultAccount = cashAccounts.firstOrNull { it.isDefault } ?: cashAccounts.firstOrNull()
-    var selectedAccountId by remember { mutableStateOf<Long?>(defaultAccount?.id) }
+    val activeCashAccounts = remember(cashAccounts) { cashAccounts.filter { it.isActive } }
+    val defaultAccount = activeCashAccounts.firstOrNull { it.isDefault } ?: activeCashAccounts.firstOrNull()
+    var selectedAccountId by remember(activeCashAccounts) { mutableStateOf<Long?>(defaultAccount?.id) }
     var shippingText by remember { mutableStateOf("0") }
     var additionalFeeText by remember { mutableStateOf("0") }
     var selectedPromo by remember { mutableStateOf<PromoEntity?>(null) }
@@ -1598,9 +1652,10 @@ fun KasGoPaymentDialog(
     val depositUsed = if (useDeposit && maxDeposit > 0) minOf(maxDeposit, grandTotal) else 0.0
     val payableAmount = (grandTotal - depositUsed).coerceAtLeast(0.0)
 
-    var cashPaidText by remember(payableAmount) { mutableStateOf("${payableAmount.toLong()}") }
-    var splitCashText by remember(payableAmount) { mutableStateOf("${(payableAmount / 2).toLong()}") }
-    var splitNonCashText by remember(payableAmount) { mutableStateOf("${(payableAmount - (payableAmount / 2).toLong()).toLong()}") }
+    var cashPaidText by remember(payableAmount) { mutableStateOf("${payableAmount.roundToLong()}") }
+    val defaultHalfSplit = remember(payableAmount) { (payableAmount / 2.0).roundToLong() }
+    var splitCashText by remember(payableAmount) { mutableStateOf("$defaultHalfSplit") }
+    var splitNonCashText by remember(payableAmount) { mutableStateOf("${(payableAmount.roundToLong() - defaultHalfSplit).coerceAtLeast(0L)}") }
     var splitNonCashMethod by remember { mutableStateOf("QRIS") }
     var notes by remember { mutableStateOf("") }
 
@@ -1775,12 +1830,12 @@ fun KasGoPaymentDialog(
                     }
                 }
 
-                if (cashAccounts.isNotEmpty()) {
+                if (activeCashAccounts.isNotEmpty()) {
                     item {
                         Text("Masuk ke Rekening / Kas", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Slate700))
                         Spacer(modifier = Modifier.height(4.dp))
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(cashAccounts) { acc ->
+                            items(activeCashAccounts) { acc ->
                                 val isAccSel = selectedAccountId == acc.id
                                 DesignFilterChip(
                                     label = "${acc.accountName} (${if (acc.balance < 0) "-Rp " else "Rp "}${formatRupiah(abs(acc.balance))})",
@@ -1797,7 +1852,7 @@ fun KasGoPaymentDialog(
                         DesignLabeledTextField(
                             label = "Uang Tunai Diterima",
                             value = cashPaidText,
-                            onValueChange = { cashPaidText = it },
+                            onValueChange = { raw -> cashPaidText = raw.filter { it.isDigit() } },
                             prefixText = "Rp ",
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.fillMaxWidth()
@@ -1853,8 +1908,8 @@ fun KasGoPaymentDialog(
                         Text("Pembayaran Sebagian Tunai + Non-Tunai", style = MaterialTheme.typography.labelSmall.copy(color = Slate700))
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            DesignLabeledTextField("Tunai", splitCashText, { splitCashText = it }, prefixText = "Rp ", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                            DesignLabeledTextField("Non-Tunai", splitNonCashText, { splitNonCashText = it }, prefixText = "Rp ", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                            DesignLabeledTextField("Tunai", splitCashText, { raw -> splitCashText = raw.filter { it.isDigit() } }, prefixText = "Rp ", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                            DesignLabeledTextField("Non-Tunai", splitNonCashText, { raw -> splitNonCashText = raw.filter { it.isDigit() } }, prefixText = "Rp ", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2087,9 +2142,9 @@ fun PendingSalesListDialog(
                                         )
                                     }
 
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        IconButton(onClick = { onDeleteSale(pending.id) }, modifier = Modifier.size(32.dp)) {
-                                            Icon(Icons.Default.Delete, contentDescription = null, tint = Rose500, modifier = Modifier.size(18.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(onClick = { onDeleteSale(pending.id) }, modifier = Modifier.size(48.dp)) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Hapus antrian", tint = Rose500, modifier = Modifier.size(20.dp))
                                         }
                                         Button(
                                             onClick = { onResumeSale(pending) },
@@ -2156,8 +2211,9 @@ fun StartShiftDialog(
 
                 OutlinedTextField(
                     value = startingCashText,
-                    onValueChange = { startingCashText = it },
+                    onValueChange = { raw -> startingCashText = raw.filter { it.isDigit() } },
                     label = { Text("Modal Uang Laci Awal (Rp)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2228,6 +2284,18 @@ fun CloseShiftDialog(
                             Text("Total Penjualan Tunai", style = MaterialTheme.typography.bodySmall.copy(color = Slate600))
                             Text("Rp ${formatRupiah(shift.totalCashSales)}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = Emerald700))
                         }
+                        if (shift.cashIn > 0.0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Kas Masuk Laci", style = MaterialTheme.typography.bodySmall.copy(color = Slate600))
+                                Text("+Rp ${formatRupiah(shift.cashIn)}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = Emerald700))
+                            }
+                        }
+                        if (shift.cashOut > 0.0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Kas Keluar Laci", style = MaterialTheme.typography.bodySmall.copy(color = Slate600))
+                                Text("-Rp ${formatRupiah(shift.cashOut)}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = Rose500))
+                            }
+                        }
                         HorizontalDivider(color = Slate200, modifier = Modifier.padding(vertical = 6.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Uang Laci Sistem", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
@@ -2240,8 +2308,9 @@ fun CloseShiftDialog(
 
                 OutlinedTextField(
                     value = actualCashText,
-                    onValueChange = { actualCashText = it },
+                    onValueChange = { raw -> actualCashText = raw.filter { it.isDigit() } },
                     label = { Text("Hitungan Fisik Uang Laci (Rp)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2314,13 +2383,9 @@ fun FlexiblePriceAndTierDialog(
     }
 
     var isManualAdminOverride by remember { mutableStateOf(false) }
-    var manualAdminText by remember(initialCalc.matchedRange?.id, selectedServiceId, isManualAdminOverride) {
+    var manualAdminText by remember(initialCalc.matchedRange?.id, selectedServiceId) {
         mutableStateOf(
-            if (!isManualAdminOverride) {
-                if (initialCalc.matchedRange != null) initialCalc.storeAdminFee.toLong().toString() else ""
-            } else {
-                ""
-            }
+            if (initialCalc.matchedRange != null) initialCalc.storeAdminFee.toLong().toString() else ""
         )
     }
 
@@ -2885,8 +2950,9 @@ fun MultiUnitPickerDialog(
                                         conv.unitName,
                                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
                                     )
+                                    val multLabel = if (conv.multiplier % 1.0 == 0.0) conv.multiplier.toLong().toString() else conv.multiplier.toString()
                                     Text(
-                                        "Isi: ${conv.multiplier.toLong()} ${product.baseUnit}",
+                                        "Isi: $multLabel ${product.baseUnit}",
                                         style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
                                     )
                                 }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,8 +19,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
@@ -44,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.components.BadgeType
@@ -57,18 +62,26 @@ import com.example.ui.viewmodel.PosViewModel
 fun WhatsAppScreen(viewModel: PosViewModel) {
     val context = LocalContext.current
     val testReply by viewModel.whatsAppTestReply.collectAsStateWithLifecycle()
+    val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
 
-    var senderPhone by remember { mutableStateOf("081234567890") }
-    var incomingMessage by remember { mutableStateOf("Baru belanja di grosir, aqua 2 dus harga 45 ribu, indomie goreng 5 karton harga 110 ribu") }
-    var sharePhone by remember { mutableStateOf("081234567890") }
-    var shareText by remember { mutableStateOf("Halo, ini ringkasan penjualan toko hari ini dari Gerai Una Smart POS AI!") }
+    val ownerPhone = remember(appSettings) {
+        appSettings.find { it.settingKey == "owner_authorized_phone" }?.settingValue?.ifBlank { "" } ?: ""
+    }
+
+    var isEditingOwnerPhone by remember { mutableStateOf(false) }
+    var editableOwnerPhone by remember(ownerPhone) { mutableStateOf(ownerPhone) }
+    var senderPhone by remember(ownerPhone) { mutableStateOf(ownerPhone) }
+    var incomingMessage by remember { mutableStateOf("") }
+    var sharePhone by remember(ownerPhone) { mutableStateOf(ownerPhone) }
+    var shareText by remember { mutableStateOf("Halo, berikut ringkasan penjualan toko hari ini.") }
 
     val presets = listOf(
         "Belanja Aqua & Indomie" to "Baru belanja di grosir aqua 2 dus harga 45 ribu, indomie goreng 5 karton harga 110 ribu",
         "Tambah Produk Rinso" to "Tambahkan produk baru Rinso cair 800 ml, harga modal 14 ribu, harga jual 18 ribu",
         "Pengeluaran Listrik 250rb" to "Hari ini pengeluaran listrik 250 ribu",
         "Cek Stok Aqua" to "Stok Aqua sekarang berapa?",
-        "Cek Utang Grosir" to "Berapa utang saya ke grosir?"
+        "Cek Utang Grosir" to "Berapa utang saya ke grosir?",
+        "Cek Piutang Pelanggan" to "Berapa piutang pelanggan saat ini?"
     )
 
     LazyColumn(
@@ -131,21 +144,67 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
                 border = BorderStroke(1.dp, Sapphire200),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Shield, contentDescription = null, tint = AccentBlue)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "Otentikasi Nomor Pemilik Terdaftar",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = AccentBlue)
-                        )
-                        Text(
-                            "Nomor terotorisasi: 081234567890 (Egis Bahricha - Owner). Nomor asing otomatis ditolak.",
-                            style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
-                        )
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Shield, contentDescription = null, tint = AccentBlue)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    "Otentikasi Nomor Pemilik Terdaftar",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = AccentBlue)
+                                )
+                                Text(
+                                    "Nomor terotorisasi: $ownerPhone. Nomor asing otomatis ditolak.",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = { isEditingOwnerPhone = !isEditingOwnerPhone },
+                            border = BorderStroke(1.dp, AccentBlue.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = "Ubah Nomor Pemilik", tint = AccentBlue, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (isEditingOwnerPhone) "Tutup" else "Ubah", color = AccentBlue, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (isEditingOwnerPhone) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            DesignLabeledTextField(
+                                label = "Nomor WA Pemilik Baru",
+                                value = editableOwnerPhone,
+                                onValueChange = { editableOwnerPhone = it },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = {
+                                    viewModel.saveOwnerWhatsAppPhone(editableOwnerPhone)
+                                    isEditingOwnerPhone = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Icon(Icons.Default.Save, contentDescription = "Simpan Nomor Pemilik", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Simpan", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -169,13 +228,15 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
                             label = "No. HP Pengirim",
                             value = senderPhone,
                             onValueChange = { senderPhone = it },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                             modifier = Modifier.weight(1.5f)
                         )
 
                         Button(
-                            onClick = { senderPhone = "081234567890" },
+                            onClick = { senderPhone = ownerPhone },
                             colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
                         ) {
                             Text("Owner", fontWeight = FontWeight.Bold)
                         }
@@ -183,7 +244,8 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
                             onClick = { senderPhone = "089988776655" },
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Rose500),
                             border = BorderStroke(1.dp, Rose500.copy(alpha = 0.5f)),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
                         ) {
                             Text("Asing", fontWeight = FontWeight.Bold)
                         }
@@ -215,7 +277,7 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
                         onClick = { viewModel.simulateIncomingWhatsApp(senderPhone, incomingMessage) },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth().testTag("simulate_wa_button")
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("simulate_wa_button")
                     ) {
                         Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
@@ -283,6 +345,7 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
                         label = "Nomor Tujuan",
                         value = sharePhone,
                         onValueChange = { sharePhone = it },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -300,7 +363,7 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))

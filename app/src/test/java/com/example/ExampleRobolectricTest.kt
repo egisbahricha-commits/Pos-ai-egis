@@ -12,16 +12,27 @@ import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.AdminTierRangeEntity
 import com.example.data.entity.AdminTierServiceEntity
 import com.example.data.entity.AdminTierWithRanges
+import com.example.data.entity.BarcodeScanLogEntity
 import com.example.data.entity.ExpenseEntity
 import com.example.data.entity.IncomeEntity
 import com.example.data.entity.ProductAliasEntity
 import com.example.data.entity.ProductEntity
+import com.example.data.entity.ProductVariantEntity
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.SaleItemEntity
+import com.example.data.entity.UnitConversionEntity
+import com.example.data.entity.UserAccountEntity
 import com.example.data.pricing.ProfitLossCalculator
 import com.example.data.pricing.ProfitLossPeriod
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.PosRepository
+import com.example.ui.viewmodel.ALL_PERMISSION_MENU_KEYS
+import com.example.ui.viewmodel.BarcodeLookupOutcome
+import com.example.ui.viewmodel.LocalAuthResult
+import com.example.ui.viewmodel.authenticateLocalUser
+import com.example.ui.viewmodel.resolveBarcodeToCartMatch
+import com.example.ui.viewmodel.validateAdminSetupInput
+import com.example.ui.viewmodel.validateManualProductInput
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -75,6 +86,8 @@ class ExampleRobolectricTest {
         assertEquals(45000.0, aiEngine.extractAmount("harga 45rb per dus"), 0.01)
         assertEquals(110000.0, aiEngine.extractAmount("harga 110 ribu"), 0.01)
         assertEquals(1500000.0, aiEngine.extractAmount("total 1.5jt"), 0.01)
+        assertEquals(500.0, aiEngine.extractAmount("bayar admin Rp 500"), 0.01)
+        assertEquals(1000.0, aiEngine.extractAmount("admin Rp1.000"), 0.01)
     }
 
     @Test
@@ -442,6 +455,358 @@ class ExampleRobolectricTest {
         } finally {
             roomDb.close()
             tempBuildDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `test resolveBarcodeToCartMatch matches product variant unit conversions and unknown codes`() {
+        val simpleProduct = ProductEntity(
+            id = 10L,
+            name = "Aqua 600ml",
+            barcode = "8991001001001",
+            sellingPrice = 4000.0,
+            isActive = true
+        )
+        val multiUnitProduct = ProductEntity(
+            id = 20L,
+            name = "Kopi Sachet",
+            barcode = "SKU-KOPI-01",
+            sellingPrice = 2000.0,
+            isActive = true
+        )
+        val inactiveProduct = ProductEntity(
+            id = 30L,
+            name = "Produk Nonaktif",
+            barcode = "9999999999",
+            sellingPrice = 5000.0,
+            isActive = false
+        )
+        val variantProduct = ProductEntity(
+            id = 40L,
+            name = "Kaos Polos",
+            barcode = "KAOS-PARENT",
+            hasVariants = true,
+            sellingPrice = 45000.0,
+            isActive = true
+        )
+        val variantXl = ProductVariantEntity(
+            id = 401L,
+            productId = 40L,
+            name = "Hitam XL",
+            barcode = "8994000401",
+            sellingPrice = 48000.0,
+            isActive = true
+        )
+        val conversionDus = UnitConversionEntity(
+            id = 501L,
+            productId = 20L,
+            unitName = "dus",
+            multiplier = 12.0,
+            customSellingPrice = 22000.0
+        )
+
+        val products = listOf(simpleProduct, multiUnitProduct, inactiveProduct, variantProduct)
+        val variants = listOf(variantXl)
+        val conversions = listOf(conversionDus)
+
+        // Exact match with surrounding whitespace & different casing
+        val directMatch = resolveBarcodeToCartMatch(" 8991001001001 ", products, variants, conversions)
+        assertTrue(directMatch is BarcodeLookupOutcome.AddedProduct)
+        assertEquals(10L, (directMatch as BarcodeLookupOutcome.AddedProduct).product.id)
+
+        // Variant barcode resolves straight to AddedVariant
+        val variantMatch = resolveBarcodeToCartMatch("8994000401", products, variants, conversions)
+        assertTrue(variantMatch is BarcodeLookupOutcome.AddedVariant)
+        assertEquals(401L, (variantMatch as BarcodeLookupOutcome.AddedVariant).variant.id)
+
+        // Multi-unit product triggers NeedsSelection
+        val unitMatch = resolveBarcodeToCartMatch("sku-kopi-01", products, variants, conversions)
+        assertTrue(unitMatch is BarcodeLookupOutcome.NeedsSelection)
+        assertEquals(1, (unitMatch as BarcodeLookupOutcome.NeedsSelection).conversions.size)
+
+        // Inactive or missing barcode returns NotFound
+        assertTrue(resolveBarcodeToCartMatch("9999999999", products, variants, conversions) is BarcodeLookupOutcome.NotFound)
+        val unknown = resolveBarcodeToCartMatch("404040404", products, variants, conversions)
+        assertTrue(unknown is BarcodeLookupOutcome.NotFound)
+        assertEquals("404040404", (unknown as BarcodeLookupOutcome.NotFound).barcode)
+    }
+
+    @Test
+    fun `test Room product barcode schema, indexed lookup, stock decrement and scan log`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val productDao = db.productDao()
+            val extDao = db.extendedPosDao()
+
+            val insertedId = productDao.insertProduct(
+                ProductEntity(
+                    name = "Teh Botol Sosro 450ml",
+                    barcode = "8996001600123",
+                    sellingPrice = 5500.0,
+                    purchasePrice = 4100.0,
+                    stock = 12.0,
+                    isActive = true
+                )
+            )
+            extDao.insertVariant(
+                ProductVariantEntity(
+                    productId = insertedId,
+                    name = "Varian Kotak 250ml",
+                    barcode = "VAR-TEH-250",
+                    sellingPrice = 3500.0,
+                    purchasePrice = 2500.0,
+                    stock = 8.0,
+                    isActive = true
+                )
+            )
+
+            // Normalized lookup (whitespace & case-insensitive)
+            val foundProduct = productDao.getActiveProductByBarcode(" 8996001600123 ")
+            assertNotNull(foundProduct)
+            assertEquals("Teh Botol Sosro 450ml", foundProduct?.name)
+            assertEquals(5500.0, foundProduct?.sellingPrice ?: 0.0, 0.01)
+            assertEquals(12.0, foundProduct?.stock ?: 0.0, 0.01)
+
+            // Observe Flow by barcode
+            val observed = productDao.observeProductByBarcode("8996001600123").first()
+            assertEquals(insertedId, observed?.id)
+
+            // Indexed variant barcode lookup
+            val foundVariant = extDao.getActiveVariantByBarcode("var-teh-250")
+            assertNotNull(foundVariant)
+            assertEquals("Varian Kotak 250ml", foundVariant?.name)
+            assertEquals(3500.0, foundVariant?.sellingPrice ?: 0.0, 0.01)
+
+            // Atomic stock decrement respects available balance
+            val updatedRows = productDao.decrementStockIfAvailable(insertedId, 2.0)
+            assertEquals(1, updatedRows)
+            assertEquals(10.0, productDao.getProductById(insertedId)?.stock ?: 0.0, 0.01)
+
+            val overDecrement = productDao.decrementStockIfAvailable(insertedId, 50.0)
+            assertEquals(0, overDecrement)
+            assertEquals(10.0, productDao.getProductById(insertedId)?.stock ?: 0.0, 0.01)
+
+            // Scan log persistence
+            productDao.recordBarcodeScan(
+                BarcodeScanLogEntity(
+                    barcode = "8996001600123",
+                    productId = insertedId,
+                    productName = "Teh Botol Sosro 450ml",
+                    matchedPrice = 5500.0,
+                    matchedStock = 10.0,
+                    matched = true,
+                    source = "CAMERA"
+                )
+            )
+            val logs = productDao.getRecentBarcodeScans().first()
+            assertEquals(1, logs.size)
+            assertEquals("8996001600123", logs.first().barcode)
+            assertTrue(logs.first().matched)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `test manual product management validation and Room add update delete lifecycle`() = runBlocking {
+        val existingList = listOf(
+            ProductEntity(id = 1L, name = "Kopi Susu", barcode = "899111222", sellingPrice = 5000.0, stock = 10.0)
+        )
+
+        // Blank name / negative price / duplicate barcode caught
+        val invalid = validateManualProductInput(
+            name = " ",
+            sellingPriceText = "-100",
+            stockText = "",
+            barcode = "899111222",
+            editingProductId = null,
+            existingProducts = existingList
+        )
+        assertFalse(invalid.isValid)
+        assertNotNull(invalid.nameError)
+        assertNotNull(invalid.priceError)
+        assertNotNull(invalid.stockError)
+        assertNotNull(invalid.barcodeError)
+
+        // Editing the same product with its own barcode passes validation
+        val validEdit = validateManualProductInput(
+            name = "Kopi Susu Gula Aren",
+            sellingPriceText = "6000",
+            stockText = "15",
+            barcode = "899111222",
+            editingProductId = 1L,
+            existingProducts = existingList
+        )
+        assertTrue(validEdit.isValid)
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = PosRepository(db)
+
+            // 1. Add item
+            val insertedId = repo.insertProduct(
+                ProductEntity(
+                    name = "Indomie Goreng 85g",
+                    sellingPrice = 3500.0,
+                    purchasePrice = 2800.0,
+                    stock = 24.0,
+                    barcode = "089686010947"
+                )
+            )
+            val created = repo.getProductById(insertedId)
+            assertNotNull(created)
+            assertEquals("Indomie Goreng 85g", created?.name)
+            assertEquals(3500.0, created?.sellingPrice ?: 0.0, 0.01)
+            assertEquals(24.0, created?.stock ?: 0.0, 0.01)
+
+            // 2. Update name, price, and current stock level + record stock movement
+            repo.updateProduct(
+                created!!.copy(
+                    name = "Indomie Goreng Jumbo",
+                    sellingPrice = 4500.0,
+                    stock = 30.0
+                )
+            )
+            repo.adjustStock(insertedId, 30.0, "Pembaruan stok manual")
+            val updated = repo.getProductById(insertedId)
+            assertEquals("Indomie Goreng Jumbo", updated?.name)
+            assertEquals(4500.0, updated?.sellingPrice ?: 0.0, 0.01)
+            assertEquals(30.0, updated?.stock ?: 0.0, 0.01)
+
+            // 3. Delete item cleanly from Room
+            repo.deleteProductCascade(updated!!)
+            assertNull(repo.getProductById(insertedId))
+            assertNull(repo.getProductByBarcode("089686010947"))
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `test populateInitialData has zero dummy data and clean zero cash balance`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            GeraiUnaDatabase.populateInitialData(db)
+
+            // Zero dummy products, suppliers, customers, printers, devices, or users
+            assertTrue(db.productDao().getAllProductsList().isEmpty())
+            assertTrue(db.contactDao().getAllCustomers().first().isEmpty())
+            assertTrue(db.contactDao().getAllSuppliers().first().isEmpty())
+            assertTrue(db.extendedPosDao().getAllUsersList().isEmpty())
+            assertTrue(db.extendedPosDao().getAllPrinters().first().isEmpty())
+            assertTrue(db.extendedPosDao().getAllCashierDevices().first().isEmpty())
+            assertTrue(db.adminTierDao().getAllServicesList().isEmpty())
+
+            // Clean neutral store profile & Kas Toko initialized at Rp 0
+            val profile = db.extendedPosDao().getStoreProfileSync()
+            assertNotNull(profile)
+            assertEquals("Toko Saya", profile?.name)
+            assertEquals("", profile?.phone)
+
+            val accounts = db.cashAccountDao().getAllAccountsList()
+            assertEquals(1, accounts.size)
+            assertEquals("Kas Toko", accounts.first().accountName)
+            assertEquals(0.0, accounts.first().balance, 0.01)
+
+            assertEquals("true", db.appSettingsDao().getSettingValue("db_initialized"))
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `test Admin Utama setup validation, Room user creation, and mandatory login verification`() = runBlocking {
+        // 1. Validate first-time Admin Utama setup errors
+        val badSetup = validateAdminSetupInput(
+            storeName = "",
+            fullName = " ",
+            username = "ab",
+            pin = "123",
+            confirmPin = "456"
+        )
+        assertFalse(badSetup.isValid)
+        assertNotNull(badSetup.storeNameError)
+        assertNotNull(badSetup.fullNameError)
+        assertNotNull(badSetup.usernameError)
+        assertNotNull(badSetup.pinError)
+        assertNotNull(badSetup.confirmPinError)
+
+        val goodSetup = validateAdminSetupInput(
+            storeName = "Toko Maju Jaya",
+            fullName = "Andi Pratama",
+            username = "admin",
+            pin = "482910",
+            confirmPin = "482910"
+        )
+        assertTrue(goodSetup.isValid)
+
+        // 2. Persist Admin Utama + Staff user created by Admin Utama into Room
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = PosRepository(db)
+            val adminId = repo.saveUserWithPermissions(
+                UserAccountEntity(
+                    name = "Andi Pratama",
+                    username = "admin",
+                    role = "owner",
+                    pinHash = GeraiUnaDatabase.hashPin("482910"),
+                    isActive = true
+                ),
+                ALL_PERMISSION_MENU_KEYS.associateWith { true }
+            )
+            val kasirId = repo.saveUserWithPermissions(
+                UserAccountEntity(
+                    name = "Sari Kasir",
+                    username = "sari",
+                    role = "kasir",
+                    pinHash = GeraiUnaDatabase.hashPin("654321"),
+                    isActive = true
+                ),
+                mapOf("POS_KASIR" to true, "SCAN_BARCODE" to true, "LAPORAN" to false)
+            )
+            repo.saveUserWithPermissions(
+                UserAccountEntity(
+                    name = "Budi Nonaktif",
+                    username = "budi",
+                    role = "kasir",
+                    pinHash = GeraiUnaDatabase.hashPin("112233"),
+                    isActive = false
+                ),
+                mapOf("POS_KASIR" to true)
+            )
+
+            val allUsers = db.extendedPosDao().getAllUsersList()
+            assertEquals(3, allUsers.size)
+
+            // Rejects wrong PIN, unknown username, inactive user, and invalid format
+            assertTrue(authenticateLocalUser("", "482910", allUsers) is LocalAuthResult.Error)
+            assertTrue(authenticateLocalUser("admin", "123456", allUsers) is LocalAuthResult.Error)
+            assertTrue(authenticateLocalUser("unknown", "482910", allUsers) is LocalAuthResult.Error)
+            assertTrue(authenticateLocalUser("budi", "112233", allUsers) is LocalAuthResult.Error)
+
+            // Succeeds with valid Admin Utama & Kasir accounts (case-insensitive username)
+            val adminLogin = authenticateLocalUser(" ADMIN ", "482910", allUsers)
+            assertTrue(adminLogin is LocalAuthResult.Success)
+            assertEquals(adminId, (adminLogin as LocalAuthResult.Success).user.id)
+
+            val kasirLogin = authenticateLocalUser("sari", "654321", allUsers)
+            assertTrue(kasirLogin is LocalAuthResult.Success)
+            assertEquals(kasirId, (kasirLogin as LocalAuthResult.Success).user.id)
+            assertEquals("kasir", kasirLogin.user.role)
+        } finally {
+            db.close()
         }
     }
 }

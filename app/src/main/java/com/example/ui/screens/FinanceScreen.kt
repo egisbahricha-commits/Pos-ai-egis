@@ -45,8 +45,15 @@ fun FinanceScreen(viewModel: PosViewModel) {
     val incomes by viewModel.incomes.collectAsStateWithLifecycle()
     val debtPayments by viewModel.debtPayments.collectAsStateWithLifecycle()
 
-    // Cash Inflows: Cash Sales + Other Incomes + Receivable Payments
-    val cashSales = sales.filter { it.paymentMethod == "TUNAI" }.sumOf { it.finalAmount }
+    // Cash Inflows: Completed Cash Sales (minus deposit used) + Split Cash + Other Incomes + Receivable Payments
+    val completedSales = sales.filter { it.status == "COMPLETED" }
+    val cashSales = completedSales.sumOf { s ->
+        when (s.paymentMethod) {
+            "TUNAI" -> (s.finalAmount - s.depositUsed).coerceAtLeast(0.0)
+            "SPLIT" -> s.splitCashAmount
+            else -> 0.0
+        }
+    }
     val otherIncomes = incomes.sumOf { it.amount }
     val receivedReceivables = debtPayments.filter { it.type == "PIUTANG_PELANGGAN" }.sumOf { it.amount }
     val totalCashIn = cashSales + otherIncomes + receivedReceivables

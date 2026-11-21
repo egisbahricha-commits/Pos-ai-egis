@@ -36,7 +36,9 @@ class FirestoreSyncRuleTest : FirestoreEmulatorTestBase() {
 
     @After
     fun closeRoom() {
-        roomDb.close()
+        if (::roomDb.isInitialized) {
+            roomDb.close()
+        }
     }
 
     @Test

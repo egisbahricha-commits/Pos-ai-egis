@@ -44,11 +44,14 @@ import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Inventory
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoneyOff
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingBag
@@ -98,11 +101,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.components.DesignToastSnackbar
 import com.example.ui.components.KasGoTopBar
 import com.example.ui.components.ReceiptDialog
+import com.example.ui.components.formatRupiah
 import com.example.ui.screens.AIChatScreen
+import com.example.ui.screens.BarcodeScanCartScreen
 import com.example.ui.screens.CloudMonitorScreen
 import com.example.ui.screens.ContactsScreen
 import com.example.ui.screens.DashboardScreen
@@ -110,6 +116,7 @@ import com.example.ui.screens.DebtReceivableScreen
 import com.example.ui.screens.ExpensesIncomesScreen
 import com.example.ui.screens.FinanceScreen
 import com.example.ui.screens.LoginScreen
+import com.example.ui.screens.ManualProductManagementScreen
 import com.example.ui.screens.MultiKasScreen
 import com.example.ui.screens.PosCashierScreen
 import com.example.ui.screens.ProductsScreen
@@ -171,6 +178,8 @@ fun MainAppContent(viewModel: PosViewModel) {
     val storeProfile by viewModel.storeProfile.collectAsStateWithLifecycle()
     val menuPermissions by viewModel.menuPermissions.collectAsStateWithLifecycle()
     val cart by viewModel.cart.collectAsStateWithLifecycle()
+    val lowStockProducts by viewModel.lowStockProducts.collectAsStateWithLifecycle()
+    val customers by viewModel.customers.collectAsStateWithLifecycle()
     val lastCompletedSale by viewModel.lastCompletedSale.collectAsStateWithLifecycle()
     val lastCompletedSaleItems by viewModel.lastCompletedSaleItems.collectAsStateWithLifecycle()
     val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
@@ -182,8 +191,14 @@ fun MainAppContent(viewModel: PosViewModel) {
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var tabletSidebarMode by remember { mutableStateOf(TabletSidebarMode.MINIMIZED) }
+    var showNotificationsDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val cartBadgeCount = remember(cart) {
+        cart.sumOf { kotlin.math.ceil(it.quantity).toInt().coerceAtLeast(1) }
+    }
+    val debtorCount = remember(customers) { customers.count { it.totalReceivable > 0.0 } }
+    val notificationCount = lowStockProducts.size + debtorCount
 
     LaunchedEffect(userMessage) {
         userMessage?.let { msg ->
@@ -212,8 +227,10 @@ fun MainAppContent(viewModel: PosViewModel) {
         listOf(
             DrawerMenuItem(Screen.DASHBOARD, "Dashboard Utama", Icons.Default.Dashboard, "PENJUALAN"),
             DrawerMenuItem(Screen.POS_KASIR, "Kasir POS", Icons.Default.PointOfSale),
+            DrawerMenuItem(Screen.SCAN_BARCODE, "Scan Barcode Kasir", Icons.Default.QrCodeScanner),
             DrawerMenuItem(Screen.RIWAYAT_TRANSAKSI, "Riwayat & Retur", Icons.AutoMirrored.Filled.ReceiptLong),
             DrawerMenuItem(Screen.PRODUK, "Daftar Produk", Icons.Default.Category, "PRODUK & INVENTARIS"),
+            DrawerMenuItem(Screen.MANAJEMEN_PRODUK, "Kelola Produk Manual", Icons.Default.Edit),
             DrawerMenuItem(Screen.PEMBELIAN, "Pembelian Barang", Icons.Default.ShoppingBag),
             DrawerMenuItem(Screen.STOK_INVENTARIS, "Stok & Opname", Icons.Default.Inventory),
             DrawerMenuItem(Screen.MULTI_KAS, "Multi Kas (Bank & Pulsa)", Icons.Default.AccountBalanceWallet, "KEUANGAN"),
@@ -234,8 +251,10 @@ fun MainAppContent(viewModel: PosViewModel) {
     val currentTitle = when (currentScreen) {
         Screen.DASHBOARD -> "Beranda"
         Screen.POS_KASIR -> "Kasir"
+        Screen.SCAN_BARCODE -> "Scan Barcode"
         Screen.RIWAYAT_TRANSAKSI -> "Riwayat Transaksi"
         Screen.PRODUK -> "Produk"
+        Screen.MANAJEMEN_PRODUK -> "Kelola Produk Manual"
         Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG -> "Pembelian Barang"
         Screen.STOK_INVENTARIS -> "Stok & Inventaris"
         Screen.MULTI_KAS -> "Multi Kas"
@@ -255,7 +274,8 @@ fun MainAppContent(viewModel: PosViewModel) {
     val (headerColor, headerIcon) = when (currentScreen) {
         Screen.DASHBOARD -> ModuleBeranda to Icons.Default.Dashboard
         Screen.POS_KASIR, Screen.RIWAYAT_TRANSAKSI -> ModuleKasir to Icons.Default.PointOfSale
-        Screen.PRODUK, Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG, Screen.STOK_INVENTARIS -> ModuleProduk to Icons.Default.Category
+        Screen.SCAN_BARCODE -> ModuleKasir to Icons.Default.QrCodeScanner
+        Screen.PRODUK, Screen.MANAJEMEN_PRODUK, Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG, Screen.STOK_INVENTARIS -> ModuleProduk to Icons.Default.Inventory2
         Screen.LAPORAN -> ModuleLaporan to Icons.Default.QueryStats
         Screen.MULTI_KAS, Screen.CLOUD_MONITOR -> ModuleKas to Icons.Default.CloudDone
         Screen.TARIF_ADMIN -> ModuleKasir to Icons.Default.CreditCard
@@ -264,7 +284,7 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.UTANG_PIUTANG, Screen.KONTAK, Screen.PENGATURAN, Screen.SEMUA_MENU -> ModulePengaturan to Icons.Default.Settings
     }
 
-    val storeDisplayName = storeProfile?.name?.ifBlank { "GERAI UNA POS" } ?: "GERAI UNA POS"
+    val storeDisplayName = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya"
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isTablet = maxWidth >= 720.dp
@@ -310,7 +330,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            "By Egis Bahricha",
+                                            activeRole.ifBlank { "Kasir POS" },
                                             style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.8f))
                                         )
                                     }
@@ -386,7 +406,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                             }
 
                             val isSelected = currentScreen == item.screen
-                            val isAllowed = remember(activeRole, menuPermissions, item.screen) {
+                            val isAllowed = remember(activeRole, activeUserName, menuPermissions, item.screen) {
                                 viewModel.hasMenuPermission(item.screen)
                             }
                             NavigationDrawerItem(
@@ -508,6 +528,9 @@ fun MainAppContent(viewModel: PosViewModel) {
                                                 )
                                             }
                                             val isSelected = currentScreen == item.screen
+                                            val isAllowed = remember(activeRole, activeUserName, menuPermissions, item.screen) {
+                                                viewModel.hasMenuPermission(item.screen)
+                                            }
                                             Surface(
                                                 onClick = { viewModel.navigateTo(item.screen) },
                                                 color = if (isSelected) AccentBlue else Color.Transparent,
@@ -515,6 +538,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                                                 modifier = Modifier
                                                     .fillMaxWidth()
                                                     .padding(horizontal = 8.dp, vertical = 2.dp)
+                                                    .alpha(if (isAllowed) 1f else 0.55f)
                                             ) {
                                                 Row(
                                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -534,8 +558,18 @@ fun MainAppContent(viewModel: PosViewModel) {
                                                             color = if (isSelected) Color.White else Slate700
                                                         ),
                                                         maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.weight(1f)
                                                     )
+                                                    if (!isAllowed) {
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Icon(
+                                                            Icons.Default.Lock,
+                                                            contentDescription = "Dibatasi",
+                                                            tint = Slate400,
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -588,9 +622,9 @@ fun MainAppContent(viewModel: PosViewModel) {
                                         icon = {
                                             BadgedBox(
                                                 badge = {
-                                                    if (cart.isNotEmpty()) {
+                                                    if (cartBadgeCount > 0) {
                                                         Badge(containerColor = AccentBlue, contentColor = Color.White) {
-                                                            Text("${cart.sumOf { it.quantity.toInt() }}")
+                                                            Text("$cartBadgeCount")
                                                         }
                                                     }
                                                 }
@@ -692,10 +726,12 @@ fun MainAppContent(viewModel: PosViewModel) {
                                     }
                                 }
                             },
-                            cartItemCount = cart.sumOf { it.quantity.toInt() },
+                            cartItemCount = cartBadgeCount,
                             onCartClick = { viewModel.navigateTo(Screen.POS_KASIR) },
                             headerColor = headerColor,
-                            icon = headerIcon
+                            icon = headerIcon,
+                            notificationCount = notificationCount,
+                            onNotificationClick = { showNotificationsDialog = true }
                         )
                     },
                     bottomBar = {
@@ -723,9 +759,9 @@ fun MainAppContent(viewModel: PosViewModel) {
                                     icon = {
                                         BadgedBox(
                                             badge = {
-                                                if (cart.isNotEmpty()) {
+                                                if (cartBadgeCount > 0) {
                                                     Badge(containerColor = AccentBlue, contentColor = Color.White) {
-                                                        Text("${cart.sumOf { it.quantity.toInt() }}", fontWeight = FontWeight.Bold)
+                                                        Text("$cartBadgeCount", fontWeight = FontWeight.Bold)
                                                     }
                                                 }
                                             }
@@ -800,9 +836,11 @@ fun MainAppContent(viewModel: PosViewModel) {
                         when (currentScreen) {
                             Screen.DASHBOARD -> DashboardScreen(viewModel)
                             Screen.POS_KASIR -> PosCashierScreen(viewModel)
+                            Screen.SCAN_BARCODE -> BarcodeScanCartScreen(viewModel)
                             Screen.RIWAYAT_TRANSAKSI -> SalesHistoryScreen(viewModel)
                             Screen.SEMUA_MENU -> SemuaMenuScreen(viewModel)
                             Screen.PRODUK -> ProductsScreen(viewModel)
+                            Screen.MANAJEMEN_PRODUK -> ManualProductManagementScreen(viewModel)
                             Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG -> PurchaseScreen(viewModel)
                             Screen.STOK_INVENTARIS -> StockInventoryScreen(viewModel)
                             Screen.MULTI_KAS -> MultiKasScreen(viewModel)
@@ -823,9 +861,88 @@ fun MainAppContent(viewModel: PosViewModel) {
         }
     }
 
-    if (lastCompletedSale != null) {
+    if (showNotificationsDialog) {
+        Dialog(onDismissRequest = { showNotificationsDialog = false }) {
+            Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Notifikasi Toko ($notificationCount)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                    )
+                    if (notificationCount == 0) {
+                        Text(
+                            "Semua stok produk aman dan tidak ada piutang jatuh tempo.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                        )
+                    } else {
+                        if (lowStockProducts.isNotEmpty()) {
+                            Surface(
+                                onClick = {
+                                    showNotificationsDialog = false
+                                    viewModel.navigateTo(Screen.STOK_INVENTARIS)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = AmberWarningBg,
+                                border = BorderStroke(1.dp, AmberWarningBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        "${lowStockProducts.size} Produk Stok Menipis / Habis",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                    )
+                                    Text(
+                                        lowStockProducts.take(3).joinToString(", ") { it.name },
+                                        style = MaterialTheme.typography.bodySmall.copy(color = Slate700),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                        if (debtorCount > 0) {
+                            val totalReceivable = customers.sumOf { it.totalReceivable }
+                            Surface(
+                                onClick = {
+                                    showNotificationsDialog = false
+                                    viewModel.navigateTo(Screen.UTANG_PIUTANG)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = Rose100,
+                                border = BorderStroke(1.dp, Rose500.copy(alpha = 0.35f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        "$debtorCount Pelanggan Memiliki Kasbon",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Rose500)
+                                    )
+                                    Text(
+                                        "Total piutang aktif: Rp ${formatRupiah(totalReceivable)}",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Surface(
+                        onClick = { showNotificationsDialog = false },
+                        shape = RoundedCornerShape(10.dp),
+                        color = AccentBlue,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(modifier = Modifier.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                            Text("Tutup", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    lastCompletedSale?.let { completedSale ->
         ReceiptDialog(
-            sale = lastCompletedSale!!,
+            sale = completedSale,
             items = lastCompletedSaleItems,
             storeProfile = storeProfile,
             onDismiss = { viewModel.dismissReceiptModal() },
@@ -835,7 +952,7 @@ fun MainAppContent(viewModel: PosViewModel) {
             onPrintReceipt = {
                 ReceiptPrintHelper.printReceipt(
                     context = context,
-                    sale = lastCompletedSale!!,
+                    sale = completedSale,
                     items = lastCompletedSaleItems,
                     storeProfile = storeProfile
                 )

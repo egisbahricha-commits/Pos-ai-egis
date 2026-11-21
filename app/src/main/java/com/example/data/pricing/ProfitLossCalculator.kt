@@ -289,8 +289,7 @@ object ProfitLossCalculator {
         productsById: Map<Long, ProductEntity>
     ): RangeMetrics {
         val activeSales = sales.filter {
-            it.status != "REFUNDED" &&
-                it.status != "CANCELLED" &&
+            it.status == "COMPLETED" &&
                 it.date in startMs..endMs
         }
         val periodExpenses = expenses.filter { it.date in startMs..endMs }
@@ -327,7 +326,7 @@ object ProfitLossCalculator {
                         product?.productType == "DIGITAL"
                     val itemCost = when {
                         item.purchasePriceSnapshot > 0.0 -> item.purchasePriceSnapshot * item.quantity
-                        item.serviceNominal != null && item.serviceNominal > 0.0 -> item.serviceNominal * item.quantity
+                        item.serviceNominal != null && item.serviceNominal > 0.0 -> item.serviceNominal
                         product != null && product.purchasePrice > 0.0 -> product.purchasePrice * item.quantity
                         isDigitalItem -> item.subtotal
                         else -> item.subtotal * 0.72
@@ -357,7 +356,21 @@ object ProfitLossCalculator {
                         (sale.agentCommission - itemsAgentSum)
                 }
                 if (saleDiscounts > 0.0) {
-                    physicalGrossProfit -= saleDiscounts
+                    val hasPhysicalItems = items.any { item ->
+                        val p = productsById[item.productId]
+                        !(item.storeAdminFee > 0.0 || (item.serviceNominal != null && item.serviceNominal > 0.0) || p?.productType == "DIGITAL")
+                    }
+                    when {
+                        hasPhysicalItems && !saleDigitalFlag -> physicalGrossProfit -= saleDiscounts
+                        !hasPhysicalItems && saleDigitalFlag -> digitalGrossProfit -= saleDiscounts
+                        hasPhysicalItems && saleDigitalFlag -> {
+                            val totalGross = (physicalGrossProfit.coerceAtLeast(0.0) + digitalGrossProfit.coerceAtLeast(0.0)).coerceAtLeast(1.0)
+                            val physShare = (physicalGrossProfit.coerceAtLeast(0.0) / totalGross)
+                            physicalGrossProfit -= saleDiscounts * physShare
+                            digitalGrossProfit -= saleDiscounts * (1.0 - physShare)
+                        }
+                        else -> physicalGrossProfit -= saleDiscounts
+                    }
                 }
             } else {
                 val estCost = sale.subtotal * 0.72

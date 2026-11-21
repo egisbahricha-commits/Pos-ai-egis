@@ -469,7 +469,11 @@ private fun InlineTarifRangeCard(
     val providerVal = providerText.toDoubleOrNull() ?: 0.0
     val agentVal = agentText.toDoubleOrNull() ?: 0.0
     val netProfit = storeVal + agentVal - providerVal
-    val isBoundsDirty = minVal != range.minAmount || maxVal != range.maxAmount
+    val isDirty = minVal != range.minAmount ||
+        maxVal != range.maxAmount ||
+        storeVal != range.storeAdminFee ||
+        providerVal != range.providerAdminFee ||
+        agentVal != range.agentCommission
     val isInvalidBounds = maxVal > 0.0 && minVal > maxVal
     var isExpanded by remember(range.id) { mutableStateOf(isOverlapping || isInvalidBounds) }
 
@@ -564,11 +568,7 @@ private fun InlineTarifRangeCard(
                     DesignLabeledTextField(
                         label = "Admin toko",
                         value = storeText,
-                        onValueChange = { raw ->
-                            val digits = raw.filter { it.isDigit() }
-                            storeText = digits
-                            onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = digits.toDoubleOrNull() ?: 0.0, providerAdminFee = providerVal, agentCommission = agentVal))
-                        },
+                        onValueChange = { raw -> storeText = raw.filter { it.isDigit() } },
                         prefixText = "Rp ",
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
@@ -576,11 +576,7 @@ private fun InlineTarifRangeCard(
                     DesignLabeledTextField(
                         label = "Admin penyedia",
                         value = providerText,
-                        onValueChange = { raw ->
-                            val digits = raw.filter { it.isDigit() }
-                            providerText = digits
-                            onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = digits.toDoubleOrNull() ?: 0.0, agentCommission = agentVal))
-                        },
+                        onValueChange = { raw -> providerText = raw.filter { it.isDigit() } },
                         prefixText = "Rp ",
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
@@ -588,11 +584,7 @@ private fun InlineTarifRangeCard(
                     DesignLabeledTextField(
                         label = "Fee",
                         value = agentText,
-                        onValueChange = { raw ->
-                            val digits = raw.filter { it.isDigit() }
-                            agentText = digits
-                            onUpdate(range.copy(minAmount = minVal, maxAmount = maxVal, storeAdminFee = storeVal, providerAdminFee = providerVal, agentCommission = digits.toDoubleOrNull() ?: 0.0))
-                        },
+                        onValueChange = { raw -> agentText = raw.filter { it.isDigit() } },
                         prefixText = "Rp ",
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
@@ -619,7 +611,7 @@ private fun InlineTarifRangeCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        if (isBoundsDirty && !isInvalidBounds) {
+                        if (isDirty && !isInvalidBounds) {
                             Button(
                                 onClick = {
                                     onUpdate(
@@ -634,9 +626,9 @@ private fun InlineTarifRangeCard(
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
                                 shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                             ) {
-                                Text("Simpan Rentang", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Simpan", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

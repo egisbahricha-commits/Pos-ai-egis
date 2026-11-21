@@ -198,8 +198,8 @@ fun ReportsScreen(viewModel: PosViewModel) {
         selectedReportId = null
     }
 
-    if (selectedReportId != null) {
-        val currentMeta = reportDefinitions.find { it.id == selectedReportId }!!
+    val currentMeta = reportDefinitions.find { it.id == selectedReportId }
+    if (selectedReportId != null && currentMeta != null) {
         ReportDetailView(
             meta = currentMeta,
             sales = sales,
@@ -295,7 +295,7 @@ fun ReportsScreen(viewModel: PosViewModel) {
                             query = searchQuery,
                             onQueryChange = { searchQuery = it },
                             placeholder = "Cari dari 24 laporan...",
-                            onBarcodeScanClick = {}
+                            onBarcodeScanClick = null
                         )
                     }
                 }
@@ -380,64 +380,69 @@ fun ReportDetailView(
     onBack: () -> Unit,
     onShare: (String) -> Unit
 ) {
-    val activeSales = sales.filter { it.status != "REFUNDED" && it.status != "CANCELLED" }
+    val activeSales = remember(sales) { sales.filter { it.status == "COMPLETED" } }
+    val activeSaleIds = remember(activeSales) { activeSales.map { it.id }.toSet() }
+    val activeSaleItems = remember(allSaleItems, activeSaleIds) { allSaleItems.filter { it.saleId in activeSaleIds } }
+    val productsById = remember(products) { products.associateBy { it.id } }
+    val physicalProducts = remember(products) {
+        products.filter { !it.isUnlimitedStock && !it.hasNoStock && it.productType != "DIGITAL" }
+    }
+
     val totalSales = activeSales.sumOf { it.finalAmount }
     val totalPurchases = purchases.filter { it.status == "DITERIMA" }.sumOf { it.finalAmount }
     val totalExpenses = expenses.sumOf { it.amount }
     val totalIncomes = incomes.sumOf { it.amount }
 
-    // HPP / COGS estimate
-    val cogs = totalSales * 0.72
-    val grossProfit = (totalSales - cogs).coerceAtLeast(0.0)
-    val netProfit = grossProfit - totalExpenses + totalIncomes
-    val marginPercent = if (totalSales > 0) (netProfit / totalSales) * 100 else 0.0
+    // Actual HPP / COGS, provider fees, and agent commissions across completed sales
+    val itemsBySaleId = remember(activeSaleItems) { activeSaleItems.groupBy { it.saleId } }
+    val cogs = remember(activeSales, itemsBySaleId, productsById) {
+        activeSales.sumOf { s ->
+            val items = itemsBySaleId[s.id].orEmpty()
+            items.sumOf { item ->
+                val prod = productsById[item.productId]
+                val isDigitalItem = prod?.productType == "DIGITAL" || (item.serviceNominal != null && item.serviceNominal > 0.0)
+                if (isDigitalItem) {
+                    (item.serviceNominal ?: item.subtotal).coerceAtLeast(0.0)
+                } else {
+                    val unitBuyCost = if (item.purchasePriceSnapshot > 0.0) item.purchasePriceSnapshot
+                    else prod?.purchasePrice ?: 0.0
+                    unitBuyCost * item.quantity
+                }
+            }
+        }
+    }
+    val totalProviderCost = activeSales.sumOf { it.providerAdminFee }
+    val totalAgentCommission = activeSales.sumOf { it.agentCommission }
+    val grossProfit = totalSales - cogs - totalProviderCost
+    val netProfit = grossProfit + totalAgentCommission + totalIncomes - totalExpenses
+    val marginPercent = if (totalSales > 0.0) (netProfit / totalSales) * 100.0 else 0.0
+
+    val stockAssetValue = physicalProducts.sumOf { it.stock.coerceAtLeast(0.0) * it.purchasePrice }
+    val lowStockCount = physicalProducts.count { it.stock > 0.0 && it.stock <= it.minStock }
+    val emptyStockCount = physicalProducts.count { it.stock <= 0.0 }
 
     val shareText = if (meta.id == 10) {
         buildProfitLossShareText(pnlSummary)
     } else {
-        buildString {
-            append("📊 *LAPORAN GERAI UNA: ${meta.title.uppercase()}*\n")
-            append("Kategori: ${meta.section}\n")
-            append("Waktu Cetak: ${SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale("id", "ID")).format(Date())}\n")
-            append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-            when (meta.id) {
-                1 -> {
-                    append("• Total Penjualan: Rp ${formatRupiah(totalSales)} (${activeSales.size} transaksi)\n")
-                    append("• Estimasi Laba Kotor: Rp ${formatRupiah(grossProfit)}\n")
-                    append("• Biaya Operasional: Rp ${formatRupiah(totalExpenses)}\n")
-                    append("• *LABA BERSIH: Rp ${formatRupiah(netProfit)} (Margin ${String.format("%.1f", marginPercent)}%)*\n")
-                }
-                16 -> {
-                    val stockValue = products.sumOf { it.stock * it.purchasePrice }
-                    val lowCount = products.count { it.stock <= it.minStock && it.stock > 0 }
-                    val emptyCount = products.count { it.stock <= 0 }
-                    append("• Total Nilai Aset Stok: Rp ${formatRupiah(stockValue)}\n")
-                    append("• Produk Stok Menipis: $lowCount barang\n")
-                    append("• Produk Habis (0): $emptyCount barang\n")
-                }
-                18 -> {
-                    val totalReceivable = customers.sumOf { it.totalReceivable }
-                    append("• Total Piutang Aktif: Rp ${formatRupiah(totalReceivable)}\n")
-                    customers.filter { it.totalReceivable > 0 }.forEach { c ->
-                        append("- ${c.name}: Rp ${formatRupiah(c.totalReceivable)}\n")
-                    }
-                }
-                23 -> {
-                    val totalDebt = suppliers.sumOf { it.totalDebt }
-                    append("• Total Hutang ke Supplier: Rp ${formatRupiah(totalDebt)}\n")
-                    suppliers.filter { it.totalDebt > 0 }.forEach { s ->
-                        append("- ${s.name}: Rp ${formatRupiah(s.totalDebt)}\n")
-                    }
-                }
-                else -> {
-                    append("• Ringkasan modul ${meta.title} dari data aktif database.\n")
-                    append("• Total Transaksi: ${activeSales.size}\n")
-                    append("• Total Omset: Rp ${formatRupiah(totalSales)}\n")
-                }
-            }
-            append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-            append("Gerai Una Smart POS • By Egis Bahricha")
-        }
+        buildGeneralReportShareText(
+            meta = meta,
+            activeSalesCount = activeSales.size,
+            totalSales = totalSales,
+            cogs = cogs,
+            grossProfit = grossProfit,
+            totalExpenses = totalExpenses,
+            netProfit = netProfit,
+            marginPercent = marginPercent,
+            stockAssetValue = stockAssetValue,
+            lowStockCount = lowStockCount,
+            emptyStockCount = emptyStockCount,
+            totalPurchases = totalPurchases,
+            expenses = expenses,
+            customers = customers,
+            suppliers = suppliers,
+            debtPayments = debtPayments,
+            purchases = purchases
+        )
     }
 
     LazyColumn(
@@ -447,7 +452,6 @@ fun ReportDetailView(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Back Navigation & Title Header
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -480,317 +484,792 @@ fun ReportDetailView(
             }
         }
 
-        // Highlight Summary Card (skipped for Report #10 because ProfitLossDetailContent renders dynamic period hero banner)
         if (meta.id != 10) {
             item {
-                ElevatedCard(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = meta.color),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        Text(
-                            text = meta.subtitle,
-                            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.85f))
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        val primaryMetric = when (meta.id) {
-                            1 -> "Rp ${formatRupiah(netProfit)}"
-                            13 -> "Rp ${formatRupiah(cashAccounts.sumOf { it.balance })}"
-                            16 -> "Rp ${formatRupiah(products.sumOf { it.stock * it.purchasePrice })}"
-                            17 -> "${productBatches.size} Batch"
-                            18 -> "Rp ${formatRupiah(customers.sumOf { it.totalReceivable })}"
-                            21 -> "${customers.sumOf { it.loyaltyPoints }} Poin"
-                            23 -> "Rp ${formatRupiah(suppliers.sumOf { it.totalDebt })}"
-                            14, 15 -> "Rp ${formatRupiah(totalExpenses)}"
-                            22 -> "Rp ${formatRupiah(totalPurchases)}"
-                            else -> "Rp ${formatRupiah(totalSales)}"
-                        }
-
-                        Text(
-                            text = primaryMetric,
-                            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold, color = Color.White)
-                        )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Data sinkron otomatis dari database lokal Gerai Una POS",
-                            style = MaterialTheme.typography.bodySmall.copy(color = Color.White.copy(alpha = 0.9f), fontSize = 11.sp)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Detailed Content Breakdown based on Report Type
-        when (meta.id) {
-            10 -> {
-                item {
-                    val idLocale = remember { Locale("id", "ID") }
-                    ProfitLossDetailContent(
-                        summary = pnlSummary,
-                        selectedPeriod = pnlPeriod,
-                        periodOffset = pnlOffset,
-                        onSelectPeriod = onSelectPnlPeriod,
-                        onChangeOffset = onChangePnlOffset,
-                        onBucketClick = { bucket ->
-                            val nowCal = Calendar.getInstance(idLocale).apply {
-                                firstDayOfWeek = Calendar.MONDAY
-                                set(Calendar.HOUR_OF_DAY, 0)
-                                set(Calendar.MINUTE, 0)
-                                set(Calendar.SECOND, 0)
-                                set(Calendar.MILLISECOND, 0)
-                            }
-                            val bCal = Calendar.getInstance(idLocale).apply {
-                                firstDayOfWeek = Calendar.MONDAY
-                                timeInMillis = bucket.startMs
-                                set(Calendar.HOUR_OF_DAY, 0)
-                                set(Calendar.MINUTE, 0)
-                                set(Calendar.SECOND, 0)
-                                set(Calendar.MILLISECOND, 0)
-                            }
-                            when (pnlPeriod) {
-                                ProfitLossPeriod.TAHUNAN -> {
-                                    val monthsDiff = (bCal.get(Calendar.YEAR) - nowCal.get(Calendar.YEAR)) * 12 +
-                                        (bCal.get(Calendar.MONTH) - nowCal.get(Calendar.MONTH))
-                                    onDrillDownPnl(ProfitLossPeriod.BULANAN, monthsDiff.coerceAtMost(0))
-                                }
-                                ProfitLossPeriod.BULANAN -> {
-                                    nowCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                                    bCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                                    val weeksDiff = ((bCal.timeInMillis - nowCal.timeInMillis) / 604_800_000L).toInt()
-                                    onDrillDownPnl(ProfitLossPeriod.MINGGUAN, weeksDiff.coerceAtMost(0))
-                                }
-                                ProfitLossPeriod.MINGGUAN, ProfitLossPeriod.HARIAN -> {
-                                    val daysDiff = ((bCal.timeInMillis - nowCal.timeInMillis) / 86_400_000L).toInt()
-                                    onDrillDownPnl(ProfitLossPeriod.HARIAN, daysDiff.coerceAtMost(0))
-                                }
-                            }
-                        }
-                    )
-                }
-            }
-            1 -> {
-                // Executive Summary Breakdown
-                item {
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Indikator Utama Bisnis", fontWeight = FontWeight.Bold, color = Slate900)
-                            DetailRow("Total Penjualan Kotor", "Rp ${formatRupiah(totalSales)}", HeaderGreen)
-                            DetailRow("Estimasi HPP (Modal Barang)", "-Rp ${formatRupiah(cogs)}", Slate600)
-                            DetailRow("Beban Pengeluaran Operasional", "-Rp ${formatRupiah(totalExpenses)}", Rose500)
-                            DetailRow("Pemasukan Jasa & Komisi", "+Rp ${formatRupiah(totalIncomes)}", Sapphire800)
-                            HorizontalDivider(color = Slate200)
-                            DetailRow("Laba Bersih (Net Profit)", "Rp ${formatRupiah(netProfit)}", HeaderPurple, isBold = true)
-                            DetailRow("Margin Keuntungan", "${String.format("%.1f", marginPercent)}%", HeaderPurple, isBold = true)
-                        }
-                    }
-                }
-            }
-            2 -> {
-                // Best & Worst Performers
-                item {
-                    val bestProduct = products.maxByOrNull { it.stock }
-                    val worstProduct = products.minByOrNull { it.stock }
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Performa Penjualan Produk & Hari", fontWeight = FontWeight.Bold, color = Slate900)
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Surface(shape = RoundedCornerShape(10.dp), color = Emerald50, border = BorderStroke(1.dp, Emerald100), modifier = Modifier.weight(1f)) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Text("🏆 Produk Terlaris", fontSize = 11.sp, color = Emerald700, fontWeight = FontWeight.Bold)
-                                        Text(bestProduct?.name ?: "Aqua Botol", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text("Omset tertinggi", fontSize = 10.sp, color = Slate600)
-                                    }
-                                }
-                                Surface(shape = RoundedCornerShape(10.dp), color = Rose500.copy(alpha = 0.08f), border = BorderStroke(1.dp, Rose500.copy(alpha = 0.2f)), modifier = Modifier.weight(1f)) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Text("⚠️ Produk Paling Sepi", fontSize = 11.sp, color = Rose500, fontWeight = FontWeight.Bold)
-                                        Text(worstProduct?.name ?: "Belum ada", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text("Butuh promosi", fontSize = 10.sp, color = Slate600)
-                                    }
-                                }
-                            }
-                            HorizontalDivider(color = Slate200)
-                            Text("Analisis Hari Ramai vs Sepi: Hari Sabtu dan Minggu mencatatkan volume transaksi kasir 40% lebih tinggi.", fontSize = 12.sp, color = Slate700)
-                        }
-                    }
-                }
-            }
-            6 -> {
-                // Penjualan Per Varian & Satuan
-                item {
-                    val grouped = allSaleItems.groupBy { item ->
-                        if (item.variantName.isNotBlank()) "${item.productName} • ${item.variantName}" else "${item.productName} (${item.unit})"
-                    }
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Penjualan Per Varian & Satuan (${productVariants.size} varian terdaftar)", fontWeight = FontWeight.Bold, color = Slate900)
-                            if (grouped.isEmpty()) {
-                                Text("Belum ada item terjual.", fontSize = 12.sp, color = Slate600)
-                            } else {
-                                grouped.entries.sortedByDescending { e -> e.value.sumOf { it.subtotal } }.take(15).forEach { (label, rows) ->
-                                    DetailRow(label, "${rows.sumOf { it.quantity }}x • Rp ${formatRupiah(rows.sumOf { it.subtotal })}", HeaderPurple)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            13 -> {
-                // Arus Kas (Ledger Cash Mutations)
-                item {
-                    val inflow = cashMutations.filter { it.amount > 0 }.sumOf { it.amount }
-                    val outflow = cashMutations.filter { it.amount < 0 }.sumOf { -it.amount }
-                    val netFlow = inflow - outflow
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Arus Kas Aktual (Mutasi Kas)", fontWeight = FontWeight.Bold, color = Slate900)
-                            DetailRow("Total Kas Masuk", "+Rp ${formatRupiah(inflow)}", HeaderGreen, isBold = true)
-                            DetailRow("Total Kas Keluar", "-Rp ${formatRupiah(outflow)}", Rose500, isBold = true)
-                            HorizontalDivider(color = Slate200)
-                            DetailRow("Surplus / Defisit", "Rp ${formatRupiah(netFlow)}", if (netFlow >= 0) HeaderGreen else Rose500, isBold = true)
-                            DetailRow("Total Saldo Semua Akun Kas", "Rp ${formatRupiah(cashAccounts.sumOf { it.balance })}", HeaderBlue, isBold = true)
-                        }
-                    }
-                }
-            }
-            16 -> {
-                // Status Stok
-                item {
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Ringkasan Kondisi Stok Barang", fontWeight = FontWeight.Bold, color = Slate900)
-                            DetailRow("Total Varian Produk", "${products.size} item", Slate900)
-                            DetailRow("Stok Menipis (<= Min)", "${products.count { it.stock <= it.minStock && it.stock > 0 }} item", Amber500, isBold = true)
-                            DetailRow("Stok Habis / Minus (<= 0)", "${products.count { !it.isUnlimitedStock && !it.hasNoStock && it.stock <= 0 }} item", Rose500, isBold = true)
-                            DetailRow("Total Nilai Aset Modal", "Rp ${formatRupiah(products.sumOf { it.stock * it.purchasePrice })}", HeaderGreen, isBold = true)
-                        }
-                    }
-                }
-            }
-            17 -> {
-                // Batch Expired
-                item {
-                    val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Monitoring Batch Expired (${productBatches.size})", fontWeight = FontWeight.Bold, color = Slate900)
-                            if (productBatches.isEmpty()) {
-                                Text("Belum ada data batch kedaluwarsa.", fontSize = 12.sp, color = Slate600)
-                            } else {
-                                productBatches.sortedBy { it.expiryDateStr }.forEach { b ->
-                                    val pname = products.find { it.id == b.productId }?.name ?: "Produk #${b.productId}"
-                                    val isExp = b.expiryDateStr <= todayStr
-                                    DetailRow(
-                                        "$pname (${b.batchCode})",
-                                        "Exp ${b.expiryDateStr} • ${b.qty.toInt()} pcs",
-                                        if (isExp) Rose500 else Amber500,
-                                        isBold = isExp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            18 -> {
-                // Piutang Pelanggan
-                item {
-                    val debtCustomers = customers.filter { it.totalReceivable > 0 }
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Daftar Pelanggan Kasbon / Piutang (${debtCustomers.size})", fontWeight = FontWeight.Bold, color = Slate900)
-                            if (debtCustomers.isEmpty()) {
-                                Text("Tidak ada piutang pelanggan yang tertunggak. Semua lunas!", fontSize = 12.sp, color = HeaderGreen)
-                            } else {
-                                debtCustomers.forEach { c ->
-                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(c.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                        Text("Rp ${formatRupiah(c.totalReceivable)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Rose500)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            21 -> {
-                // Customer Loyalty (Real Points & Deposit)
-                item {
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Peringkat Loyalitas & Deposit Pelanggan", fontWeight = FontWeight.Bold, color = Slate900)
-                            customers.sortedByDescending { it.loyaltyPoints }.forEach { c ->
-                                val tier = when {
-                                    c.loyaltyPoints >= 100 -> "VIP"
-                                    c.loyaltyPoints >= 50 -> "Gold"
-                                    c.loyaltyPoints >= 20 -> "Silver"
-                                    else -> "Bronze"
-                                }
-                                DetailRow(
-                                    "${c.name} [$tier]",
-                                    "${c.loyaltyPoints} poin • Dep Rp ${formatRupiah(c.depositBalance)}",
-                                    HeaderBlue
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            9 -> {
-                // Riwayat Shift Kasir
-                item {
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Daftar Shift Kasir Tercatat (${shifts.size})", fontWeight = FontWeight.Bold, color = Slate900)
-                            if (shifts.isEmpty()) {
-                                Text("Belum ada shift yang dicatat. Buka shift di menu kasir.", fontSize = 12.sp, color = Slate600)
-                            } else {
-                                shifts.forEach { s ->
-                                    Surface(shape = RoundedCornerShape(8.dp), color = Slate50, modifier = Modifier.fillMaxWidth()) {
-                                        Column(modifier = Modifier.padding(10.dp)) {
-                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                                Text(s.cashierName, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                                Text(s.status, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (s.status == "OPEN") HeaderGreen else Slate600)
-                                            }
-                                            Text("Kas Awal: Rp ${formatRupiah(s.startingCash)} • Penjualan: Rp ${formatRupiah(s.totalCashSales)}", fontSize = 11.sp, color = Slate600)
-                                            if (s.actualClosingCash != null) {
-                                                val diff = s.difference ?: 0.0
-                                                Text("Uang Fisik: Rp ${formatRupiah(s.actualClosingCash)} • Selisih: Rp ${formatRupiah(diff)}", fontSize = 11.sp, color = if (diff == 0.0) HeaderGreen else Rose500)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            else -> {
-                // Generic Data Breakdown Table for other 18 reports
-                item {
-                    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Data Rincian ${meta.title}", fontWeight = FontWeight.Bold, color = Slate900)
-                            sales.take(5).forEach { s ->
-                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Column {
-                                        Text(s.invoiceNumber, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Text(SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(s.date)), fontSize = 10.sp, color = Slate400)
-                                    }
-                                    Text("Rp ${formatRupiah(s.finalAmount)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = HeaderBlue)
-                                }
-                            }
-                        }
-                    }
-                }
+                ReportHeroSummaryCard(
+                    meta = meta,
+                    netProfit = netProfit,
+                    cashAccounts = cashAccounts,
+                    stockAssetValue = stockAssetValue,
+                    productBatchesCount = productBatches.size,
+                    customers = customers,
+                    suppliers = suppliers,
+                    debtPayments = debtPayments,
+                    totalExpenses = totalExpenses,
+                    totalPurchases = totalPurchases,
+                    totalSales = totalSales
+                )
             }
         }
 
         item {
+            ReportDetailBodyCard(
+                meta = meta,
+                activeSales = activeSales,
+                activeSaleItems = activeSaleItems,
+                allSaleItems = allSaleItems,
+                itemsBySaleId = itemsBySaleId,
+                products = products,
+                physicalProducts = physicalProducts,
+                productsById = productsById,
+                productVariants = productVariants,
+                productBatches = productBatches,
+                purchases = purchases,
+                expenses = expenses,
+                customers = customers,
+                suppliers = suppliers,
+                debtPayments = debtPayments,
+                shifts = shifts,
+                cashAccounts = cashAccounts,
+                cashMutations = cashMutations,
+                totalSales = totalSales,
+                cogs = cogs,
+                totalProviderCost = totalProviderCost,
+                totalAgentCommission = totalAgentCommission,
+                totalExpenses = totalExpenses,
+                totalIncomes = totalIncomes,
+                netProfit = netProfit,
+                marginPercent = marginPercent,
+                stockAssetValue = stockAssetValue,
+                lowStockCount = lowStockCount,
+                emptyStockCount = emptyStockCount,
+                pnlSummary = pnlSummary,
+                pnlPeriod = pnlPeriod,
+                pnlOffset = pnlOffset,
+                onSelectPnlPeriod = onSelectPnlPeriod,
+                onChangePnlOffset = onChangePnlOffset,
+                onDrillDownPnl = onDrillDownPnl
+            )
+        }
+
+        item {
             Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}
+
+private fun buildGeneralReportShareText(
+    meta: ReportMeta,
+    activeSalesCount: Int,
+    totalSales: Double,
+    cogs: Double,
+    grossProfit: Double,
+    totalExpenses: Double,
+    netProfit: Double,
+    marginPercent: Double,
+    stockAssetValue: Double,
+    lowStockCount: Int,
+    emptyStockCount: Int,
+    totalPurchases: Double,
+    expenses: List<ExpenseEntity>,
+    customers: List<CustomerEntity>,
+    suppliers: List<SupplierEntity>,
+    debtPayments: List<DebtPaymentEntity>,
+    purchases: List<PurchaseEntity>
+): String = buildString {
+    append("📊 *LAPORAN GERAI UNA: ${meta.title.uppercase()}*\n")
+    append("Kategori: ${meta.section}\n")
+    append("Waktu Cetak: ${SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale("id", "ID")).format(Date())}\n")
+    append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+    when (meta.id) {
+        1 -> {
+            append("• Total Penjualan: Rp ${formatRupiah(totalSales)} ($activeSalesCount transaksi)\n")
+            append("• HPP / Modal Pokok: Rp ${formatRupiah(cogs)}\n")
+            append("• Laba Kotor: Rp ${formatRupiah(grossProfit)}\n")
+            append("• Biaya Operasional: Rp ${formatRupiah(totalExpenses)}\n")
+            append("• *LABA BERSIH: Rp ${formatRupiah(netProfit)} (Margin ${String.format(Locale.US, "%.1f", marginPercent)}%)*\n")
+        }
+        14, 15 -> {
+            append("• Total Pengeluaran: Rp ${formatRupiah(totalExpenses)} (${expenses.size} catatan)\n")
+            expenses.groupBy { it.category }.entries
+                .sortedByDescending { e -> e.value.sumOf { it.amount } }
+                .take(6)
+                .forEach { (cat, list) ->
+                    append("- $cat: Rp ${formatRupiah(list.sumOf { it.amount })}\n")
+                }
+        }
+        16 -> {
+            append("• Total Nilai Aset Stok Fisik: Rp ${formatRupiah(stockAssetValue)}\n")
+            append("• Produk Stok Menipis: $lowStockCount barang\n")
+            append("• Produk Habis / Minus: $emptyStockCount barang\n")
+        }
+        18 -> {
+            val totalReceivable = customers.sumOf { it.totalReceivable }
+            append("• Total Piutang Aktif: Rp ${formatRupiah(totalReceivable)}\n")
+            customers.filter { it.totalReceivable > 0 }.forEach { c ->
+                append("- ${c.name}: Rp ${formatRupiah(c.totalReceivable)}\n")
+            }
+        }
+        19 -> {
+            val recPay = debtPayments.filter { it.type == "PIUTANG_PELANGGAN" }
+            append("• Total Cicilan Piutang Diterima: Rp ${formatRupiah(recPay.sumOf { it.amount })}\n")
+            recPay.take(5).forEach { p ->
+                append("- ${p.partyName}: Rp ${formatRupiah(p.amount)}\n")
+            }
+        }
+        22 -> {
+            append("• Total Pembelian Diterima: Rp ${formatRupiah(totalPurchases)}\n")
+            purchases.filter { it.status == "DITERIMA" }.take(5).forEach { p ->
+                append("- ${p.invoiceNumber} (${p.supplierName}): Rp ${formatRupiah(p.finalAmount)}\n")
+            }
+        }
+        23 -> {
+            val totalDebt = suppliers.sumOf { it.totalDebt }
+            append("• Total Hutang ke Supplier: Rp ${formatRupiah(totalDebt)}\n")
+            suppliers.filter { it.totalDebt > 0 }.forEach { s ->
+                append("- ${s.name}: Rp ${formatRupiah(s.totalDebt)}\n")
+            }
+        }
+        24 -> {
+            val supPay = debtPayments.filter { it.type == "UTANG_PEMASOK" }
+            append("• Total Pelunasan ke Supplier: Rp ${formatRupiah(supPay.sumOf { it.amount })}\n")
+            supPay.take(5).forEach { p ->
+                append("- ${p.partyName}: Rp ${formatRupiah(p.amount)}\n")
+            }
+        }
+        else -> {
+            append("• Total Transaksi Selesai: $activeSalesCount\n")
+            append("• Total Omset: Rp ${formatRupiah(totalSales)}\n")
+            append("• Laba Bersih: Rp ${formatRupiah(netProfit)}\n")
+        }
+    }
+    append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+    append("Laporan Resmi Kasir POS")
+}
+
+@Composable
+private fun ReportHeroSummaryCard(
+    meta: ReportMeta,
+    netProfit: Double,
+    cashAccounts: List<CashAccountEntity>,
+    stockAssetValue: Double,
+    productBatchesCount: Int,
+    customers: List<CustomerEntity>,
+    suppliers: List<SupplierEntity>,
+    debtPayments: List<DebtPaymentEntity>,
+    totalExpenses: Double,
+    totalPurchases: Double,
+    totalSales: Double
+) {
+    ElevatedCard(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.elevatedCardColors(containerColor = meta.color),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Text(
+                text = meta.subtitle,
+                style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.85f))
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+
+            val primaryMetric = when (meta.id) {
+                1 -> "Rp ${formatRupiah(netProfit)}"
+                13 -> "Rp ${formatRupiah(cashAccounts.sumOf { it.balance })}"
+                16 -> "Rp ${formatRupiah(stockAssetValue)}"
+                17 -> "$productBatchesCount Batch"
+                18 -> "Rp ${formatRupiah(customers.sumOf { it.totalReceivable })}"
+                19 -> "Rp ${formatRupiah(debtPayments.filter { it.type == "PIUTANG_PELANGGAN" }.sumOf { it.amount })}"
+                21 -> "${customers.sumOf { it.loyaltyPoints }} Poin"
+                23 -> "Rp ${formatRupiah(suppliers.sumOf { it.totalDebt })}"
+                24 -> "Rp ${formatRupiah(debtPayments.filter { it.type == "UTANG_PEMASOK" }.sumOf { it.amount })}"
+                14, 15 -> "Rp ${formatRupiah(totalExpenses)}"
+                22 -> "Rp ${formatRupiah(totalPurchases)}"
+                else -> "Rp ${formatRupiah(totalSales)}"
+            }
+
+            Text(
+                text = primaryMetric,
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold, color = Color.White)
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Data sinkron otomatis dari database lokal Gerai Una POS",
+                style = MaterialTheme.typography.bodySmall.copy(color = Color.White.copy(alpha = 0.9f), fontSize = 11.sp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReportDetailBodyCard(
+    meta: ReportMeta,
+    activeSales: List<SaleEntity>,
+    activeSaleItems: List<SaleItemEntity>,
+    allSaleItems: List<SaleItemEntity>,
+    itemsBySaleId: Map<Long, List<SaleItemEntity>>,
+    products: List<ProductEntity>,
+    physicalProducts: List<ProductEntity>,
+    productsById: Map<Long, ProductEntity>,
+    productVariants: List<ProductVariantEntity>,
+    productBatches: List<ProductBatchEntity>,
+    purchases: List<PurchaseEntity>,
+    expenses: List<ExpenseEntity>,
+    customers: List<CustomerEntity>,
+    suppliers: List<SupplierEntity>,
+    debtPayments: List<DebtPaymentEntity>,
+    shifts: List<CashierShiftEntity>,
+    cashAccounts: List<CashAccountEntity>,
+    cashMutations: List<CashMutationEntity>,
+    totalSales: Double,
+    cogs: Double,
+    totalProviderCost: Double,
+    totalAgentCommission: Double,
+    totalExpenses: Double,
+    totalIncomes: Double,
+    netProfit: Double,
+    marginPercent: Double,
+    stockAssetValue: Double,
+    lowStockCount: Int,
+    emptyStockCount: Int,
+    pnlSummary: ProfitLossSummary,
+    pnlPeriod: ProfitLossPeriod,
+    pnlOffset: Int,
+    onSelectPnlPeriod: (ProfitLossPeriod) -> Unit,
+    onChangePnlOffset: (Int) -> Unit,
+    onDrillDownPnl: (ProfitLossPeriod, Int) -> Unit
+) {
+    when (meta.id) {
+        10 -> ReportPnlCard(
+            pnlSummary = pnlSummary,
+            pnlPeriod = pnlPeriod,
+            pnlOffset = pnlOffset,
+            onSelectPnlPeriod = onSelectPnlPeriod,
+            onChangePnlOffset = onChangePnlOffset,
+            onDrillDownPnl = onDrillDownPnl
+        )
+        1 -> ReportExecutiveSummaryCard(
+            activeSalesCount = activeSales.size,
+            totalSales = totalSales,
+            cogs = cogs,
+            totalProviderCost = totalProviderCost,
+            totalAgentCommission = totalAgentCommission,
+            totalExpenses = totalExpenses,
+            totalIncomes = totalIncomes,
+            netProfit = netProfit,
+            marginPercent = marginPercent
+        )
+        2 -> ReportBestWorstPerformersCard(activeSales, activeSaleItems, products)
+        3, 4, 5, 6, 7, 8, 9 -> ReportSalesSectionCard(
+            reportId = meta.id,
+            activeSales = activeSales,
+            activeSaleItems = activeSaleItems,
+            allSaleItems = allSaleItems,
+            productsById = productsById,
+            productVariantsCount = productVariants.size,
+            shifts = shifts,
+            totalSales = totalSales
+        )
+        11, 12, 13 -> ReportFinanceSectionCard(
+            reportId = meta.id,
+            activeSales = activeSales,
+            itemsBySaleId = itemsBySaleId,
+            physicalProducts = physicalProducts,
+            productsById = productsById,
+            cashAccounts = cashAccounts,
+            cashMutations = cashMutations
+        )
+        14, 15, 16, 17 -> ReportExpenseAndInventoryCard(
+            reportId = meta.id,
+            expenses = expenses,
+            products = products,
+            physicalProductsCount = physicalProducts.size,
+            productBatches = productBatches,
+            stockAssetValue = stockAssetValue,
+            lowStockCount = lowStockCount,
+            emptyStockCount = emptyStockCount
+        )
+        18, 19, 20, 21, 22, 23, 24 -> ReportPartnerSectionCard(
+            reportId = meta.id,
+            activeSales = activeSales,
+            customers = customers,
+            suppliers = suppliers,
+            debtPayments = debtPayments,
+            purchases = purchases
+        )
+        else -> ReportFallbackCard(metaTitle = meta.title, activeSales = activeSales)
+    }
+}
+
+@Composable
+private fun ReportPnlCard(
+    pnlSummary: ProfitLossSummary,
+    pnlPeriod: ProfitLossPeriod,
+    pnlOffset: Int,
+    onSelectPnlPeriod: (ProfitLossPeriod) -> Unit,
+    onChangePnlOffset: (Int) -> Unit,
+    onDrillDownPnl: (ProfitLossPeriod, Int) -> Unit
+) {
+    val idLocale = remember { Locale("id", "ID") }
+    ProfitLossDetailContent(
+        summary = pnlSummary,
+        selectedPeriod = pnlPeriod,
+        periodOffset = pnlOffset,
+        onSelectPeriod = onSelectPnlPeriod,
+        onChangeOffset = onChangePnlOffset,
+        onBucketClick = { bucket ->
+            val nowCal = Calendar.getInstance(idLocale).apply {
+                firstDayOfWeek = Calendar.MONDAY
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            val bCal = Calendar.getInstance(idLocale).apply {
+                firstDayOfWeek = Calendar.MONDAY
+                timeInMillis = bucket.startMs
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            when (pnlPeriod) {
+                ProfitLossPeriod.TAHUNAN -> {
+                    val monthsDiff = (bCal.get(Calendar.YEAR) - nowCal.get(Calendar.YEAR)) * 12 +
+                        (bCal.get(Calendar.MONTH) - nowCal.get(Calendar.MONTH))
+                    onDrillDownPnl(ProfitLossPeriod.BULANAN, monthsDiff.coerceAtMost(0))
+                }
+                ProfitLossPeriod.BULANAN -> {
+                    nowCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                    bCal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                    val weeksDiff = ((bCal.timeInMillis - nowCal.timeInMillis) / 604_800_000L).toInt()
+                    onDrillDownPnl(ProfitLossPeriod.MINGGUAN, weeksDiff.coerceAtMost(0))
+                }
+                ProfitLossPeriod.MINGGUAN, ProfitLossPeriod.HARIAN -> {
+                    val daysDiff = ((bCal.timeInMillis - nowCal.timeInMillis) / 86_400_000L).toInt()
+                    onDrillDownPnl(ProfitLossPeriod.HARIAN, daysDiff.coerceAtMost(0))
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun ReportExecutiveSummaryCard(
+    activeSalesCount: Int,
+    totalSales: Double,
+    cogs: Double,
+    totalProviderCost: Double,
+    totalAgentCommission: Double,
+    totalExpenses: Double,
+    totalIncomes: Double,
+    netProfit: Double,
+    marginPercent: Double
+) {
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Indikator Utama Bisnis ($activeSalesCount Transaksi)", fontWeight = FontWeight.Bold, color = Slate900)
+            DetailRow("Total Penjualan Bersih", "Rp ${formatRupiah(totalSales)}", HeaderGreen)
+            DetailRow("HPP / Modal Pokok", "-Rp ${formatRupiah(cogs)}", Slate600)
+            if (totalProviderCost > 0) {
+                DetailRow("Admin Penyedia / Bank", "-Rp ${formatRupiah(totalProviderCost)}", Rose500)
+            }
+            if (totalAgentCommission > 0) {
+                DetailRow("Komisi / Fee Agen", "+Rp ${formatRupiah(totalAgentCommission)}", HeaderTeal)
+            }
+            DetailRow("Beban Pengeluaran Operasional", "-Rp ${formatRupiah(totalExpenses)}", Rose500)
+            DetailRow("Pemasukan Jasa & Komisi", "+Rp ${formatRupiah(totalIncomes)}", Sapphire800)
+            HorizontalDivider(color = Slate200)
+            DetailRow("Laba Bersih (Net Profit)", "${if (netProfit < 0) "-" else ""}Rp ${formatRupiah(kotlin.math.abs(netProfit))}", if (netProfit >= 0) HeaderPurple else Rose500, isBold = true)
+            DetailRow("Margin Keuntungan", "${String.format(Locale.US, "%.1f", marginPercent)}%", HeaderPurple, isBold = true)
+        }
+    }
+}
+
+@Composable
+private fun ReportBestWorstPerformersCard(
+    activeSales: List<SaleEntity>,
+    activeSaleItems: List<SaleItemEntity>,
+    products: List<ProductEntity>
+) {
+    val salesByProduct = activeSaleItems.groupBy { it.productId }
+        .mapValues { (_, items) -> items.sumOf { it.subtotal } to items.sumOf { it.quantity } }
+    val rankedProducts = products.map { p ->
+        val (rev, qty) = salesByProduct[p.id] ?: (0.0 to 0.0)
+        Triple(p, rev, qty)
+    }
+    val bestEntry = rankedProducts.filter { it.second > 0.0 }.maxByOrNull { it.second }
+    val worstEntry = rankedProducts.minByOrNull { it.second }
+    val idLocale = Locale("id", "ID")
+    val dayNames = listOf("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+    val dayCounts = activeSales.groupBy { s ->
+        val cal = Calendar.getInstance(idLocale).apply { timeInMillis = s.date }
+        when (cal.get(Calendar.DAY_OF_WEEK)) {
+            Calendar.MONDAY -> "Senin"
+            Calendar.TUESDAY -> "Selasa"
+            Calendar.WEDNESDAY -> "Rabu"
+            Calendar.THURSDAY -> "Kamis"
+            Calendar.FRIDAY -> "Jumat"
+            Calendar.SATURDAY -> "Sabtu"
+            else -> "Minggu"
+        }
+    }.mapValues { it.value.size to it.value.sumOf { s -> s.finalAmount } }
+    val busiestDay = dayCounts.maxByOrNull { it.value.first }
+
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Performa Penjualan Produk & Hari", fontWeight = FontWeight.Bold, color = Slate900)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(shape = RoundedCornerShape(10.dp), color = Emerald50, border = BorderStroke(1.dp, Emerald100), modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("🏆 Produk Terlaris", fontSize = 11.sp, color = Emerald700, fontWeight = FontWeight.Bold)
+                        Text(bestEntry?.first?.name ?: "Belum terjual", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            if (bestEntry != null) "Rp ${formatRupiah(bestEntry.second)} (${bestEntry.third.toInt()}x)" else "Belum ada penjualan",
+                            fontSize = 10.sp,
+                            color = Slate600
+                        )
+                    }
+                }
+                Surface(shape = RoundedCornerShape(10.dp), color = Rose500.copy(alpha = 0.08f), border = BorderStroke(1.dp, Rose500.copy(alpha = 0.2f)), modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("⚠️ Produk Paling Sepi", fontSize = 11.sp, color = Rose500, fontWeight = FontWeight.Bold)
+                        Text(worstEntry?.first?.name ?: "Belum ada", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            if (worstEntry != null && worstEntry.second > 0) "Rp ${formatRupiah(worstEntry.second)}" else "Belum terjual (0x)",
+                            fontSize = 10.sp,
+                            color = Slate600
+                        )
+                    }
+                }
+            }
+            HorizontalDivider(color = Slate200)
+            if (busiestDay == null) {
+                Text("Analisis Hari Ramai: Belum ada transaksi selesai untuk dianalisis.", fontSize = 12.sp, color = Slate600)
+            } else {
+                Text(
+                    "Hari Paling Ramai: ${busiestDay.key} (${busiestDay.value.first} transaksi • Rp ${formatRupiah(busiestDay.value.second)})",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Slate800
+                )
+                dayNames.forEach { d ->
+                    val stats = dayCounts[d] ?: (0 to 0.0)
+                    DetailRow(d, "${stats.first} trx • Rp ${formatRupiah(stats.second)}", if (d == busiestDay.key) Emerald700 else Slate600)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportSalesSectionCard(
+    reportId: Int,
+    activeSales: List<SaleEntity>,
+    activeSaleItems: List<SaleItemEntity>,
+    allSaleItems: List<SaleItemEntity>,
+    productsById: Map<Long, ProductEntity>,
+    productVariantsCount: Int,
+    shifts: List<CashierShiftEntity>,
+    totalSales: Double
+) {
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (reportId) {
+                3 -> {
+                    val fmt = SimpleDateFormat("dd MMM yyyy", Locale("id", "ID"))
+                    val byDay = activeSales.groupBy { fmt.format(Date(it.date)) }
+                    Text("Omset Penjualan Per Tanggal", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byDay.isEmpty()) Text("Belum ada transaksi selesai.", fontSize = 12.sp, color = Slate600)
+                    else byDay.entries.take(20).forEach { (dateLabel, list) ->
+                        DetailRow("$dateLabel (${list.size} trx)", "Rp ${formatRupiah(list.sumOf { it.finalAmount })}", HeaderGreen)
+                    }
+                }
+                4 -> {
+                    val byProduct = activeSaleItems.groupBy { it.productName }
+                        .entries.sortedByDescending { e -> e.value.sumOf { it.subtotal } }
+                    Text("Peringkat Penjualan Produk", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byProduct.isEmpty()) Text("Belum ada produk terjual.", fontSize = 12.sp, color = Slate600)
+                    else byProduct.take(20).forEach { (name, rows) ->
+                        DetailRow(name, "${rows.sumOf { it.quantity }.toInt()}x • Rp ${formatRupiah(rows.sumOf { it.subtotal })}", HeaderBlue)
+                    }
+                }
+                5 -> {
+                    Text("Detail Item Terjual (${activeSaleItems.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (activeSaleItems.isEmpty()) Text("Belum ada item terjual.", fontSize = 12.sp, color = Slate600)
+                    else activeSaleItems.take(25).forEach { itm ->
+                        DetailRow("${itm.productName} (${itm.quantity} ${itm.unit})", "Rp ${formatRupiah(itm.subtotal)}", HeaderTeal)
+                    }
+                }
+                6 -> {
+                    val grouped = allSaleItems.groupBy { item ->
+                        if (item.variantName.isNotBlank()) "${item.productName} • ${item.variantName}" else "${item.productName} (${item.unit})"
+                    }
+                    Text("Penjualan Per Varian & Satuan ($productVariantsCount varian terdaftar)", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (grouped.isEmpty()) Text("Belum ada item terjual.", fontSize = 12.sp, color = Slate600)
+                    else grouped.entries.sortedByDescending { e -> e.value.sumOf { it.subtotal } }.take(15).forEach { (label, rows) ->
+                        DetailRow(label, "${rows.sumOf { it.quantity }}x • Rp ${formatRupiah(rows.sumOf { it.subtotal })}", HeaderPurple)
+                    }
+                }
+                7 -> {
+                    val byCat = activeSaleItems.groupBy { productsById[it.productId]?.category ?: "Lainnya" }
+                        .entries.sortedByDescending { e -> e.value.sumOf { it.subtotal } }
+                    Text("Omset Per Kategori", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byCat.isEmpty()) Text("Belum ada penjualan per kategori.", fontSize = 12.sp, color = Slate600)
+                    else byCat.forEach { (cat, rows) ->
+                        val sum = rows.sumOf { it.subtotal }
+                        val pct = if (totalSales > 0) (sum / totalSales) * 100 else 0.0
+                        DetailRow("$cat (${String.format(Locale.US, "%.1f", pct)}%)", "Rp ${formatRupiah(sum)}", HeaderOrange)
+                    }
+                }
+                8 -> {
+                    val byCashier = activeSales.groupBy { it.cashierName.ifBlank { "Kasir" } }
+                        .entries.sortedByDescending { e -> e.value.sumOf { it.finalAmount } }
+                    Text("Performa Omset Per Kasir", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byCashier.isEmpty()) Text("Belum ada transaksi kasir.", fontSize = 12.sp, color = Slate600)
+                    else byCashier.forEach { (cashier, list) ->
+                        DetailRow("$cashier (${list.size} trx)", "Rp ${formatRupiah(list.sumOf { it.finalAmount })}", HeaderBlue)
+                    }
+                }
+                else -> {
+                    Text("Daftar Shift Kasir Tercatat (${shifts.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (shifts.isEmpty()) {
+                        Text("Belum ada shift yang dicatat. Buka shift di menu kasir.", fontSize = 12.sp, color = Slate600)
+                    } else {
+                        shifts.forEach { s ->
+                            Surface(shape = RoundedCornerShape(8.dp), color = Slate50, modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(s.cashierName, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text(s.status, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (s.status == "OPEN") HeaderGreen else Slate600)
+                                    }
+                                    Text("Kas Awal: Rp ${formatRupiah(s.startingCash)} • Penjualan: Rp ${formatRupiah(s.totalCashSales)}", fontSize = 11.sp, color = Slate600)
+                                    s.actualClosingCash?.let { closing ->
+                                        val diff = s.difference ?: 0.0
+                                        Text("Uang Fisik: Rp ${formatRupiah(closing)} • Selisih: Rp ${formatRupiah(diff)}", fontSize = 11.sp, color = if (diff == 0.0) HeaderGreen else Rose500)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportFinanceSectionCard(
+    reportId: Int,
+    activeSales: List<SaleEntity>,
+    itemsBySaleId: Map<Long, List<SaleItemEntity>>,
+    physicalProducts: List<ProductEntity>,
+    productsById: Map<Long, ProductEntity>,
+    cashAccounts: List<CashAccountEntity>,
+    cashMutations: List<CashMutationEntity>
+) {
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (reportId) {
+                11 -> {
+                    val margins = physicalProducts.filter { it.sellingPrice > 0 }
+                        .sortedByDescending { (it.sellingPrice - it.purchasePrice) / it.sellingPrice }
+                    Text("Margin Keuntungan Produk Fisik", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (margins.isEmpty()) Text("Belum ada produk dengan harga jual.", fontSize = 12.sp, color = Slate600)
+                    else margins.take(20).forEach { p ->
+                        val diff = p.sellingPrice - p.purchasePrice
+                        val pct = (diff / p.sellingPrice) * 100.0
+                        DetailRow(p.name, "+Rp ${formatRupiah(diff)} (${String.format(Locale.US, "%.1f", pct)}%)", if (diff >= 0) HeaderPurple else Rose500)
+                    }
+                }
+                12 -> {
+                    Text("Estimasi Laba Per Transaksi (${activeSales.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (activeSales.isEmpty()) Text("Belum ada transaksi selesai.", fontSize = 12.sp, color = Slate600)
+                    else activeSales.take(20).forEach { s ->
+                        val sCogs = itemsBySaleId[s.id].orEmpty().sumOf { item ->
+                            val prod = productsById[item.productId]
+                            val isDigital = prod?.productType == "DIGITAL" || (item.serviceNominal != null && item.serviceNominal > 0.0)
+                            if (isDigital) (item.serviceNominal ?: item.subtotal).coerceAtLeast(0.0)
+                            else (if (item.purchasePriceSnapshot > 0) item.purchasePriceSnapshot else prod?.purchasePrice ?: 0.0) * item.quantity
+                        }
+                        val sProfit = s.finalAmount - sCogs - s.providerAdminFee + s.agentCommission
+                        DetailRow(
+                            "${s.invoiceNumber} • ${s.customerName}",
+                            "${if (sProfit < 0) "-" else "+"}Rp ${formatRupiah(kotlin.math.abs(sProfit))}",
+                            if (sProfit >= 0) HeaderTeal else Rose500
+                        )
+                    }
+                }
+                else -> {
+                    val inflow = cashMutations.filter { it.amount > 0 }.sumOf { it.amount }
+                    val outflow = cashMutations.filter { it.amount < 0 }.sumOf { -it.amount }
+                    val netFlow = inflow - outflow
+                    Text("Arus Kas Aktual (Mutasi Kas)", fontWeight = FontWeight.Bold, color = Slate900)
+                    DetailRow("Total Kas Masuk", "+Rp ${formatRupiah(inflow)}", HeaderGreen, isBold = true)
+                    DetailRow("Total Kas Keluar", "-Rp ${formatRupiah(outflow)}", Rose500, isBold = true)
+                    HorizontalDivider(color = Slate200)
+                    DetailRow("Surplus / Defisit", "Rp ${formatRupiah(netFlow)}", if (netFlow >= 0) HeaderGreen else Rose500, isBold = true)
+                    DetailRow("Total Saldo Semua Akun Kas", "Rp ${formatRupiah(cashAccounts.sumOf { it.balance })}", HeaderBlue, isBold = true)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportExpenseAndInventoryCard(
+    reportId: Int,
+    expenses: List<ExpenseEntity>,
+    products: List<ProductEntity>,
+    physicalProductsCount: Int,
+    productBatches: List<ProductBatchEntity>,
+    stockAssetValue: Double,
+    lowStockCount: Int,
+    emptyStockCount: Int
+) {
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (reportId) {
+                14 -> {
+                    val fmt = SimpleDateFormat("dd MMM yyyy", Locale("id", "ID"))
+                    val byDay = expenses.groupBy { fmt.format(Date(it.date)) }
+                    Text("Rekap Pengeluaran Per Tanggal", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byDay.isEmpty()) Text("Belum ada catatan pengeluaran.", fontSize = 12.sp, color = Slate600)
+                    else byDay.entries.forEach { (d, list) ->
+                        DetailRow("$d (${list.size} catatan)", "Rp ${formatRupiah(list.sumOf { it.amount })}", Rose500)
+                    }
+                }
+                15 -> {
+                    val byCat = expenses.groupBy { it.category }
+                        .entries.sortedByDescending { e -> e.value.sumOf { it.amount } }
+                    Text("Porsi Pengeluaran Per Kategori", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byCat.isEmpty()) Text("Belum ada catatan pengeluaran.", fontSize = 12.sp, color = Slate600)
+                    else byCat.forEach { (cat, list) ->
+                        DetailRow("$cat (${list.size}x)", "Rp ${formatRupiah(list.sumOf { it.amount })}", Rose500)
+                    }
+                }
+                16 -> {
+                    Text("Ringkasan Kondisi Stok Barang Fisik", fontWeight = FontWeight.Bold, color = Slate900)
+                    DetailRow("Total Produk Fisik Terpantau", "$physicalProductsCount item", Slate900)
+                    DetailRow("Stok Menipis (<= Min)", "$lowStockCount item", Amber500, isBold = true)
+                    DetailRow("Stok Habis / Minus (<= 0)", "$emptyStockCount item", Rose500, isBold = true)
+                    DetailRow("Total Nilai Aset Modal", "Rp ${formatRupiah(stockAssetValue)}", HeaderGreen, isBold = true)
+                }
+                else -> {
+                    val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                    Text("Monitoring Batch Expired (${productBatches.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (productBatches.isEmpty()) {
+                        Text("Belum ada data batch kedaluwarsa.", fontSize = 12.sp, color = Slate600)
+                    } else {
+                        productBatches.sortedBy { it.expiryDateStr }.forEach { b ->
+                            val pname = products.find { it.id == b.productId }?.name ?: "Produk #${b.productId}"
+                            val isExp = b.expiryDateStr <= todayStr
+                            DetailRow(
+                                "$pname (${b.batchCode})",
+                                "Exp ${b.expiryDateStr} • ${b.qty.toInt()} pcs",
+                                if (isExp) Rose500 else Amber500,
+                                isBold = isExp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportPartnerSectionCard(
+    reportId: Int,
+    activeSales: List<SaleEntity>,
+    customers: List<CustomerEntity>,
+    suppliers: List<SupplierEntity>,
+    debtPayments: List<DebtPaymentEntity>,
+    purchases: List<PurchaseEntity>
+) {
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (reportId) {
+                18 -> {
+                    val debtCustomers = customers.filter { it.totalReceivable > 0 }
+                    Text("Daftar Pelanggan Kasbon / Piutang (${debtCustomers.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (debtCustomers.isEmpty()) {
+                        Text("Tidak ada piutang pelanggan yang tertunggak. Semua lunas!", fontSize = 12.sp, color = HeaderGreen)
+                    } else {
+                        debtCustomers.forEach { c ->
+                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(c.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Rp ${formatRupiah(c.totalReceivable)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Rose500)
+                            }
+                        }
+                    }
+                }
+                19 -> {
+                    val rows = debtPayments.filter { it.type == "PIUTANG_PELANGGAN" }
+                    Text("Riwayat Pembayaran Piutang (${rows.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (rows.isEmpty()) Text("Belum ada pembayaran piutang tercatat.", fontSize = 12.sp, color = Slate600)
+                    else rows.forEach { r ->
+                        val d = SimpleDateFormat("dd/MM/yy", Locale.getDefault()).format(Date(r.date))
+                        DetailRow("${r.partyName} ($d)", "+Rp ${formatRupiah(r.amount)}", HeaderGreen)
+                    }
+                }
+                20 -> {
+                    val byCust = activeSales.groupBy { it.customerName.ifBlank { "Pelanggan Umum" } }
+                        .entries.sortedByDescending { e -> e.value.sumOf { it.finalAmount } }
+                    Text("Belanja Per Pelanggan", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (byCust.isEmpty()) Text("Belum ada transaksi pelanggan.", fontSize = 12.sp, color = Slate600)
+                    else byCust.forEach { (name, list) ->
+                        DetailRow("$name (${list.size}x)", "Rp ${formatRupiah(list.sumOf { it.finalAmount })}", HeaderBlue)
+                    }
+                }
+                21 -> {
+                    Text("Peringkat Loyalitas & Deposit Pelanggan", fontWeight = FontWeight.Bold, color = Slate900)
+                    customers.sortedByDescending { it.loyaltyPoints }.forEach { c ->
+                        val tier = when {
+                            c.loyaltyPoints >= 100 -> "VIP"
+                            c.loyaltyPoints >= 50 -> "Gold"
+                            c.loyaltyPoints >= 20 -> "Silver"
+                            else -> "Bronze"
+                        }
+                        DetailRow("${c.name} [$tier]", "${c.loyaltyPoints} poin • Dep Rp ${formatRupiah(c.depositBalance)}", HeaderBlue)
+                    }
+                }
+                22 -> {
+                    val received = purchases.filter { it.status == "DITERIMA" }
+                    Text("Pembelian Supplier Diterima (${received.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (received.isEmpty()) Text("Belum ada pembelian yang diterima.", fontSize = 12.sp, color = Slate600)
+                    else received.forEach { p ->
+                        DetailRow("${p.invoiceNumber} • ${p.supplierName}", "Rp ${formatRupiah(p.finalAmount)}", HeaderTeal)
+                    }
+                }
+                23 -> {
+                    val debtSuppliers = suppliers.filter { it.totalDebt > 0 }
+                    Text("Daftar Hutang Supplier (${debtSuppliers.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (debtSuppliers.isEmpty()) Text("Tidak ada hutang ke supplier. Semua lunas!", fontSize = 12.sp, color = HeaderGreen)
+                    else debtSuppliers.forEach { s ->
+                        DetailRow(s.name, "Rp ${formatRupiah(s.totalDebt)}", Rose500, isBold = true)
+                    }
+                }
+                else -> {
+                    val rows = debtPayments.filter { it.type == "UTANG_PEMASOK" }
+                    Text("Riwayat Pelunasan Supplier (${rows.size})", fontWeight = FontWeight.Bold, color = Slate900)
+                    if (rows.isEmpty()) Text("Belum ada pembayaran utang supplier.", fontSize = 12.sp, color = Slate600)
+                    else rows.forEach { r ->
+                        val d = SimpleDateFormat("dd/MM/yy", Locale.getDefault()).format(Date(r.date))
+                        DetailRow("${r.partyName} ($d)", "Rp ${formatRupiah(r.amount)}", HeaderGreen)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportFallbackCard(metaTitle: String, activeSales: List<SaleEntity>) {
+    Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = SurfaceWhite), border = BorderStroke(1.dp, BorderDefault)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Data Rincian $metaTitle", fontWeight = FontWeight.Bold, color = Slate900)
+            if (activeSales.isEmpty()) Text("Belum ada transaksi.", fontSize = 12.sp, color = Slate600)
+            else activeSales.take(10).forEach { s ->
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text(s.invoiceNumber, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date(s.date)), fontSize = 10.sp, color = Slate400)
+                    }
+                    Text("Rp ${formatRupiah(s.finalAmount)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = HeaderBlue)
+                }
+            }
         }
     }
 }

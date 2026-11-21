@@ -118,14 +118,17 @@ fun SettingsScreen(viewModel: PosViewModel) {
     }
 
     var showResetConfirmDialog by remember { mutableStateOf(false) }
+    var showResetPinDialog by remember { mutableStateOf(false) }
     var showPinDialog by remember { mutableStateOf(false) }
     var showStoreProfileDialog by remember { mutableStateOf(false) }
     var showPrintersDialog by remember { mutableStateOf(false) }
     var showDevicesDialog by remember { mutableStateOf(false) }
     var userToEdit by remember { mutableStateOf<UserAccountEntity?>(null) }
     var showAddUserDialog by remember { mutableStateOf(false) }
-    var backupStatus by remember { mutableStateOf("Tersedia Lokal") }
+    var showBackupInfoDialog by remember { mutableStateOf(false) }
 
+    val isOwner = activeRole.equals("Owner", ignoreCase = true) || activeRole.equals("Admin", ignoreCase = true)
+    val activeUserId by viewModel.activeUserId.collectAsStateWithLifecycle()
     val primaryPrinter = printers.firstOrNull()
     val ppnPercent = (storeProfile?.ppnBp ?: 0) / 100.0
 
@@ -252,7 +255,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                 Column {
                     SettingsMenuRow(
                         icon = Icons.Default.Store,
-                        title = storeProfile?.name ?: "GERAI UNA SMART POS",
+                        title = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya",
                         subtitle = "Tipe: ${storeProfile?.businessType ?: "keduanya"} • PPN ${String.format("%.1f", ppnPercent)}%",
                         badgeText = "Edit Profil",
                         badgeType = BadgeType.INFO,
@@ -276,10 +279,10 @@ fun SettingsScreen(viewModel: PosViewModel) {
                     SettingsMenuRow(
                         icon = Icons.Default.Backup,
                         title = "Cadangan data SQLite",
-                        subtitle = "Status: Database SQLite aktif di perangkat",
-                        badgeText = backupStatus,
+                        subtitle = "Database lokal aktif • Ketuk untuk info & impor .kasgo",
+                        badgeText = "Aktif",
                         badgeType = BadgeType.SUCCESS,
-                        onClick = { backupStatus = "Tersimpan" }
+                        onClick = { showBackupInfoDialog = true }
                     )
                     HorizontalDivider(color = BorderDefault)
                     SettingsMenuRow(
@@ -314,7 +317,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Person, contentDescription = null, tint = Slate500, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
@@ -322,14 +325,19 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         style = MaterialTheme.typography.labelMedium.copy(color = Slate500, fontWeight = FontWeight.SemiBold)
                     )
                 }
-                Text(
-                    "+ Akun",
-                    style = MaterialTheme.typography.bodySmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold),
-                    modifier = Modifier.clickable {
-                        userToEdit = null
-                        showAddUserDialog = true
+                if (isOwner) {
+                    TextButton(
+                        onClick = {
+                            userToEdit = null
+                            showAddUserDialog = true
+                        },
+                        modifier = Modifier.testTag("settings_add_user_button")
+                    ) {
+                        Text("+ Tambah User", color = AccentBlue, fontWeight = FontWeight.Bold)
                     }
-                )
+                } else {
+                    DesignStatusBadge(text = "Khusus Admin Utama", type = BadgeType.WARNING)
+                }
             }
         }
 
@@ -341,38 +349,63 @@ fun SettingsScreen(viewModel: PosViewModel) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column {
+                    if (userAccounts.isEmpty()) {
+                        Text(
+                            text = "Belum ada pengguna lokal terdaftar.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate500),
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
                     userAccounts.forEachIndexed { index, user ->
-                        val isSelected = activeUserName.equals(user.name, ignoreCase = true)
+                        val isSelected = activeUserId == user.id || activeUserName.equals(user.name, ignoreCase = true)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { viewModel.switchUserAccount(user) }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    user.name,
+                                    text = user.name,
                                     style = MaterialTheme.typography.titleSmall.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = if (isSelected) AccentBlue else Slate900
                                     )
                                 )
                                 Text(
-                                    "@${user.username} • Peran: ${user.role.uppercase()}",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 12.sp)
+                                    text = "@${user.username} • ${user.role.uppercase()}" +
+                                        if (user.isActive) "" else " • NONAKTIF",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = if (user.isActive) Slate500 else Rose500,
+                                        fontSize = 12.sp
+                                    )
                                 )
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 if (isSelected) {
-                                    DesignStatusBadge(text = "Aktif", type = BadgeType.INFO)
+                                    DesignStatusBadge(text = "Login Aktif", type = BadgeType.INFO)
+                                } else if (!user.isActive) {
+                                    DesignStatusBadge(text = "Nonaktif", type = BadgeType.DANGER)
                                 }
-                                IconButton(onClick = {
-                                    userToEdit = user
-                                    showAddUserDialog = true
-                                }) {
-                                    Icon(Icons.Default.Security, contentDescription = "Izin Menu", tint = Slate600, modifier = Modifier.size(18.dp))
+                                if (isOwner) {
+                                    IconButton(
+                                        onClick = {
+                                            userToEdit = user
+                                            showAddUserDialog = true
+                                        },
+                                        modifier = Modifier.testTag("settings_edit_user_${user.username}")
+                                    ) {
+                                        Icon(Icons.Default.Security, contentDescription = "Edit Akun & Izin Menu", tint = Slate600, modifier = Modifier.size(18.dp))
+                                    }
+                                    if (!isSelected) {
+                                        IconButton(
+                                            onClick = { viewModel.deleteUserAccount(user) },
+                                            modifier = Modifier.testTag("settings_delete_user_${user.username}")
+                                        ) {
+                                            Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus Akun", tint = Rose500, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -380,6 +413,13 @@ fun SettingsScreen(viewModel: PosViewModel) {
                             HorizontalDivider(color = BorderDefault)
                         }
                     }
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.AutoMirrored.Filled.Logout,
+                        title = "Ganti Akun / Keluar Sesi",
+                        subtitle = "Kembali ke layar login untuk masuk menggunakan akun lain (wajib PIN)",
+                        onClick = { viewModel.logoutToLoginScreen() }
+                    )
                 }
             }
         }
@@ -394,23 +434,27 @@ fun SettingsScreen(viewModel: PosViewModel) {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        "GERAI UNA SMART POS AI",
+                        text = storeProfile?.name?.ifBlank { "Sistem Kasir POS" } ?: "Sistem Kasir POS",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
                     )
                     Text(
-                        "Creator & Architect: EGIS BAHRICHA • © 2026",
+                        text = "Mode Produksi • Penyimpanan Lokal SQLite & Firebase Opsional",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = { showResetConfirmDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Rose500),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Reset ke Data Demo", fontWeight = FontWeight.Bold)
+                    if (isOwner) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = { showResetConfirmDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Rose500),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_clean_reset_button")
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Reset Semua Data Toko (Mulai Bersih)", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -425,6 +469,18 @@ fun SettingsScreen(viewModel: PosViewModel) {
             onVerifyPin = { viewModel.verifyPin(it) },
             onSuccess = { showPinDialog = false },
             onDismiss = { showPinDialog = false }
+        )
+    }
+
+    if (showResetPinDialog) {
+        PinPadDialog(
+            title = "Masukkan PIN Admin Utama untuk Reset",
+            onVerifyPin = { viewModel.verifyPin(it) },
+            onSuccess = {
+                showResetPinDialog = false
+                viewModel.resetDatabaseToClean()
+            },
+            onDismiss = { showResetPinDialog = false }
         )
     }
 
@@ -457,7 +513,9 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         DesignLabeledTextField(
                             label = "PPN (%) — mis. 11 atau 0",
                             value = ppnPercentText,
-                            onValueChange = { ppnPercentText = it },
+                            onValueChange = { raw ->
+                                ppnPercentText = raw.filter { ch -> ch.isDigit() || ch == '.' }
+                            },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                         )
                     }
@@ -472,7 +530,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                                     val bp = (pct * 100).toInt().coerceIn(0, 10000)
                                     viewModel.saveStoreProfile(
                                         current.copy(
-                                            name = name.ifBlank { "GERAI UNA SMART POS" },
+                                            name = name.ifBlank { "Toko Saya" },
                                             address = address,
                                             phone = phone,
                                             businessType = businessType,
@@ -495,16 +553,18 @@ fun SettingsScreen(viewModel: PosViewModel) {
 
     if (showAddUserDialog) {
         val editing = userToEdit
-        val allMenuKeys = listOf("POS_KASIR", "RIWAYAT_TRANSAKSI", "PRODUK", "PEMBELIAN", "STOK_INVENTARIS", "MULTI_KAS", "TARIF_ADMIN", "KEUANGAN", "PENGELUARAN", "UTANG_PIUTANG", "LAPORAN", "AI_CHAT", "WHATSAPP", "KONTAK")
-        var name by remember(editing) { mutableStateOf(editing?.name ?: "") }
-        var username by remember(editing) { mutableStateOf(editing?.username ?: "") }
-        var role by remember(editing) { mutableStateOf(editing?.role ?: "kasir") }
-        var pinText by remember(editing) { mutableStateOf("") }
-        val permMap = remember(editing, menuPermissions) {
+        val allMenuKeys = listOf("POS_KASIR", "SCAN_BARCODE", "RIWAYAT_TRANSAKSI", "PRODUK", "MANAJEMEN_PRODUK", "PEMBELIAN", "STOK_INVENTARIS", "MULTI_KAS", "TARIF_ADMIN", "KEUANGAN", "PENGELUARAN", "UTANG_PIUTANG", "LAPORAN", "AI_CHAT", "WHATSAPP", "KONTAK")
+        var name by remember(editing?.id) { mutableStateOf(editing?.name ?: "") }
+        var username by remember(editing?.id) { mutableStateOf(editing?.username ?: "") }
+        var role by remember(editing?.id) { mutableStateOf(editing?.role ?: "kasir") }
+        var isUserActive by remember(editing?.id) { mutableStateOf(editing?.isActive ?: true) }
+        var pinText by remember(editing?.id) { mutableStateOf("") }
+        var formError by remember(editing?.id) { mutableStateOf<String?>(null) }
+        val permMap = remember(editing?.id, menuPermissions) {
             mutableStateMapOf<String, Boolean>().apply {
                 allMenuKeys.forEach { key ->
                     val existing = editing?.let { u -> menuPermissions.find { it.userId == u.id && it.menuKey == key }?.allowed }
-                    put(key, existing ?: (role == "owner" || key in listOf("POS_KASIR", "RIWAYAT_TRANSAKSI", "PRODUK", "STOK_INVENTARIS", "TARIF_ADMIN", "KONTAK")))
+                    put(key, existing ?: (role == "owner" || key in listOf("POS_KASIR", "SCAN_BARCODE", "RIWAYAT_TRANSAKSI", "PRODUK", "MANAJEMEN_PRODUK", "STOK_INVENTARIS", "TARIF_ADMIN", "KONTAK")))
                 }
             }
         }
@@ -518,22 +578,42 @@ fun SettingsScreen(viewModel: PosViewModel) {
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
                         )
                     }
-                    item { DesignLabeledTextField("Nama Lengkap", name, { name = it }) }
-                    item { DesignLabeledTextField("Username", username, { username = it }) }
+                    item { DesignLabeledTextField("Nama Lengkap", name, { name = it; formError = null }) }
+                    item {
+                        DesignLabeledTextField(
+                            "Username (tanpa spasi, min. 3 karakter)",
+                            username,
+                            { username = it.filter { ch -> !ch.isWhitespace() }; formError = null }
+                        )
+                    }
                     item {
                         DesignSegmentedTabs(
                             options = listOf("owner" to "Owner", "kasir" to "Kasir"),
                             selectedKey = role,
-                            onSelect = { role = it }
+                            onSelect = { role = it; formError = null }
                         )
                     }
                     item {
                         DesignLabeledTextField(
-                            label = if (editing == null) "PIN (default 123456)" else "PIN Baru (kosongkan jika tidak ganti)",
+                            label = if (editing == null) "PIN Login (Wajib 6 digit angka)" else "PIN Baru (opsional, 6 digit jika ingin ganti)",
                             value = pinText,
-                            onValueChange = { pinText = it.filter { ch -> ch.isDigit() }.take(6) },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                            onValueChange = { pinText = it.filter { ch -> ch.isDigit() }.take(6); formError = null },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
                         )
+                    }
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Status Akun Aktif", fontSize = 13.sp, color = Slate800, fontWeight = FontWeight.Medium)
+                            Switch(
+                                checked = isUserActive,
+                                onCheckedChange = { isUserActive = it },
+                                colors = SwitchDefaults.colors(checkedTrackColor = AccentBlue)
+                            )
+                        }
                     }
                     if (role != "owner") {
                         item {
@@ -552,22 +632,64 @@ fun SettingsScreen(viewModel: PosViewModel) {
                             }
                         }
                     }
+                    if (formError != null) {
+                        item {
+                            Text(
+                                text = formError!!,
+                                color = Rose500,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                    }
                     item {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(onClick = { showAddUserDialog = false }) { Text("Batal", color = Slate600) }
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = {
-                                    if (name.isNotBlank() && username.isNotBlank()) {
-                                        val hash = if (pinText.isNotBlank()) GeraiUnaDatabase.hashPin(pinText) else (editing?.pinHash ?: GeraiUnaDatabase.hashPin("123456"))
-                                        val finalUser = (editing ?: UserAccountEntity(name = name.trim(), username = username.trim(), role = role, pinHash = hash))
-                                            .copy(name = name.trim(), username = username.trim(), role = role, pinHash = hash, updatedAt = System.currentTimeMillis())
-                                        viewModel.saveUserAccount(finalUser, permMap.toMap())
-                                        showAddUserDialog = false
+                                    val cleanName = name.trim()
+                                    val cleanUser = username.trim().lowercase()
+                                    val pinValid = if (editing == null) {
+                                        pinText.length == 6
+                                    } else {
+                                        pinText.isEmpty() || pinText.length == 6
+                                    }
+                                    val duplicateUser = userAccounts.any {
+                                        it.id != editing?.id && it.username.trim().equals(cleanUser, ignoreCase = true)
+                                    }
+                                    when {
+                                        cleanName.isEmpty() -> formError = "Nama lengkap wajib diisi"
+                                        cleanUser.length < 3 -> formError = "Username minimal 3 karakter tanpa spasi"
+                                        duplicateUser -> formError = "Username \"$cleanUser\" sudah digunakan"
+                                        !pinValid -> formError = "PIN harus tepat 6 digit angka"
+                                        else -> {
+                                            val hash = if (pinText.length == 6) {
+                                                GeraiUnaDatabase.hashPin(pinText)
+                                            } else {
+                                                editing!!.pinHash
+                                            }
+                                            val finalUser = (editing ?: UserAccountEntity(
+                                                name = cleanName,
+                                                username = cleanUser,
+                                                role = role,
+                                                pinHash = hash,
+                                                isActive = isUserActive
+                                            )).copy(
+                                                name = cleanName,
+                                                username = cleanUser,
+                                                role = role,
+                                                pinHash = hash,
+                                                isActive = isUserActive,
+                                                updatedAt = System.currentTimeMillis()
+                                            )
+                                            viewModel.saveUserAccount(finalUser, permMap.toMap())
+                                            showAddUserDialog = false
+                                        }
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.testTag("settings_save_user_button")
                             ) { Text("Simpan", fontWeight = FontWeight.Bold) }
                         }
                     }
@@ -577,8 +699,8 @@ fun SettingsScreen(viewModel: PosViewModel) {
     }
 
     if (showPrintersDialog) {
-        var newPrinterName by remember { mutableStateOf("Printer Thermal 80mm") }
-        var btAddr by remember { mutableStateOf("00:11:22:33:44:66") }
+        var newPrinterName by remember { mutableStateOf("") }
+        var btAddr by remember { mutableStateOf("") }
         var printerType by remember { mutableStateOf("struk") }
         var widthMm by remember { mutableStateOf(58) }
         var autoCut by remember { mutableStateOf(false) }
@@ -593,7 +715,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                                 Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(p.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text("${p.bluetoothAddress} • ${p.type} • ${p.widthMm}mm • ${p.language}", fontSize = 11.sp, color = Slate600)
+                                        Text("${p.bluetoothAddress.ifBlank { "Belum diatur" }} • ${p.type} • ${p.widthMm}mm • ${p.language}", fontSize = 11.sp, color = Slate600)
                                     }
                                     IconButton(onClick = { viewModel.deletePrinter(p) }) {
                                         Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus", tint = Rose500)
@@ -641,8 +763,11 @@ fun SettingsScreen(viewModel: PosViewModel) {
                                                 autoCut = autoCut
                                             )
                                         )
+                                        newPrinterName = ""
+                                        btAddr = ""
                                     }
                                 },
+                                enabled = newPrinterName.isNotBlank(),
                                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
@@ -658,7 +783,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
     }
 
     if (showDevicesDialog) {
-        var devName by remember { mutableStateOf("Kasir Tambahan #2") }
+        var devName by remember { mutableStateOf("") }
         var devRole by remember { mutableStateOf("kasir") }
         Dialog(onDismissRequest = { showDevicesDialog = false }) {
             Surface(shape = RoundedCornerShape(18.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
@@ -695,11 +820,52 @@ fun SettingsScreen(viewModel: PosViewModel) {
                                 onClick = {
                                     if (devName.isNotBlank()) {
                                         viewModel.saveCashierDevice(CashierDeviceEntity(name = devName.trim(), role = devRole))
+                                        devName = ""
                                     }
                                 },
+                                enabled = devName.isNotBlank(),
                                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                                 shape = RoundedCornerShape(10.dp)
                             ) { Text("Tambah Perangkat", fontWeight = FontWeight.Bold) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showBackupInfoDialog) {
+        Dialog(onDismissRequest = { showBackupInfoDialog = false }) {
+            Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Penyimpanan SQLite & Backup",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                    )
+                    Text(
+                        "Seluruh data produk, stok, pelanggan, transaksi, dan multi-kas tersimpan lokal di SQLite perangkat (gerai_una_database) serta dapat disinkronkan ke Firebase Cloud.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                    )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { showBackupInfoDialog = false },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Tutup", color = Slate700)
+                        }
+                        Button(
+                            onClick = {
+                                showBackupInfoDialog = false
+                                if (!kasGoImportState.isInspecting && !kasGoImportState.isImporting) {
+                                    kasGoPickerLauncher.launch(arrayOf("*/*"))
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Import .kasgo", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -715,10 +881,10 @@ fun SettingsScreen(viewModel: PosViewModel) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Reset Database?", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                    Text("Reset Bersih Database?", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Semua transaksi saat ini akan digantikan dengan data contoh bawaan Gerai Una.",
+                        "Seluruh produk, transaksi, kontak, kas, dan akun pengguna akan dihapus untuk memulai toko bersih dari awal.",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
                     )
                     Spacer(modifier = Modifier.height(18.dp))
@@ -733,14 +899,14 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         }
                         Button(
                             onClick = {
-                                viewModel.resetDatabaseToDemo()
                                 showResetConfirmDialog = false
+                                showResetPinDialog = true
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Rose500),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Reset", fontWeight = FontWeight.Bold)
+                            Text("Lanjut Verifikasi", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

@@ -518,7 +518,9 @@ fun MultiKasScreen(viewModel: PosViewModel) {
                     DesignLabeledTextField(
                         label = "Saldo Sebenarnya",
                         value = balanceText,
-                        onValueChange = { balanceText = it },
+                        onValueChange = { raw ->
+                            balanceText = raw.filterIndexed { idx, ch -> ch.isDigit() || (ch == '-' && idx == 0) }
+                        },
                         prefixText = "Rp ",
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -639,7 +641,9 @@ fun CreateCashAccountDialog(
                 DesignLabeledTextField(
                     label = "Saldo awal",
                     value = initialBalanceText,
-                    onValueChange = { initialBalanceText = it },
+                    onValueChange = { raw ->
+                        initialBalanceText = raw.filterIndexed { idx, ch -> ch.isDigit() || (ch == '-' && idx == 0) }
+                    },
                     prefixText = "Rp ",
                     placeholder = "0 (boleh minus jika defisit)"
                 )
@@ -690,8 +694,8 @@ fun TransferCashDialog(
     onDismiss: () -> Unit,
     onTransfer: (fromId: Long, toId: Long, amount: Double, notes: String) -> Unit
 ) {
-    var fromAccountId by remember { mutableStateOf(accounts.firstOrNull()?.id ?: 0L) }
-    var toAccountId by remember { mutableStateOf(accounts.getOrNull(1)?.id ?: accounts.firstOrNull()?.id ?: 0L) }
+    var fromAccountId by remember(accounts) { mutableStateOf(accounts.firstOrNull()?.id ?: 0L) }
+    var toAccountId by remember(accounts) { mutableStateOf(accounts.getOrNull(1)?.id ?: accounts.firstOrNull()?.id ?: 0L) }
     var amountText by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
 
@@ -723,7 +727,12 @@ fun TransferCashDialog(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     accounts.forEach { acc ->
                         Surface(
-                            onClick = { fromAccountId = acc.id },
+                            onClick = {
+                                fromAccountId = acc.id
+                                if (toAccountId == acc.id) {
+                                    toAccountId = accounts.firstOrNull { it.id != acc.id }?.id ?: 0L
+                                }
+                            },
                             shape = RoundedCornerShape(10.dp),
                             color = if (fromAccountId == acc.id) AccentBlueSoft else Slate50,
                             border = BorderStroke(1.dp, if (fromAccountId == acc.id) AccentBlue else BorderDefault),
@@ -763,7 +772,7 @@ fun TransferCashDialog(
                 DesignLabeledTextField(
                     label = "Nominal transfer *",
                     value = amountText,
-                    onValueChange = { amountText = it },
+                    onValueChange = { raw -> amountText = raw.filter { it.isDigit() } },
                     prefixText = "Rp ",
                     placeholder = "0"
                 )

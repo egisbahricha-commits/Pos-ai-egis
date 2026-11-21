@@ -114,7 +114,8 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
         text.contains("stok") && (text.contains("berapa") || text.contains("cek") || text.contains("ada berapa") || text.contains("sisa"))
 
     private fun isDebtQuery(text: String) =
-        (text.contains("utang") || text.contains("hutang")) && (text.contains("berapa") || text.contains("cek") || text.contains("ke"))
+        (text.contains("utang") || text.contains("hutang") || text.contains("piutang") || text.contains("kasbon")) &&
+            (text.contains("berapa") || text.contains("cek") || text.contains("ke") || text.contains("siapa") || text.contains("daftar"))
 
     private fun isReportQuery(text: String) =
         text.contains("laporan") || text.contains("rekap") || (text.contains("total") && (text.contains("penjualan") || text.contains("pembelian") || text.contains("omset")))
@@ -183,22 +184,46 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
         lower: String,
         suppliers: List<com.example.data.entity.SupplierEntity>
     ): AIParseResult {
+        val customers = repository.customers.first()
+        val askReceivable = lower.contains("piutang") || lower.contains("kasbon") || lower.contains("pelanggan")
+        val askSupplierDebt = lower.contains("utang") || lower.contains("hutang") || lower.contains("grosir") || lower.contains("pemasok") || lower.contains("supplier")
+
         val totalDebt = suppliers.sumOf { it.totalDebt }
+        val totalReceivable = customers.sumOf { it.totalReceivable }
         val sb = StringBuilder()
-        sb.append("📋 Ringkasan Utang Pemasok / Grosir:\n")
-        sb.append("• Total Seluruh Utang: *Rp ${formatRupiah(totalDebt)}*\n\n")
-        if (suppliers.isEmpty()) {
-            sb.append("Tidak ada data pemasok tersimpan.")
+
+        if (askReceivable && !lower.contains("grosir") && !lower.contains("pemasok") && !lower.contains("supplier")) {
+            sb.append("📋 Ringkasan Piutang / Kasbon Pelanggan:\n")
+            sb.append("• Total Seluruh Piutang: *Rp ${formatRupiah(totalReceivable)}*\n\n")
+            val debtors = customers.filter { it.totalReceivable > 0 }
+            if (debtors.isEmpty()) {
+                sb.append("Tidak ada pelanggan dengan piutang aktif.")
+            } else {
+                sb.append("Rincian per pelanggan:\n")
+                debtors.forEach { c ->
+                    sb.append("• ${c.name}: Rp ${formatRupiah(c.totalReceivable)}\n")
+                }
+            }
         } else {
-            sb.append("Rincian per pemasok:\n")
-            suppliers.forEach { s ->
-                sb.append("• ${s.name}: Rp ${formatRupiah(s.totalDebt)}\n")
+            sb.append("📋 Ringkasan Utang Pemasok / Grosir:\n")
+            sb.append("• Total Seluruh Utang: *Rp ${formatRupiah(totalDebt)}*\n\n")
+            if (suppliers.isEmpty()) {
+                sb.append("Tidak ada data pemasok tersimpan.\n")
+            } else {
+                sb.append("Rincian per pemasok:\n")
+                suppliers.forEach { s ->
+                    sb.append("• ${s.name}: Rp ${formatRupiah(s.totalDebt)}\n")
+                }
+            }
+            if (totalReceivable > 0 && !askSupplierDebt) {
+                sb.append("\n• Total Piutang Pelanggan: *Rp ${formatRupiah(totalReceivable)}*")
             }
         }
 
         val json = JSONObject().apply {
             put("intent", "DEBT_QUERY")
             put("total_debt", totalDebt)
+            put("total_receivable", totalReceivable)
         }
 
         return AIParseResult(
@@ -216,13 +241,14 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
         val purchases = repository.allPurchases.first()
         val expenses = repository.expenses.first()
 
-        val totalSales = sales.sumOf { it.finalAmount }
+        val activeSales = sales.filter { it.status == "COMPLETED" }
+        val totalSales = activeSales.sumOf { it.finalAmount }
         val totalPurchases = purchases.filter { it.status == "DITERIMA" }.sumOf { it.finalAmount }
         val totalExpenses = expenses.sumOf { it.amount }
 
         val summary = """
             📈 Ringkasan Laporan Toko Gerai Una:
-            • Total Penjualan: *Rp ${formatRupiah(totalSales)}* (${sales.size} transaksi)
+            • Total Penjualan: *Rp ${formatRupiah(totalSales)}* (${activeSales.size} transaksi)
             • Total Pembelian Diterima: *Rp ${formatRupiah(totalPurchases)}*
             • Total Pengeluaran Operasional: *Rp ${formatRupiah(totalExpenses)}*
             • Estimasi Kas Bersih: *Rp ${formatRupiah(totalSales - totalPurchases - totalExpenses)}*
@@ -370,9 +396,9 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
         val summary = """
             📦 Draft Penambahan Stok:
             • Produk: *${matched.name}*
-            • Jumlah: *${qty.toInt()} ${unit.ifBlank { matched.baseUnit }}*
-            • Stok sekarang: ${matched.stock} ${matched.baseUnit}
-            • Estimasi stok baru: *${matched.stock + qty} ${matched.baseUnit}*
+            • Jumlah: *${formatQty(qty)} ${unit.ifBlank { matched.baseUnit }}*
+            • Stok sekarang: ${formatQty(matched.stock)} ${matched.baseUnit}
+            • Estimasi stok baru: *${formatQty(matched.stock + qty)} ${matched.baseUnit}*
             
             ⚠️ Konfirmasi penambahan stok ini sekarang?
         """.trimIndent()
@@ -409,7 +435,7 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
             .replace("belanja di grosir", "")
             .replace("belanja", "")
             .replace("kulakan", "")
-            .split(",", "dan")
+            .split(Regex(",|\\bdan\\b", RegexOption.IGNORE_CASE))
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
@@ -456,7 +482,7 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
         sb.append("• Pemasok: *$supplierName*\n")
         sb.append("• Rincian Barang:\n")
         parsedItems.forEachIndexed { idx, itm ->
-            sb.append("  ${idx + 1}. *${itm.rawName}* (${itm.quantity.toInt()} ${itm.unit} × Rp ${formatRupiah(itm.price)})\n")
+            sb.append("  ${idx + 1}. *${itm.rawName}* (${formatQty(itm.quantity)} ${itm.unit} × Rp ${formatRupiah(itm.price)})\n")
         }
         sb.append("• *Total Belanja: Rp ${formatRupiah(totalAmount)}*\n\n")
         sb.append("⚠️ *PENTING*: Status adalah *DRAFT*. Stok barang TIDAK bertambah sampai barang fisik diterima dan dikonfirmasi di menu Pembelian/Penerimaan.")
@@ -629,24 +655,33 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
     // --- Currency and Value Extractors ---
 
     fun extractAmount(text: String): Double {
-        // Matches e.g. "250 ribu", "250rb", "250k", "14 ribu", "1.5 jt", "Rp 50.000", "45000"
-        val regex = Regex("(\\d+([.,]\\d+)?)\\s*(juta|jt|ribu|rb|k)?", RegexOption.IGNORE_CASE)
+        // Matches e.g. "250 ribu", "250rb", "250k", "14 ribu", "1.5 jt", "Rp 50.000", "1.500.000", "45000"
+        val regex = Regex("((?:\\d{1,3}(?:\\.\\d{3})+)|\\d+(?:[.,]\\d+)?)\\s*(juta|jt|ribu|rb|k)?\\b", RegexOption.IGNORE_CASE)
         val matches = regex.findAll(text)
+        val lowerText = text.lowercase(Locale.ROOT)
 
         for (m in matches) {
-            val numStr = m.groupValues[1].replace(",", ".")
-            val unitStr = m.groupValues[3].lowercase()
+            val rawToken = m.groupValues[1]
+            val unitStr = m.groupValues[2].lowercase(Locale.ROOT)
+            val isGroupedThousands = rawToken.matches(Regex("\\d{1,3}(?:\\.\\d{3})+"))
+            val numStr = if (isGroupedThousands && unitStr.isBlank()) {
+                rawToken.replace(".", "")
+            } else {
+                rawToken.replace(",", ".")
+            }
             val rawNum = numStr.toDoubleOrNull() ?: continue
 
-            // If preceded by "sebanyak" or followed by "dus/karton/pcs" without price indication, skip if it's quantity
-            val isQtyContext = text.contains("${m.value} dus") || text.contains("${m.value} karton") ||
-                    text.contains("${m.value} pcs") || text.contains("${m.value} botol")
-            if (isQtyContext && !text.contains("harga ${m.value}")) continue
+            val lowerMatch = m.value.lowercase(Locale.ROOT)
+            val isQtyContext = listOf("dus", "karton", "pcs", "botol", "pack", "bungkus", "kg", "liter", "lusin")
+                .any { u -> lowerText.contains("$lowerMatch $u") }
+            if (isQtyContext && !lowerText.contains("harga $lowerMatch")) continue
 
+            val hasExplicitRpPrefix = Regex("\\brp\\.?\\s*${Regex.escape(rawToken)}\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(lowerText)
             return when {
                 unitStr == "juta" || unitStr == "jt" -> rawNum * 1_000_000
                 unitStr == "ribu" || unitStr == "rb" || unitStr == "k" -> rawNum * 1_000
-                rawNum > 500 -> rawNum // Direct nominal e.g. 45000
+                rawNum > 500 || hasExplicitRpPrefix -> rawNum // Direct nominal e.g. 45000, 1500000, or explicit "Rp 500"
                 else -> rawNum * 1_000 // In Indonesia context, "45" often means "45 ribu"
             }
         }
@@ -694,10 +729,18 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
     }
 
     private fun cleanCandidateName(text: String): String {
-        return text.replace(Regex("\\b(harga|rp|ribu|rb|k|per|dus|karton|pack|botol|bungkus|pcs|kg|liter)\\b.*", RegexOption.IGNORE_CASE), "")
+        return text
+            .replace(Regex("\\b(harga|rp|ribu|rb|k|per)\\b.*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\b(dus|karton|pack|botol|bungkus|pcs|kg|gram|liter|ml|lusin|pouch)\\b", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\d+([.,]\\d+)?"), "")
-            .replace(Regex("[,:;-]"), "")
+            .replace(Regex("[,:;-]"), " ")
+            .replace(Regex("\\s+"), " ")
             .trim()
+    }
+
+    private fun formatQty(qty: Double): String {
+        return if (qty % 1.0 == 0.0) qty.toLong().toString()
+        else String.format(Locale.US, "%.2f", qty).trimEnd('0').trimEnd('.')
     }
 
     private fun formatRupiah(amount: Double): String {

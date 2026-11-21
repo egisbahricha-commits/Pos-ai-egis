@@ -33,21 +33,22 @@ class WhatsAppCommandCenter(
         messageText: String
     ): WhatsAppMessageResponse = withContext(Dispatchers.IO) {
         val cleanPhone = senderPhone.replace(Regex("[^0-9]"), "")
-        val authorizedOwnerPhone = repository.getSetting("owner_authorized_phone")?.replace(Regex("[^0-9]"), "") ?: "081234567890"
+        val authorizedOwnerPhone = repository.getSetting("owner_authorized_phone")?.replace(Regex("[^0-9]"), "") ?: ""
 
         // Authentication Check
-        val isAuthorized = cleanPhone.endsWith(authorizedOwnerPhone.takeLast(9)) ||
-                cleanPhone == authorizedOwnerPhone ||
-                senderPhone.contains("OWNER", ignoreCase = true)
+        val isAuthorized = authorizedOwnerPhone.isNotBlank() && cleanPhone.isNotBlank() && (
+            cleanPhone.endsWith(authorizedOwnerPhone.takeLast(9)) ||
+                cleanPhone == authorizedOwnerPhone
+            )
 
         if (!isAuthorized) {
             val rejectReply = """
-                ⛔ *AKSES DITOLAK - GERAI UNA SMART POS AI*
+                ⛔ *AKSES DITOLAK - POS COMMAND CENTER*
                 
                 Nomor *$senderPhone* tidak terdaftar sebagai Pemilik Toko terverifikasi.
-                Perintah toko ditolak demi keamanan aset dan database Gerai Una.
+                Perintah toko ditolak demi keamanan aset dan database toko.
                 
-                Silakan hubungi Pemilik Toko (Egis Bahricha) untuk mendaftarkan nomor ini di Pengaturan POS.
+                Silakan hubungi Admin Utama / Pemilik Toko untuk mendaftarkan nomor WhatsApp di menu Pengaturan.
             """.trimIndent()
 
             val logId = repository.logAICommand(
@@ -107,7 +108,7 @@ class WhatsAppCommandCenter(
                 sb.append("🛒 *DRAFT PEMBELIAN BELANJA TOKO*\n\n")
                 sb.append("Pemasok: *${result.supplierName}*\n")
                 result.items.forEachIndexed { i, itm ->
-                    sb.append("${i + 1}. ${itm.rawName} (${itm.quantity.toInt()} ${itm.unit} × Rp ${formatRupiah(itm.price)})\n")
+                    sb.append("${i + 1}. ${itm.rawName} (${formatQty(itm.quantity)} ${itm.unit} × Rp ${formatRupiah(itm.price)})\n")
                 }
                 sb.append("\n*Total Belanja: Rp ${formatRupiah(result.amount)}*\n")
                 sb.append("Status: ⏳ *Menunggu Konfirmasi*\n\n")
@@ -126,7 +127,7 @@ class WhatsAppCommandCenter(
                 sb.append("📦 *DRAFT PENAMBAHAN STOK*\n\n")
                 result.items.firstOrNull()?.let {
                     sb.append("• Produk: *${it.rawName}*\n")
-                    sb.append("• Jumlah: *+${it.quantity.toInt()} ${it.unit}*\n")
+                    sb.append("• Jumlah: *+${formatQty(it.quantity)} ${it.unit}*\n")
                 }
                 sb.append("Status: ⏳ *Menunggu Konfirmasi di Aplikasi*")
             }
@@ -148,7 +149,7 @@ class WhatsAppCommandCenter(
             }
         }
         sb.append("\n━━━━━━━━━━━━━━━━━━━━\n")
-        sb.append("Creator: Egis Bahricha")
+        sb.append("POS Command Center")
         return sb.toString()
     }
 
@@ -157,7 +158,12 @@ class WhatsAppCommandCenter(
         try {
             val sendIntent = Intent(Intent.ACTION_VIEW).apply {
                 if (targetPhone.isNotBlank()) {
-                    val formatted = targetPhone.replace(Regex("[^0-9]"), "")
+                    val digits = targetPhone.replace(Regex("[^0-9]"), "")
+                    val formatted = when {
+                        digits.startsWith("0") -> "62${digits.drop(1)}"
+                        digits.startsWith("8") -> "62$digits"
+                        else -> digits
+                    }
                     data = Uri.parse("https://api.whatsapp.com/send?phone=$formatted&text=" + Uri.encode(text))
                 } else {
                     action = Intent.ACTION_SEND
@@ -179,6 +185,11 @@ class WhatsAppCommandCenter(
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             })
         }
+    }
+
+    private fun formatQty(qty: Double): String {
+        return if (qty % 1.0 == 0.0) qty.toLong().toString()
+        else String.format(Locale.US, "%.2f", qty).trimEnd('0').trimEnd('.')
     }
 
     private fun formatRupiah(amount: Double): String {

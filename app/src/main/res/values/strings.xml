@@ -1,3 +1,41 @@
 <resources>
     <string name="app_name">Gerai Una POS AI</string>
+    <string name="scanner_screen_title">Scan Barcode ke Keranjang</string>
+    <string name="scanner_permission_title">Izin Kamera Diperlukan</string>
+    <string name="scanner_permission_desc">Izinkan akses kamera untuk memindai barcode produk secara langsung ke keranjang kasir, atau gunakan input manual &amp; foto galeri.</string>
+    <string name="scanner_grant_permission">Aktifkan Kamera</string>
+    <string name="scanner_choose_photo">Scan Foto</string>
+    <string name="scanner_mode_continuous">Mode Otomatis</string>
+    <string name="scanner_mode_single">Mode 1-Per-1</string>
+    <string name="scanner_paused_label">Pemindaian Dijeda</string>
+    <string name="scanner_resume_label">Lanjut Scan</string>
+    <string name="scanner_pause_label">Jeda</string>
+    <string name="scanner_manual_placeholder">Ketik / tembak scanner USB barcode…</string>
+    <string name="scanner_cart_title">Keranjang Scan</string>
+    <string name="scanner_cart_empty_title">Belum Ada Barang di Keranjang</string>
+    <string name="scanner_cart_empty_desc">Arahkan kamera ke barcode produk (EAN-13, UPC, Code-128, QR) untuk menambahkannya otomatis.</string>
+    <string name="scanner_checkout_cta">Ke Kasir &amp; Bayar</string>
+    <string name="scanner_clear_cart">Kosongkan</string>
+    <string name="scanner_unknown_barcode">Barcode belum terdaftar</string>
+    <string name="scanner_quick_add_product">Tambah Produk Baru</string>
+    <string name="manual_products_title">Kelola Produk Manual</string>
+    <string name="manual_products_subtitle">Tambah, ubah harga, stok saat ini &amp; barcode di database lokal</string>
+    <string name="manual_products_add_cta">Tambah Produk</string>
+    <string name="manual_products_edit_title">Edit Produk</string>
+    <string name="manual_products_new_title">Tambah Produk Baru</string>
+    <string name="manual_products_field_name">Nama Produk *</string>
+    <string name="manual_products_field_price">Harga Jual (Rp) *</string>
+    <string name="manual_products_field_cost_price">Harga Modal (Rp)</string>
+    <string name="manual_products_field_stock">Stok Saat Ini *</string>
+    <string name="manual_products_field_min_stock">Stok Minimum</string>
+    <string name="manual_products_field_barcode">Barcode / SKU</string>
+    <string name="manual_products_field_category">Kategori</string>
+    <string name="manual_products_field_unit">Satuan</string>
+    <string name="manual_products_save_cta">Simpan Produk</string>
+    <string name="manual_products_update_cta">Perbarui Produk</string>
+    <string name="manual_products_delete_title">Hapus Produk dari Database?</string>
+    <string name="manual_products_delete_cta">Hapus</string>
+    <string name="manual_products_empty_title">Belum ada produk terdaftar</string>
+    <string name="manual_products_empty_desc">Tambahkan item pertama Anda dengan nama, harga, dan stok saat ini.</string>
 </resources>
+

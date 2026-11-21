@@ -14,9 +14,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material3.Button
@@ -45,6 +48,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.CustomerEntity
 import com.example.data.entity.SupplierEntity
 import com.example.ui.components.DesignEmptyState
+import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.formatRupiah
@@ -55,6 +59,7 @@ import com.example.ui.viewmodel.PosViewModel
 fun DebtReceivableScreen(viewModel: PosViewModel) {
     val suppliers by viewModel.suppliers.collectAsStateWithLifecycle()
     val customers by viewModel.customers.collectAsStateWithLifecycle()
+    val cashAccounts by viewModel.cashAccounts.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf("UTANG") } // UTANG, PIUTANG
     var selectedSupplierForPayment by remember { mutableStateOf<SupplierEntity?>(null) }
@@ -226,12 +231,20 @@ fun DebtReceivableScreen(viewModel: PosViewModel) {
     // Pay Supplier Debt Dialog
     if (selectedSupplierForPayment != null) {
         val s = selectedSupplierForPayment!!
-        var payAmountText by remember { mutableStateOf("${s.totalDebt.toLong()}") }
-        var notes by remember { mutableStateOf("Pelunasan utang nota") }
+        val defaultAcc = remember(cashAccounts) { cashAccounts.find { it.isDefault } ?: cashAccounts.firstOrNull() }
+        var payAmountText by remember(s.id) { mutableStateOf("${s.totalDebt.toLong()}") }
+        var selectedMethod by remember(s.id) { mutableStateOf("TUNAI") }
+        var selectedAccount by remember(s.id, cashAccounts) { mutableStateOf(defaultAcc) }
+        var notes by remember(s.id) { mutableStateOf("Pelunasan utang nota") }
+        var showError by remember(s.id) { mutableStateOf(false) }
 
         Dialog(onDismissRequest = { selectedSupplierForPayment = null }) {
             Surface(shape = RoundedCornerShape(18.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(20.dp)) {
+                Column(
+                    modifier = Modifier
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Text("Bayar Utang ke Pemasok", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
                     Text("${s.name} • Sisa Rp ${formatRupiah(s.totalDebt)}", style = MaterialTheme.typography.bodySmall.copy(color = Rose500, fontWeight = FontWeight.SemiBold))
 
@@ -239,11 +252,45 @@ fun DebtReceivableScreen(viewModel: PosViewModel) {
                     DesignLabeledTextField(
                         label = "Jumlah Pembayaran *",
                         value = payAmountText,
-                        onValueChange = { payAmountText = it },
+                        onValueChange = { raw ->
+                            payAmountText = raw.filter { it.isDigit() }
+                            showError = false
+                        },
                         prefixText = "Rp ",
+                        isError = showError,
+                        errorMessage = if (showError) "Nominal harus > Rp 0" else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Metode Pembayaran", style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontWeight = FontWeight.SemiBold))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(listOf("TUNAI", "TRANSFER", "QRIS")) { method ->
+                            DesignFilterChip(
+                                label = method,
+                                selected = selectedMethod == method,
+                                onClick = { selectedMethod = method }
+                            )
+                        }
+                    }
+
+                    if (cashAccounts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("Sumber Akun Kas", style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontWeight = FontWeight.SemiBold))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(cashAccounts, key = { it.id }) { acc ->
+                                DesignFilterChip(
+                                    label = acc.accountName,
+                                    selected = selectedAccount?.id == acc.id,
+                                    onClick = { selectedAccount = acc }
+                                )
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(10.dp))
                     DesignLabeledTextField(
                         label = "Catatan",
@@ -260,8 +307,10 @@ fun DebtReceivableScreen(viewModel: PosViewModel) {
                             onClick = {
                                 val amt = payAmountText.toDoubleOrNull() ?: 0.0
                                 if (amt > 0) {
-                                    viewModel.paySupplierDebt(s.id, amt, "", "TUNAI", notes)
+                                    viewModel.paySupplierDebt(s.id, amt, "", selectedMethod, notes.trim(), selectedAccount?.id)
                                     selectedSupplierForPayment = null
+                                } else {
+                                    showError = true
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
@@ -278,12 +327,20 @@ fun DebtReceivableScreen(viewModel: PosViewModel) {
     // Receive Customer Receivable Dialog
     if (selectedCustomerForPayment != null) {
         val c = selectedCustomerForPayment!!
-        var payAmountText by remember { mutableStateOf("${c.totalReceivable.toLong()}") }
-        var notes by remember { mutableStateOf("Pelunasan piutang") }
+        val defaultAcc = remember(cashAccounts) { cashAccounts.find { it.isDefault } ?: cashAccounts.firstOrNull() }
+        var payAmountText by remember(c.id) { mutableStateOf("${c.totalReceivable.toLong()}") }
+        var selectedMethod by remember(c.id) { mutableStateOf("TUNAI") }
+        var selectedAccount by remember(c.id, cashAccounts) { mutableStateOf(defaultAcc) }
+        var notes by remember(c.id) { mutableStateOf("Pelunasan piutang") }
+        var showError by remember(c.id) { mutableStateOf(false) }
 
         Dialog(onDismissRequest = { selectedCustomerForPayment = null }) {
             Surface(shape = RoundedCornerShape(18.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(20.dp)) {
+                Column(
+                    modifier = Modifier
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Text("Terima Pembayaran Piutang", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
                     Text("${c.name} • Total Rp ${formatRupiah(c.totalReceivable)}", style = MaterialTheme.typography.bodySmall.copy(color = Rose500, fontWeight = FontWeight.SemiBold))
 
@@ -291,11 +348,45 @@ fun DebtReceivableScreen(viewModel: PosViewModel) {
                     DesignLabeledTextField(
                         label = "Jumlah Diterima *",
                         value = payAmountText,
-                        onValueChange = { payAmountText = it },
+                        onValueChange = { raw ->
+                            payAmountText = raw.filter { it.isDigit() }
+                            showError = false
+                        },
                         prefixText = "Rp ",
+                        isError = showError,
+                        errorMessage = if (showError) "Nominal harus > Rp 0" else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Metode Pembayaran", style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontWeight = FontWeight.SemiBold))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(listOf("TUNAI", "TRANSFER", "QRIS")) { method ->
+                            DesignFilterChip(
+                                label = method,
+                                selected = selectedMethod == method,
+                                onClick = { selectedMethod = method }
+                            )
+                        }
+                    }
+
+                    if (cashAccounts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("Masuk ke Akun Kas", style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontWeight = FontWeight.SemiBold))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(cashAccounts, key = { it.id }) { acc ->
+                                DesignFilterChip(
+                                    label = acc.accountName,
+                                    selected = selectedAccount?.id == acc.id,
+                                    onClick = { selectedAccount = acc }
+                                )
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(10.dp))
                     DesignLabeledTextField(
                         label = "Catatan",
@@ -312,8 +403,10 @@ fun DebtReceivableScreen(viewModel: PosViewModel) {
                             onClick = {
                                 val amt = payAmountText.toDoubleOrNull() ?: 0.0
                                 if (amt > 0) {
-                                    viewModel.payCustomerReceivable(c.id, amt, "", "TUNAI", notes)
+                                    viewModel.payCustomerReceivable(c.id, amt, "", selectedMethod, notes.trim(), selectedAccount?.id)
                                     selectedCustomerForPayment = null
+                                } else {
+                                    showError = true
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),

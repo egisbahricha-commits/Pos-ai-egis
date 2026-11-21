@@ -133,9 +133,9 @@ fun ProductThumbnail(
     shape: Shape = RoundedCornerShape(10.dp),
     iconSize: Dp = 22.dp
 ) {
-    val hasValidPhoto = imageUri.isNotBlank() && (
-        !imageUri.startsWith("/") || File(imageUri).exists()
-    )
+    val hasValidPhoto = remember(imageUri) {
+        imageUri.isNotBlank() && (!imageUri.startsWith("/") || File(imageUri).exists())
+    }
     val modelData: Any? = remember(imageUri) {
         when {
             imageUri.isBlank() -> null
@@ -529,7 +529,9 @@ private fun CameraBarcodePreviewBox(
     var cameraError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(boundCamera, torchEnabled) {
-        boundCamera?.cameraControl?.enableTorch(torchEnabled)
+        runCatching {
+            boundCamera?.cameraControl?.enableTorch(torchEnabled)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -653,6 +655,7 @@ object ReceiptPrintHelper {
 
             val itemsHtml = items.joinToString("") { item ->
                 val lineTotal = item.unitPrice * item.quantity + item.storeAdminFee
+                val qtyStr = if (item.quantity % 1.0 == 0.0) item.quantity.toLong().toString() else String.format(Locale.US, "%.2f", item.quantity).trimEnd('0').trimEnd('.')
                 val adminLine = if (item.storeAdminFee > 0.0) {
                     "<div class='sub'>+ Admin Layanan: Rp ${formatRupiah(item.storeAdminFee)}</div>"
                 } else ""
@@ -660,7 +663,7 @@ object ReceiptPrintHelper {
                 <div class='item-row'>
                   <div><b>${escapeHtml(item.productName)}</b></div>
                   <div class='flex'>
-                    <span>${item.quantity.toInt()} ${escapeHtml(item.unitName)} x Rp ${formatRupiah(item.unitPrice)}</span>
+                    <span>$qtyStr ${escapeHtml(item.unitName)} x Rp ${formatRupiah(item.unitPrice)}</span>
                     <span>Rp ${formatRupiah(lineTotal)}</span>
                   </div>
                   $adminLine
@@ -698,8 +701,11 @@ object ReceiptPrintHelper {
                   <div class='hr'></div>
                   <div class='flex'><span>Subtotal</span><span>Rp ${formatRupiah(sale.subtotal)}</span></div>
                   ${if (sale.storeAdminFee > 0) "<div class='flex'><span>Admin Layanan</span><span>+Rp ${formatRupiah(sale.storeAdminFee)}</span></div>" else ""}
+                  ${if (sale.shippingCost > 0) "<div class='flex'><span>Ongkir</span><span>+Rp ${formatRupiah(sale.shippingCost)}</span></div>" else ""}
+                  ${if (sale.additionalFee > 0) "<div class='flex'><span>Biaya Tambahan</span><span>+Rp ${formatRupiah(sale.additionalFee)}</span></div>" else ""}
                   ${if (sale.discount + sale.promoDiscount > 0) "<div class='flex'><span>Diskon</span><span>-Rp ${formatRupiah(sale.discount + sale.promoDiscount)}</span></div>" else ""}
                   ${if (sale.tax > 0) "<div class='flex'><span>Pajak</span><span>+Rp ${formatRupiah(sale.tax)}</span></div>" else ""}
+                  ${if (sale.depositUsed > 0) "<div class='flex'><span>Deposit</span><span>-Rp ${formatRupiah(sale.depositUsed)}</span></div>" else ""}
                   <div class='flex total'><span>TOTAL</span><span>Rp ${formatRupiah(sale.finalAmount)}</span></div>
                   <div class='flex'><span>Metode</span><span>${escapeHtml(sale.paymentMethod)}</span></div>
                   ${if (sale.paymentMethod == "TUNAI" || sale.paymentMethod == "SPLIT") """

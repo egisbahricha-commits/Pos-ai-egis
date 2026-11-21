@@ -26,10 +26,16 @@ interface ProductDao {
     @Query("SELECT * FROM products WHERE barcode = :barcode LIMIT 1")
     suspend fun getProductByBarcode(barcode: String): ProductEntity?
 
+    @Query("SELECT * FROM products WHERE LOWER(TRIM(barcode)) = LOWER(TRIM(:barcode)) AND isActive = 1 LIMIT 1")
+    suspend fun getActiveProductByBarcode(barcode: String): ProductEntity?
+
+    @Query("SELECT * FROM products WHERE LOWER(TRIM(barcode)) = LOWER(TRIM(:barcode)) AND isActive = 1 LIMIT 1")
+    fun observeProductByBarcode(barcode: String): Flow<ProductEntity?>
+
     @Query("SELECT * FROM products WHERE name LIKE '%' || :query || '%' OR barcode LIKE '%' || :query || '%'")
     suspend fun searchProducts(query: String): List<ProductEntity>
 
-    @Query("SELECT * FROM products WHERE stock <= minStock ORDER BY stock ASC")
+    @Query("SELECT * FROM products WHERE isActive = 1 AND isUnlimitedStock = 0 AND hasNoStock = 0 AND productType != 'DIGITAL' AND stock <= minStock ORDER BY stock ASC")
     fun getLowStockProducts(): Flow<List<ProductEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -44,9 +50,24 @@ interface ProductDao {
     @Query("UPDATE products SET stock = :newStock WHERE id = :productId")
     suspend fun updateStock(productId: Long, newStock: Double)
 
+    @Query("UPDATE products SET stock = stock - :qty WHERE id = :productId AND isUnlimitedStock = 0 AND hasNoStock = 0 AND stock >= :qty")
+    suspend fun decrementStockIfAvailable(productId: Long, qty: Double): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun recordBarcodeScan(log: BarcodeScanLogEntity): Long
+
+    @Query("SELECT * FROM barcode_scan_logs ORDER BY scannedAt DESC, id DESC LIMIT :limit")
+    fun getRecentBarcodeScans(limit: Int = 25): Flow<List<BarcodeScanLogEntity>>
+
+    @Query("DELETE FROM barcode_scan_logs")
+    suspend fun clearBarcodeScanLogs()
+
     // Categories
     @Query("SELECT * FROM categories ORDER BY name ASC")
     fun getAllCategories(): Flow<List<CategoryEntity>>
+
+    @Query("SELECT * FROM categories ORDER BY name ASC")
+    suspend fun getAllCategoriesList(): List<CategoryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCategory(category: CategoryEntity): Long
@@ -61,8 +82,14 @@ interface ProductDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertConversion(conversion: UnitConversionEntity): Long
 
+    @Query("SELECT * FROM unit_conversions WHERE productId = :productId")
+    suspend fun getConversionsList(productId: Long): List<UnitConversionEntity>
+
     @Delete
     suspend fun deleteConversion(conversion: UnitConversionEntity)
+
+    @Query("DELETE FROM unit_conversions WHERE productId = :productId")
+    suspend fun deleteConversionsForProduct(productId: Long)
 
     // Aliases
     @Query("SELECT * FROM product_aliases")
@@ -73,6 +100,9 @@ interface ProductDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAlias(alias: ProductAliasEntity): Long
+
+    @Query("DELETE FROM product_aliases WHERE productId = :productId")
+    suspend fun deleteAliasesForProduct(productId: Long)
 
     // Quantity Tier Prices
     @Query("SELECT * FROM product_tier_prices ORDER BY productId ASC, quantity ASC")
@@ -452,6 +482,9 @@ interface ExtendedPosDao {
 
     @Query("SELECT * FROM product_variants WHERE id = :id LIMIT 1")
     suspend fun getVariantById(id: Long): ProductVariantEntity?
+
+    @Query("SELECT * FROM product_variants WHERE LOWER(TRIM(barcode)) = LOWER(TRIM(:barcode)) AND isActive = 1 LIMIT 1")
+    suspend fun getActiveVariantByBarcode(barcode: String): ProductVariantEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertVariant(variant: ProductVariantEntity): Long

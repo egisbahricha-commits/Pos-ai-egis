@@ -20,9 +20,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AccountBalanceWallet
-import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CloudDone
@@ -68,6 +68,7 @@ import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -83,6 +84,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
     val allSaleItems by viewModel.allSaleItems.collectAsStateWithLifecycle()
     val activeUserName by viewModel.activeUserName.collectAsStateWithLifecycle()
     val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
+    val storeProfile by viewModel.storeProfile.collectAsStateWithLifecycle()
 
     val currentDateStr = remember {
         SimpleDateFormat("EEEE, dd MMM yyyy", Locale("id", "ID")).format(Date())
@@ -100,10 +102,15 @@ fun DashboardScreen(viewModel: PosViewModel) {
             products = products
         )
     }
-    val totalSales = sales.filter { it.status != "REFUNDED" }.sumOf { it.finalAmount }
-    val totalReceivables = customers.sumOf { it.totalReceivable }
-    val outOfStockCount = products.count { !it.isUnlimitedStock && it.stock <= 0.0 }
-    val lowStockCount = lowStockProducts.count { !it.isUnlimitedStock }
+    val totalSales = remember(sales) {
+        sales.filter { it.status == "COMPLETED" }.sumOf { it.finalAmount }
+    }
+    val totalReceivables = remember(customers) { customers.sumOf { it.totalReceivable } }
+    val physicalActiveProducts = remember(products) {
+        products.filter { it.isActive && !it.isUnlimitedStock && !it.hasNoStock && it.productType != "DIGITAL" }
+    }
+    val outOfStockCount = remember(physicalActiveProducts) { physicalActiveProducts.count { it.stock <= 0.0 } }
+    val lowStockCount = lowStockProducts.size
     val activeCashAccounts = remember(cashAccounts) { cashAccounts.filter { it.isActive } }
 
     LazyColumn(
@@ -124,7 +131,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "GERAI UNA • $currentDateStr",
+                    text = "${(storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya").uppercase()} • $currentDateStr",
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = Slate500,
                         fontWeight = FontWeight.Medium
@@ -177,7 +184,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
                         )
                     }
                     Icon(
-                        Icons.Default.ArrowForward,
+                        Icons.AutoMirrored.Filled.ArrowForward,
                         contentDescription = "Pantau Cloud",
                         tint = if (authUiState.isCloudSignedIn) AccentBlue else Slate500,
                         modifier = Modifier.size(16.dp)
@@ -461,7 +468,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
                             )
                         }
                         Icon(
-                            Icons.Default.ArrowForward,
+                            Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Lihat Piutang",
                             tint = Rose500,
                             modifier = Modifier.size(16.dp)
@@ -534,7 +541,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
                                 style = MaterialTheme.typography.bodySmall.copy(color = Slate700, fontSize = 11.sp)
                             )
                         }
-                        Icon(Icons.Default.ArrowForward, contentDescription = null, tint = Amber500, modifier = Modifier.size(16.dp))
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Amber500, modifier = Modifier.size(16.dp))
                     }
                 }
             }
@@ -583,8 +590,13 @@ fun DashboardScreen(viewModel: PosViewModel) {
                         val recent = sales.take(5)
                         recent.forEachIndexed { index, sale ->
                             val dateFormatted = SimpleDateFormat("dd MMM yyyy, HH.mm", Locale("id", "ID")).format(Date(sale.date))
-                            val isCredit = sale.paymentMethod.equals("KREDIT", true) || (sale.amountPaid < sale.finalAmount && sale.paymentMethod != "TUNAI")
                             val isRefunded = sale.status == "REFUNDED"
+                            val isCancelled = sale.status == "CANCELLED"
+                            val isPreOrder = sale.status == "PRE_ORDER"
+                            val isCredit = sale.status == "COMPLETED" && (
+                                sale.paymentMethod.equals("KREDIT", true) ||
+                                    (sale.amountPaid < sale.finalAmount && sale.paymentMethod !in listOf("TUNAI", "SPLIT"))
+                                )
 
                             Row(
                                 modifier = Modifier
@@ -618,11 +630,14 @@ fun DashboardScreen(viewModel: PosViewModel) {
                                     DesignStatusBadge(
                                         text = when {
                                             isRefunded -> "Retur"
+                                            isCancelled -> "Batal"
+                                            isPreOrder -> "Pre-Order"
                                             isCredit -> "Piutang"
                                             else -> "Lunas"
                                         },
                                         type = when {
-                                            isRefunded || isCredit -> BadgeType.DANGER
+                                            isRefunded || isCancelled || isCredit -> BadgeType.DANGER
+                                            isPreOrder -> BadgeType.WARNING
                                             else -> BadgeType.SUCCESS
                                         }
                                     )
@@ -758,7 +773,30 @@ fun SalesTrendChartCard(sales: List<com.example.data.entity.SaleEntity>, totalSa
             Spacer(modifier = Modifier.height(14.dp))
 
             val periods = listOf("08-10", "10-12", "12-14", "14-16", "16-18", "18-20", "20-22")
-            val barFactors = listOf(0.35f, 0.70f, 0.95f, 0.60f, 0.85f, 1.0f, 0.45f)
+            val (bucketTotals, maxBucket) = remember(sales) {
+                val cal = Calendar.getInstance()
+                val todayYear = cal.get(Calendar.YEAR)
+                val todayDay = cal.get(Calendar.DAY_OF_YEAR)
+                val totals = DoubleArray(7)
+                sales.filter { it.status == "COMPLETED" }.forEach { sale ->
+                    cal.timeInMillis = sale.date
+                    if (cal.get(Calendar.YEAR) == todayYear && cal.get(Calendar.DAY_OF_YEAR) == todayDay) {
+                        val hour = cal.get(Calendar.HOUR_OF_DAY)
+                        val idx = when {
+                            hour < 10 -> 0
+                            hour < 12 -> 1
+                            hour < 14 -> 2
+                            hour < 16 -> 3
+                            hour < 18 -> 4
+                            hour < 20 -> 5
+                            else -> 6
+                        }
+                        totals[idx] += sale.finalAmount
+                    }
+                }
+                val peak = totals.maxOrNull() ?: 0.0
+                totals to peak
+            }
 
             Row(
                 modifier = Modifier
@@ -768,8 +806,10 @@ fun SalesTrendChartCard(sales: List<com.example.data.entity.SaleEntity>, totalSa
                 verticalAlignment = Alignment.Bottom
             ) {
                 periods.forEachIndexed { index, period ->
-                    val factor = barFactors[index]
-                    val isPeak = factor == 1.0f
+                    val amount = bucketTotals[index]
+                    val factor = if (maxBucket > 0.0) (amount / maxBucket).toFloat().coerceIn(0f, 1f) else 0f
+                    val barHeightDp = if (amount > 0.0) (10f + 56f * factor).dp else 4.dp
+                    val isPeak = maxBucket > 0.0 && amount == maxBucket
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -778,9 +818,15 @@ fun SalesTrendChartCard(sales: List<com.example.data.entity.SaleEntity>, totalSa
                         Box(
                             modifier = Modifier
                                 .width(18.dp)
-                                .height((66 * factor).dp)
+                                .height(barHeightDp)
                                 .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp))
-                                .background(if (isPeak) Emerald700 else AccentBlue)
+                                .background(
+                                    when {
+                                        isPeak -> Emerald700
+                                        amount > 0.0 -> AccentBlue
+                                        else -> Slate200
+                                    }
+                                )
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
@@ -793,6 +839,13 @@ fun SalesTrendChartCard(sales: List<com.example.data.entity.SaleEntity>, totalSa
                         )
                     }
                 }
+            }
+            if (maxBucket <= 0.0) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Belum ada transaksi selesai hari ini (total selesai: Rp ${formatRupiah(totalSales)})",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp)
+                )
             }
         }
     }

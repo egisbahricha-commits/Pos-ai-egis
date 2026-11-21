@@ -12,15 +12,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
@@ -31,7 +28,6 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CloudQueue
-import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Edit
@@ -42,24 +38,20 @@ import androidx.compose.material.icons.filled.MoneyOff
 import androidx.compose.material.icons.filled.Paid
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PointOfSale
-import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.QueryStats
-import androidx.compose.material.icons.filled.Receipt
-import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingBag
-import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,7 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.components.KasGoSectionHeader
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
@@ -90,35 +82,39 @@ data class KasGoMenuItem(
 
 @Composable
 fun SemuaMenuScreen(viewModel: PosViewModel) {
-    val menuGroups = listOf(
+    val menuPermissions by viewModel.menuPermissions.collectAsStateWithLifecycle()
+    val userAccounts by viewModel.userAccounts.collectAsStateWithLifecycle()
+
+    val allMenuGroups = listOf(
         KasGoMenuCategory(
             title = "PENJUALAN & TRANSAKSI",
             items = listOf(
                 KasGoMenuItem("Kasir POS", "Buka kasir & scan barang", Icons.Default.PointOfSale, Sapphire800, Screen.POS_KASIR),
                 KasGoMenuItem("Riwayat Transaksi", "Struk selesai & retur", Icons.AutoMirrored.Filled.ReceiptLong, Emerald700, Screen.RIWAYAT_TRANSAKSI),
-                KasGoMenuItem("Shift Kasir", "Cek saldo kas laci kasir", Icons.Default.AccountBalanceWallet, Sapphire600, Screen.KEUANGAN)
+                KasGoMenuItem("Shift Kasir", "Buka/tutup shift & cek kas laci kasir", Icons.Default.AccountBalanceWallet, Sapphire600, Screen.POS_KASIR)
             )
         ),
         KasGoMenuCategory(
             title = "PRODUK & KATALOG",
             items = listOf(
-                KasGoMenuItem("Daftar Produk", "Katalog barang aktif", Icons.Default.Category, Sapphire800, Screen.PRODUK),
+                KasGoMenuItem("Kelola Produk Manual", "Tambah, ubah harga, stok & barcode item", Icons.Default.Edit, ModuleProduk, Screen.MANAJEMEN_PRODUK),
+                KasGoMenuItem("Daftar Produk", "Katalog lengkap, paket & promo", Icons.Default.Category, Sapphire800, Screen.PRODUK),
                 KasGoMenuItem("Kategori & Satuan", "Kelola satuan & konversi", Icons.Default.Store, Sapphire600, Screen.PRODUK),
-                KasGoMenuItem("Barcode Scanner", "Cari produk dengan barcode", Icons.Default.Category, Amber500, Screen.PRODUK)
+                KasGoMenuItem("Barcode Scanner", "Scan kamera langsung masuk keranjang", Icons.Default.QrCodeScanner, Amber500, Screen.SCAN_BARCODE)
             )
         ),
         KasGoMenuCategory(
             title = "PEMBELIAN & SUPLAI",
             items = listOf(
                 KasGoMenuItem("Pembelian Toko", "Faktur belanja ke grosir", Icons.Default.ShoppingBag, Sapphire800, Screen.PEMBELIAN),
-                KasGoMenuItem("Penerimaan Barang", "Konfirmasi barang (+stok)", Icons.Default.LocalShipping, Emerald700, Screen.PEMBELIAN),
+                KasGoMenuItem("Penerimaan Barang", "Catat kulakan (+stok otomatis)", Icons.Default.LocalShipping, Emerald700, Screen.PEMBELIAN),
                 KasGoMenuItem("Utang Pemasok", "Kelola utang belanja tempo", Icons.Default.CreditCard, Rose500, Screen.UTANG_PIUTANG)
             )
         ),
         KasGoMenuCategory(
             title = "INVENTARIS & GUDANG",
             items = listOf(
-                KasGoMenuItem("Stok Barang", "Status & jumlah persediaan", Icons.Default.Inventory, Sapphire800, Screen.STOK_INVENTARIS),
+                KasGoMenuItem("Stok Barang", "Status & nilai persediaan fisik", Icons.Default.Inventory, Sapphire800, Screen.STOK_INVENTARIS),
                 KasGoMenuItem("Stok Opname", "Penyesuaian stok riil", Icons.Default.Edit, Amber500, Screen.STOK_INVENTARIS),
                 KasGoMenuItem("Kartu Stok", "Riwayat mutasi keluar/masuk", Icons.Default.History, Sapphire600, Screen.STOK_INVENTARIS)
             )
@@ -130,7 +126,7 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
                 KasGoMenuItem("Multi Kas & Saldo Bank", "Kas Toko, Pulsa, Saldo BRILink", Icons.Default.AccountBalanceWallet, Sapphire800, Screen.MULTI_KAS),
                 KasGoMenuItem("Tarif Admin Transfer & PPOB", "Tabel biaya admin & fee agen", Icons.Default.CreditCard, HeaderTeal, Screen.TARIF_ADMIN),
                 KasGoMenuItem("Arus Kas Toko", "Kas masuk vs kas keluar", Icons.Default.AccountBalance, Sapphire800, Screen.KEUANGAN),
-                KasGoMenuItem("Biaya Operasional", "Listrik, air, operasional", Icons.Default.MoneyOff, Rose500, Screen.PENGELUARAN),
+                KasGoMenuItem("Biaya Operasional", "Listrik, air & biaya usaha", Icons.Default.MoneyOff, Rose500, Screen.PENGELUARAN),
                 KasGoMenuItem("Pendapatan Jasa", "Pemasukan non-penjualan", Icons.Default.Paid, Emerald700, Screen.PENGELUARAN),
                 KasGoMenuItem("Piutang Pelanggan", "Daftar bon tempo pelanggan", Icons.Default.CreditCard, Amber500, Screen.UTANG_PIUTANG)
             )
@@ -139,7 +135,7 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
             title = "LAPORAN & ANALITIK",
             items = listOf(
                 KasGoMenuItem("Laporan Penjualan", "Ringkasan omzet & faktur", Icons.Default.BarChart, Sapphire800, Screen.LAPORAN),
-                KasGoMenuItem("Laporan Laba Rugi", "Margin & estimasi laba", Icons.Default.TrendingUp, Emerald700, Screen.LAPORAN),
+                KasGoMenuItem("Laporan Laba Rugi", "Margin & laba bersih riil", Icons.Default.TrendingUp, Emerald700, Screen.LAPORAN),
                 KasGoMenuItem("Kirim Laporan WA", "Bagikan rekap ke WhatsApp", Icons.Default.Sms, Emerald700, Screen.LAPORAN)
             )
         ),
@@ -154,10 +150,15 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
             title = "SISTEM & PENGATURAN",
             items = listOf(
                 KasGoMenuItem("Kontak Pelanggan & Grosir", "Buku alamat pelanggan", Icons.Default.People, Sapphire800, Screen.KONTAK),
-                KasGoMenuItem("Pengaturan & Hak Akses", "Profil toko & role kasir", Icons.Default.Settings, Slate700, Screen.PENGATURAN)
+                KasGoMenuItem("Pengaturan & Hak Akses", "Profil toko, backup & role kasir", Icons.Default.Settings, Slate700, Screen.PENGATURAN)
             )
         )
     )
+
+    val visibleGroups = allMenuGroups.mapNotNull { group ->
+        val permitted = group.items.filter { viewModel.hasMenuPermission(it.destination) }
+        if (permitted.isEmpty()) null else group.copy(items = permitted)
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -185,7 +186,7 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
                             .background(SurfaceStrong),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.Dashboard, contentDescription = null, tint = ModulePengaturan, modifier = Modifier.size(24.dp))
+                        Icon(Icons.Default.Dashboard, contentDescription = "Semua Menu", tint = ModulePengaturan, modifier = Modifier.size(24.dp))
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
@@ -202,7 +203,7 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
             }
         }
 
-        items(menuGroups) { group ->
+        items(visibleGroups, key = { it.title }) { group ->
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     text = group.title,
@@ -221,10 +222,11 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(6.dp)) {
-                        group.items.forEachIndexed { _, item ->
+                        group.items.forEach { item ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .heightIn(min = 56.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable { viewModel.navigateTo(item.destination) }
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -237,7 +239,7 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
                                         .background(SurfaceStrong),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(item.icon, contentDescription = null, tint = item.color, modifier = Modifier.size(20.dp))
+                                    Icon(item.icon, contentDescription = item.title, tint = item.color, modifier = Modifier.size(20.dp))
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {

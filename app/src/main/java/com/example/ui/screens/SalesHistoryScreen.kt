@@ -12,12 +12,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Close
@@ -53,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.SaleItemEntity
 import com.example.ui.components.BadgeType
+import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
@@ -70,6 +74,8 @@ import java.util.Locale
 fun SalesHistoryScreen(viewModel: PosViewModel) {
     val context = LocalContext.current
     val sales by viewModel.sales.collectAsStateWithLifecycle()
+    val allSaleItems by viewModel.allSaleItems.collectAsStateWithLifecycle()
+    val products by viewModel.products.collectAsStateWithLifecycle()
     val coroutineScope = rememberCoroutineScope()
 
     var searchQuery by remember { mutableStateOf("") }
@@ -77,16 +83,31 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
     var selectedSaleForDetail by remember { mutableStateOf<SaleEntity?>(null) }
     var saleItemsDetail by remember { mutableStateOf<List<SaleItemEntity>>(emptyList()) }
     var showRefundDialog by remember { mutableStateOf(false) }
+    var showBarcodeScanner by remember { mutableStateOf(false) }
 
-    val filteredSales = remember(sales, searchQuery, selectedFilter) {
+    val matchingSaleIdsByBarcode = remember(searchQuery, allSaleItems, products) {
+        val q = searchQuery.trim()
+        if (q.isBlank()) emptySet()
+        else {
+            val matchedProductIds = products
+                .filter { it.barcode.equals(q, ignoreCase = true) || (q.length >= 4 && it.barcode.contains(q, ignoreCase = true)) }
+                .map { it.id }
+                .toSet()
+            if (matchedProductIds.isEmpty()) emptySet()
+            else allSaleItems.filter { it.productId in matchedProductIds }.map { it.saleId }.toSet()
+        }
+    }
+
+    val filteredSales = remember(sales, searchQuery, selectedFilter, matchingSaleIdsByBarcode) {
         sales.filter { sale ->
             val matchQuery = searchQuery.isBlank() ||
                     sale.invoiceNumber.contains(searchQuery, ignoreCase = true) ||
-                    sale.customerName.contains(searchQuery, ignoreCase = true)
+                    sale.customerName.contains(searchQuery, ignoreCase = true) ||
+                    sale.id in matchingSaleIdsByBarcode
             val matchFilter = when (selectedFilter) {
                 "SELESAI" -> sale.status == "COMPLETED"
                 "PRE_ORDER" -> sale.status == "PRE_ORDER"
-                "RETUR" -> sale.status == "REFUNDED"
+                "RETUR" -> sale.status == "REFUNDED" || sale.status == "CANCELLED"
                 else -> true
             }
             matchQuery && matchFilter
@@ -110,11 +131,8 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
             KasGoSearchBar(
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
-                placeholder = "Cari no. faktur atau nama pelanggan...",
-                onBarcodeScanClick = {
-                    val firstInv = sales.firstOrNull()?.invoiceNumber
-                    if (firstInv != null) searchQuery = firstInv
-                }
+                placeholder = "Cari no. faktur, pelanggan, atau barcode...",
+                onBarcodeScanClick = { showBarcodeScanner = true }
             )
 
             DesignSegmentedTabs(
@@ -152,8 +170,10 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
             ) {
                 items(filteredSales, key = { it.id }) { sale ->
                     val isRefunded = sale.status == "REFUNDED"
+                    val isCancelled = sale.status == "CANCELLED"
                     val isPreOrder = sale.status == "PRE_ORDER"
-                    val isCredit = sale.paymentMethod.equals("KREDIT", true) || (sale.amountPaid < sale.finalAmount && sale.paymentMethod != "TUNAI" && !isPreOrder)
+                    val isCredit = sale.paymentMethod.equals("KREDIT", true) ||
+                        (sale.status == "COMPLETED" && sale.amountPaid + 0.01 < sale.finalAmount)
                     val dateFormatted = SimpleDateFormat("dd MMM yyyy, HH.mm", Locale("id", "ID")).format(Date(sale.date))
 
                     Card(
@@ -202,12 +222,13 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                                 DesignStatusBadge(
                                     text = when {
                                         isRefunded -> "Retur"
+                                        isCancelled -> "Batal"
                                         isPreOrder -> "Pre-Order"
                                         isCredit -> "Piutang"
                                         else -> "Lunas"
                                     },
                                     type = when {
-                                        isRefunded || isCredit -> BadgeType.DANGER
+                                        isRefunded || isCancelled || isCredit -> BadgeType.DANGER
                                         isPreOrder -> BadgeType.WARNING
                                         else -> BadgeType.SUCCESS
                                     }
@@ -229,7 +250,11 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                 color = SurfaceWhite,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
+                Column(
+                    modifier = Modifier
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -315,13 +340,15 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                     }
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (sale.status != "REFUNDED") {
+                        if (sale.status != "REFUNDED" && sale.status != "CANCELLED") {
                             OutlinedButton(
                                 onClick = { showRefundDialog = true },
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Rose500),
                                 border = BorderStroke(1.dp, Rose500.copy(alpha = 0.5f)),
                                 shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
                             ) {
                                 Text("Retur", fontWeight = FontWeight.Bold)
                             }
@@ -329,12 +356,31 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
 
                         Button(
                             onClick = {
-                                val text = "🧾 *STRUK PEMBELIAN GERAI UNA*\nFaktur: ${sale.invoiceNumber}\nPelanggan: ${sale.customerName}\nTotal: Rp ${formatRupiah(sale.finalAmount)}\nMetode: ${sale.paymentMethod}"
-                                viewModel.whatsAppCommandCenter.shareViaWhatsApp(context, text)
+                                val receiptText = buildString {
+                                    append("🧾 *STRUK PEMBELIAN GERAI UNA*\n")
+                                    append("Faktur: ${sale.invoiceNumber}\n")
+                                    append("Tanggal: ${SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(Date(sale.date))}\n")
+                                    append("Pelanggan: ${sale.customerName}\n")
+                                    append("Kasir: ${sale.cashierName}\n")
+                                    append("────────────────────\n")
+                                    saleItemsDetail.forEach { itm ->
+                                        val qtyTxt = if (itm.quantity % 1.0 == 0.0) itm.quantity.toLong().toString() else itm.quantity.toString()
+                                        append("• ${itm.productName} ($qtyTxt ${itm.unit}) = Rp ${formatRupiah(itm.subtotal)}\n")
+                                    }
+                                    if (sale.storeAdminFee > 0) append("Admin Toko: Rp ${formatRupiah(sale.storeAdminFee)}\n")
+                                    if (sale.discount > 0) append("Diskon: -Rp ${formatRupiah(sale.discount)}\n")
+                                    if (sale.promoDiscount > 0) append("Promo: -Rp ${formatRupiah(sale.promoDiscount)}\n")
+                                    append("────────────────────\n")
+                                    append("*Total: Rp ${formatRupiah(sale.finalAmount)}*\n")
+                                    append("Metode: ${sale.paymentMethod}")
+                                }
+                                viewModel.whatsAppCommandCenter.shareViaWhatsApp(context, receiptText)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1.4f)
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .heightIn(min = 48.dp)
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -349,7 +395,7 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
     // Retur Penjualan Confirmation
     if (showRefundDialog && selectedSaleForDetail != null) {
         val sale = selectedSaleForDetail!!
-        var reason by remember { mutableStateOf("Retur Barang Rusak / Salah Beli") }
+        var reason by remember(sale.id) { mutableStateOf("Retur Barang Rusak / Salah Beli") }
 
         Dialog(onDismissRequest = { showRefundDialog = false }) {
             Surface(
@@ -357,7 +403,11 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                 color = SurfaceWhite,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
+                Column(
+                    modifier = Modifier
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Text("Konfirmasi Retur Penjualan", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Rose500))
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
@@ -394,5 +444,16 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                 }
             }
         }
+    }
+
+    if (showBarcodeScanner) {
+        BarcodeScannerDialog(
+            title = "Scan Barcode Faktur / Produk",
+            onBarcodeDetected = { code ->
+                searchQuery = code
+                showBarcodeScanner = false
+            },
+            onDismiss = { showBarcodeScanner = false }
+        )
     }
 }

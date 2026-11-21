@@ -12,13 +12,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.Backspace
@@ -399,7 +402,9 @@ fun KasGoTopBar(
     headerColor: Color = ModuleBeranda,
     icon: ImageVector = Icons.Default.PointOfSale,
     actionIcon: ImageVector? = null,
-    onActionClick: (() -> Unit)? = null
+    onActionClick: (() -> Unit)? = null,
+    notificationCount: Int = 0,
+    onNotificationClick: (() -> Unit)? = null
 ) {
     TopAppBar(
         title = {
@@ -443,6 +448,25 @@ fun KasGoTopBar(
                 }
             }
 
+            if (onNotificationClick != null) {
+                IconButton(onClick = onNotificationClick, modifier = Modifier.testTag("topbar_notification_button")) {
+                    BadgedBox(
+                        badge = {
+                            if (notificationCount > 0) {
+                                Badge(
+                                    containerColor = Amber400,
+                                    contentColor = Slate900
+                                ) {
+                                    Text("$notificationCount", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.NotificationsNone, contentDescription = "Notifikasi Toko", tint = Color.White)
+                    }
+                }
+            }
+
             if (onCartClick != null) {
                 IconButton(onClick = onCartClick, modifier = Modifier.testTag("topbar_cart_button")) {
                     BadgedBox(
@@ -459,10 +483,6 @@ fun KasGoTopBar(
                     ) {
                         Icon(Icons.Default.ShoppingCart, contentDescription = "Keranjang", tint = Color.White)
                     }
-                }
-            } else {
-                IconButton(onClick = {}) {
-                    Icon(Icons.Default.NotificationsNone, contentDescription = "Notifikasi", tint = Color.White)
                 }
             }
         },
@@ -642,7 +662,7 @@ fun KasGoSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
     placeholder: String = "Cari...",
-    onBarcodeScanClick: () -> Unit,
+    onBarcodeScanClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onBarcodeSubmit: ((String) -> Unit)? = null
 ) {
@@ -664,31 +684,40 @@ fun KasGoSearchBar(
         leadingIcon = {
             Icon(Icons.Default.Search, contentDescription = "Cari", tint = Slate500)
         },
-        trailingIcon = {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 6.dp)) {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { onQueryChange("") }) {
-                        Icon(Icons.Default.Close, contentDescription = "Hapus", tint = Slate400)
+        trailingIcon = if (query.isNotEmpty() || onBarcodeScanClick != null) {
+            {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 4.dp)) {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { onQueryChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Hapus", tint = Slate400)
+                        }
+                    }
+                    if (onBarcodeScanClick != null) {
+                        IconButton(
+                            onClick = onBarcodeScanClick,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("search_barcode_scan_btn")
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(SurfaceStrong),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.QrCodeScanner,
+                                    contentDescription = "Scan Barcode (Kamera / Foto)",
+                                    tint = Slate700,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        }
                     }
                 }
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(SurfaceStrong)
-                        .clickable { onBarcodeScanClick() }
-                        .testTag("search_barcode_scan_btn"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.QrCodeScanner,
-                        contentDescription = "Scan Barcode (Kamera / Foto)",
-                        tint = Slate700,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
             }
-        },
+        } else null,
         singleLine = true,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(
@@ -776,7 +805,7 @@ fun ReceiptDialog(
     onPrintReceipt: (() -> Unit)? = null
 ) {
     val dateStr = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(Date(sale.date))
-    val storeTitle = storeProfile?.name?.ifBlank { "GERAI UNA SMART POS" } ?: "GERAI UNA SMART POS"
+    val storeTitle = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya"
     val storeSub = listOfNotNull(
         storeProfile?.address?.takeIf { it.isNotBlank() },
         storeProfile?.phone?.takeIf { it.isNotBlank() }?.let { "Telp: $it" }
@@ -784,7 +813,7 @@ fun ReceiptDialog(
 
     val receiptText = buildString {
         append("🧾 *STRUK PEMBELIAN ${storeTitle}*\n")
-        append("Creator: Egis Bahricha\n")
+        if (storeSub.isNotBlank()) append("$storeSub\n")
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         append("No. Faktur: ${sale.invoiceNumber}\n")
         append("Waktu     : $dateStr\n")
@@ -792,8 +821,9 @@ fun ReceiptDialog(
         append("Pelanggan : ${sale.customerName}\n")
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         items.forEach { item ->
+            val qtyStr = if (item.quantity % 1.0 == 0.0) item.quantity.toLong().toString() else String.format(Locale.US, "%.2f", item.quantity).trimEnd('0').trimEnd('.')
             append("${item.productName}\n")
-            append("  ${item.quantity.toInt()} x Rp ${formatRupiah(item.unitPrice)} = Rp ${formatRupiah(item.quantity * item.unitPrice)}\n")
+            append("  $qtyStr ${item.unitName} x Rp ${formatRupiah(item.unitPrice)} = Rp ${formatRupiah(item.quantity * item.unitPrice)}\n")
             if (item.storeAdminFee > 0.0) {
                 append("  + Admin Layanan: Rp ${formatRupiah(item.storeAdminFee)}\n")
             }
@@ -801,8 +831,11 @@ fun ReceiptDialog(
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         append("Subtotal   : Rp ${formatRupiah(sale.subtotal)}\n")
         if (sale.storeAdminFee > 0) append("Admin Jasa : +Rp ${formatRupiah(sale.storeAdminFee)}\n")
+        if (sale.shippingCost > 0) append("Ongkir     : +Rp ${formatRupiah(sale.shippingCost)}\n")
+        if (sale.additionalFee > 0) append("Biaya Tamb : +Rp ${formatRupiah(sale.additionalFee)}\n")
         if (sale.discount + sale.promoDiscount > 0) append("Diskon     : -Rp ${formatRupiah(sale.discount + sale.promoDiscount)}\n")
         if (sale.tax > 0) append("Pajak      : +Rp ${formatRupiah(sale.tax)}\n")
+        if (sale.depositUsed > 0) append("Deposit    : -Rp ${formatRupiah(sale.depositUsed)}\n")
         append("*TOTAL     : Rp ${formatRupiah(sale.finalAmount)}*\n")
         append("Metode     : ${sale.paymentMethod}\n")
         if (sale.paymentMethod == "TUNAI" || sale.paymentMethod == "SPLIT") {
@@ -820,9 +853,14 @@ fun ReceiptDialog(
             tonalElevation = 6.dp,
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(max = 640.dp)
                 .testTag("post_payment_receipt_dialog")
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(18.dp)
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -905,6 +943,7 @@ fun ReceiptDialog(
                         )
 
                         items.forEach { item ->
+                            val qtyStr = if (item.quantity % 1.0 == 0.0) item.quantity.toLong().toString() else String.format(Locale.US, "%.2f", item.quantity).trimEnd('0').trimEnd('.')
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -912,7 +951,7 @@ fun ReceiptDialog(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    "${item.quantity.toInt()}x ${item.productName}",
+                                    "${qtyStr}x ${item.productName}",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
                                     color = Slate900,
@@ -951,10 +990,40 @@ fun ReceiptDialog(
                                 .padding(vertical = 4.dp)
                         )
 
+                        if (sale.storeAdminFee > 0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Admin Layanan", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                                Text("+${formatRupiah(sale.storeAdminFee)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                            }
+                        }
+                        if (sale.shippingCost > 0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Ongkir", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                                Text("+${formatRupiah(sale.shippingCost)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                            }
+                        }
+                        if (sale.additionalFee > 0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Biaya Tambahan", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                                Text("+${formatRupiah(sale.additionalFee)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                            }
+                        }
                         if (sale.discount + sale.promoDiscount > 0) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Diskon", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Rose500)
                                 Text("-${formatRupiah(sale.discount + sale.promoDiscount)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Rose500)
+                            }
+                        }
+                        if (sale.tax > 0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Pajak", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                                Text("+${formatRupiah(sale.tax)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Slate700)
+                            }
+                        }
+                        if (sale.depositUsed > 0) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Potong Deposit", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Emerald700)
+                                Text("-${formatRupiah(sale.depositUsed)}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Emerald700)
                             }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1033,7 +1102,7 @@ fun ReceiptDialog(
 @Composable
 fun PinPadDialog(
     title: String = "Masukkan PIN",
-    expectedPin: String = "123456",
+    expectedPin: String? = null,
     onVerifyPin: ((String) -> Boolean)? = null,
     onSuccess: () -> Unit,
     onDismiss: () -> Unit
@@ -1124,7 +1193,8 @@ fun PinPadDialog(
                                             } else if (enteredPin.length < 6) {
                                                 enteredPin += key
                                                 if (enteredPin.length == 6) {
-                                                    val isValid = onVerifyPin?.invoke(enteredPin) ?: (enteredPin == expectedPin)
+                                                    val isValid = onVerifyPin?.invoke(enteredPin)
+                                                        ?: (expectedPin != null && enteredPin == expectedPin)
                                                     if (isValid) {
                                                         onSuccess()
                                                     } else {
@@ -1165,7 +1235,7 @@ fun PinPadDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    "PIN default kasir: 123456",
+                    "Gunakan PIN 6-digit akun yang sedang aktif",
                     style = MaterialTheme.typography.labelSmall.copy(color = Slate400)
                 )
             }
@@ -1204,7 +1274,7 @@ fun BarcodeSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
     placeholder: String = "Cari produk atau scan barcode...",
-    onBarcodeScanClick: () -> Unit,
+    onBarcodeScanClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onBarcodeSubmit: ((String) -> Unit)? = null
 ) {

@@ -54,5 +54,5 @@ class FirebaseSessionStore(context: Context) {
         prefs.edit().putString("store_name_hint", storeName).apply()
     }
 
-    fun getStoreNameHint(): String = prefs.getString("store_name_hint", "GERAI UNA SMART POS") ?: "GERAI UNA SMART POS"
+    fun getStoreNameHint(): String = prefs.getString("store_name_hint", "Toko Saya") ?: "Toko Saya"
 }

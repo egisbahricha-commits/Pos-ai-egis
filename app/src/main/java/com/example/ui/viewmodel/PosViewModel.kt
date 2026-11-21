@@ -13,6 +13,7 @@ import com.example.data.backup.KasGoImportSummary
 import com.example.data.backup.KasGoInspectResult
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.*
+import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
 import com.example.data.repository.PosRepository
 import com.example.data.repository.PurchaseItemDraft
@@ -35,6 +36,7 @@ import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +47,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import java.util.Locale
 
 enum class Screen {
@@ -67,7 +71,215 @@ enum class Screen {
     SEMUA_MENU,
     MULTI_KAS,
     TARIF_ADMIN,
-    CLOUD_MONITOR
+    CLOUD_MONITOR,
+    SCAN_BARCODE,
+    MANAJEMEN_PRODUK
+}
+
+data class ManualProductValidation(
+    val nameError: String? = null,
+    val priceError: String? = null,
+    val stockError: String? = null,
+    val barcodeError: String? = null
+) {
+    val isValid: Boolean
+        get() = nameError == null && priceError == null && stockError == null && barcodeError == null
+}
+
+fun validateManualProductInput(
+    name: String,
+    sellingPriceText: String,
+    stockText: String,
+    barcode: String,
+    editingProductId: Long? = null,
+    existingProducts: List<ProductEntity> = emptyList()
+): ManualProductValidation {
+    val cleanName = name.trim()
+    val nameErr = if (cleanName.isEmpty()) "Nama produk wajib diisi" else null
+
+    val parsedPrice = sellingPriceText.trim().replace(',', '.').toDoubleOrNull()
+    val priceErr = when {
+        sellingPriceText.isBlank() -> "Harga jual wajib diisi"
+        parsedPrice == null || parsedPrice < 0.0 -> "Harga jual tidak valid"
+        else -> null
+    }
+
+    val parsedStock = stockText.trim().replace(',', '.').toDoubleOrNull()
+    val stockErr = when {
+        stockText.isBlank() -> "Stok saat ini wajib diisi"
+        parsedStock == null -> "Angka stok tidak valid"
+        else -> null
+    }
+
+    val cleanBarcode = barcode.trim()
+    val duplicateBarcode = cleanBarcode.isNotEmpty() && existingProducts.any { product ->
+        product.id != editingProductId &&
+            product.barcode.trim().equals(cleanBarcode, ignoreCase = true)
+    }
+    val barcodeErr = if (duplicateBarcode) "Barcode sudah digunakan produk lain" else null
+
+    return ManualProductValidation(
+        nameError = nameErr,
+        priceError = priceErr,
+        stockError = stockErr,
+        barcodeError = barcodeErr
+    )
+}
+
+sealed class BarcodeLookupOutcome {
+    data class AddedVariant(val product: ProductEntity, val variant: ProductVariantEntity) : BarcodeLookupOutcome()
+    data class AddedProduct(val product: ProductEntity) : BarcodeLookupOutcome()
+    data class NeedsSelection(
+        val product: ProductEntity,
+        val conversions: List<UnitConversionEntity>,
+        val variants: List<ProductVariantEntity>
+    ) : BarcodeLookupOutcome()
+    data class NotFound(val barcode: String) : BarcodeLookupOutcome()
+}
+
+fun resolveBarcodeToCartMatch(
+    rawCode: String,
+    products: List<ProductEntity>,
+    variants: List<ProductVariantEntity>,
+    conversions: List<UnitConversionEntity>
+): BarcodeLookupOutcome {
+    val code = rawCode.trim()
+    if (code.isEmpty()) return BarcodeLookupOutcome.NotFound("")
+
+    val matchedVariant = variants.firstOrNull { variant ->
+        variant.isActive &&
+            variant.barcode.isNotBlank() &&
+            variant.barcode.trim().equals(code, ignoreCase = true)
+    }
+    if (matchedVariant != null) {
+        val parentProduct = products.firstOrNull { it.id == matchedVariant.productId && it.isActive }
+        if (parentProduct != null) {
+            return BarcodeLookupOutcome.AddedVariant(parentProduct, matchedVariant)
+        }
+    }
+
+    val matchedProduct = products.firstOrNull { product ->
+        product.isActive &&
+            product.barcode.isNotBlank() &&
+            product.barcode.trim().equals(code, ignoreCase = true)
+    } ?: return BarcodeLookupOutcome.NotFound(code)
+
+    val productConversions = conversions.filter { it.productId == matchedProduct.id }
+    val activeVariants = variants.filter { it.productId == matchedProduct.id && it.isActive }
+    return if ((matchedProduct.hasVariants && activeVariants.isNotEmpty()) ||
+        matchedProduct.isFlexiblePrice ||
+        productConversions.isNotEmpty()
+    ) {
+        BarcodeLookupOutcome.NeedsSelection(
+            product = matchedProduct,
+            conversions = productConversions,
+            variants = activeVariants
+        )
+    } else {
+        BarcodeLookupOutcome.AddedProduct(matchedProduct)
+    }
+}
+
+sealed class LocalAuthResult {
+    data class Success(val user: UserAccountEntity) : LocalAuthResult()
+    data class Error(val message: String) : LocalAuthResult()
+}
+
+data class AdminSetupValidation(
+    val storeNameError: String? = null,
+    val fullNameError: String? = null,
+    val usernameError: String? = null,
+    val pinError: String? = null,
+    val confirmPinError: String? = null
+) {
+    val isValid: Boolean
+        get() = storeNameError == null &&
+            fullNameError == null &&
+            usernameError == null &&
+            pinError == null &&
+            confirmPinError == null
+}
+
+val ALL_PERMISSION_MENU_KEYS = listOf(
+    "POS_KASIR",
+    "SCAN_BARCODE",
+    "RIWAYAT_TRANSAKSI",
+    "PRODUK",
+    "MANAJEMEN_PRODUK",
+    "PEMBELIAN",
+    "STOK_INVENTARIS",
+    "MULTI_KAS",
+    "TARIF_ADMIN",
+    "KEUANGAN",
+    "PENGELUARAN",
+    "UTANG_PIUTANG",
+    "LAPORAN",
+    "AI_CHAT",
+    "WHATSAPP",
+    "KONTAK",
+    "PENGATURAN"
+)
+
+fun validateAdminSetupInput(
+    storeName: String,
+    fullName: String,
+    username: String,
+    pin: String,
+    confirmPin: String
+): AdminSetupValidation {
+    val cleanStore = storeName.trim()
+    val cleanFull = fullName.trim()
+    val cleanUser = username.trim()
+    val cleanPin = pin.trim()
+    val cleanConfirm = confirmPin.trim()
+
+    val storeErr = if (cleanStore.isEmpty()) "Nama toko wajib diisi" else null
+    val fullErr = if (cleanFull.isEmpty()) "Nama lengkap Admin Utama wajib diisi" else null
+    val userErr = when {
+        cleanUser.isEmpty() -> "Username Admin wajib diisi"
+        cleanUser.length < 3 -> "Username minimal 3 karakter"
+        cleanUser.contains(" ") -> "Username tidak boleh mengandung spasi"
+        else -> null
+    }
+    val pinErr = if (cleanPin.length != 6 || !cleanPin.all { it.isDigit() }) {
+        "PIN wajib 6 digit angka"
+    } else null
+    val confirmErr = if (cleanConfirm != cleanPin) {
+        "Konfirmasi PIN tidak sama"
+    } else null
+
+    return AdminSetupValidation(
+        storeNameError = storeErr,
+        fullNameError = fullErr,
+        usernameError = userErr,
+        pinError = pinErr,
+        confirmPinError = confirmErr
+    )
+}
+
+fun authenticateLocalUser(
+    usernameInput: String,
+    pinInput: String,
+    users: List<UserAccountEntity>
+): LocalAuthResult {
+    val cleanUsername = usernameInput.trim()
+    val cleanPin = pinInput.trim()
+    if (cleanUsername.isEmpty()) {
+        return LocalAuthResult.Error("Username wajib diisi")
+    }
+    if (cleanPin.length != 6 || !cleanPin.all { it.isDigit() }) {
+        return LocalAuthResult.Error("PIN harus 6 digit angka")
+    }
+    val matched = users.firstOrNull {
+        it.username.trim().equals(cleanUsername, ignoreCase = true)
+    } ?: return LocalAuthResult.Error("Username \"$cleanUsername\" belum terdaftar. Minta Admin Utama membuat akun.")
+    if (!matched.isActive) {
+        return LocalAuthResult.Error("Akun \"${matched.username}\" sedang dinonaktifkan oleh Admin Utama")
+    }
+    if (matched.pinHash != GeraiUnaDatabase.hashPin(cleanPin)) {
+        return LocalAuthResult.Error("PIN salah. Silakan coba lagi")
+    }
+    return LocalAuthResult.Success(matched)
 }
 
 data class ChatMessage(
@@ -136,17 +348,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             startCloudListeners(user.uid)
         } else {
             stopCloudListeners()
-            if (firebaseSessionStore.isOfflineBypass()) {
-                _authUiState.update {
-                    it.copy(
-                        hasEnteredApp = true,
-                        isOfflineMode = true,
-                        isCloudSignedIn = false,
-                        userId = "",
-                        userEmail = ""
-                    )
-                }
-            }
         }
     }
 
@@ -161,14 +362,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         _currentScreen.value = screen
     }
 
-    // Active User Role & Account
-    private val _activeRole = MutableStateFlow("Owner")
+    // Active User Role & Account (empty until authenticated via LoginScreen)
+    private val _activeRole = MutableStateFlow("")
     val activeRole: StateFlow<String> = _activeRole.asStateFlow()
 
-    private val _activeUserName = MutableStateFlow("Egis Bahricha (Owner)")
+    private val _activeUserName = MutableStateFlow("")
     val activeUserName: StateFlow<String> = _activeUserName.asStateFlow()
 
-    private val _activeUserId = MutableStateFlow(1L)
+    private val _activeUserId = MutableStateFlow(0L)
     val activeUserId: StateFlow<Long> = _activeUserId.asStateFlow()
 
     private val _themeMode = MutableStateFlow("SYSTEM") // "SYSTEM", "LIGHT", "DARK"
@@ -219,12 +420,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun verifyPin(pin: String): Boolean {
-        val hash = GeraiUnaDatabase.hashPin(pin)
-        val activeUser = userAccounts.value.find { it.id == _activeUserId.value }
-        return if (activeUser != null) {
-            activeUser.pinHash == hash || pin == "123456" && activeUser.pinHash == GeraiUnaDatabase.hashPin("123456")
-        } else {
-            pin == "123456"
+        val cleanPin = pin.trim()
+        if (cleanPin.length != 6 || !cleanPin.all { it.isDigit() }) return false
+        val hash = GeraiUnaDatabase.hashPin(cleanPin)
+        val activeUser = userAccounts.value.find { it.id == _activeUserId.value && it.isActive }
+        if (activeUser != null) {
+            return activeUser.pinHash == hash
+        }
+        // If signed in via Google Cloud without selecting a local user, match against any active Owner account
+        return userAccounts.value.any {
+            it.isActive && it.role.equals("owner", ignoreCase = true) && it.pinHash == hash
         }
     }
 
@@ -242,49 +447,41 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val existingProducts = database.productDao().getAllProductsList()
-                if (existingProducts.isEmpty()) {
+                // Ensure offline bypass flag never auto-enters app without login
+                firebaseSessionStore.setOfflineBypass(false)
+
+                val initializedFlag = repository.getSetting("db_initialized")
+                val extDao = database.extendedPosDao()
+                val cashAccountDao = database.cashAccountDao()
+                val existingProfile = extDao.getStoreProfileSync()
+                val existingAccounts = cashAccountDao.getAllAccountsList()
+
+                if (initializedFlag != "true" && existingProfile == null && existingAccounts.isEmpty()) {
                     GeraiUnaDatabase.populateInitialData(database)
                 } else {
-                    val existingAccounts = database.cashAccountDao().getAllAccountsList()
                     if (existingAccounts.isEmpty()) {
-                        val cashAccountDao = database.cashAccountDao()
                         cashAccountDao.insertCashAccount(
-                            CashAccountEntity(accountName = "Kas Toko", balance = 1500000.0, accountType = "CASH", color = "#16A34A", notes = "Uang fisik laci kasir gerai utama", isDefault = true, sortOrder = 1)
-                        )
-                        cashAccountDao.insertCashAccount(
-                            CashAccountEntity(accountName = "Deposit Pulsa", balance = 750000.0, accountType = "PULSA_DEPOSIT", color = "#EA580C", notes = "Saldo server pulsa / chip konter", sortOrder = 2)
-                        )
-                        cashAccountDao.insertCashAccount(
-                            CashAccountEntity(accountName = "Saldo BRILink / Agen Bank", balance = 4250000.0, accountType = "BANK_AGENT", color = "#2563EB", notes = "Saldo operasional transaksi transfer agen", sortOrder = 3)
+                            CashAccountEntity(
+                                accountName = "Kas Toko",
+                                balance = 0.0,
+                                accountType = "CASH",
+                                color = "#16A34A",
+                                notes = "Kas utama laci kasir",
+                                isDefault = true,
+                                sortOrder = 1
+                            )
                         )
                     }
-                    val existingServices = database.adminTierDao().getAllServicesList()
-                    if (existingServices.isEmpty()) {
-                        val adminTierDao = database.adminTierDao()
-                        val s1 = adminTierDao.insertService(AdminTierServiceEntity(serviceName = "Transfer Antar Bank", serviceCode = "TRANSFER_BANK"))
-                        adminTierDao.insertRange(AdminTierRangeEntity(serviceId = s1, minAmount = 0.0, maxAmount = 1000000.0, storeAdminFee = 5000.0, providerAdminFee = 5000.0, agentCommission = 2500.0))
-                        adminTierDao.insertRange(AdminTierRangeEntity(serviceId = s1, minAmount = 1000001.0, maxAmount = 3000000.0, storeAdminFee = 8000.0, providerAdminFee = 5000.0, agentCommission = 2500.0))
-                    }
-                    val extDao = database.extendedPosDao()
-                    if (extDao.getStoreProfileSync() == null) {
+                    if (existingProfile == null) {
                         extDao.upsertStoreProfile(StoreProfileEntity())
                     }
-                    if (extDao.getAllUsersList().isEmpty()) {
-                        val defaultHash = GeraiUnaDatabase.hashPin("123456")
-                        val ownerId = extDao.insertUser(UserAccountEntity(name = "Egis Bahricha (Owner)", username = "owner", role = "owner", pinHash = defaultHash))
-                        val kasirId = extDao.insertUser(UserAccountEntity(name = "Kasir 1", username = "kasir1", role = "kasir", pinHash = defaultHash))
-                        val allMenus = listOf("POS_KASIR", "RIWAYAT_TRANSAKSI", "PRODUK", "PEMBELIAN", "STOK_INVENTARIS", "MULTI_KAS", "TARIF_ADMIN", "KEUANGAN", "PENGELUARAN", "UTANG_PIUTANG", "LAPORAN", "AI_CHAT", "WHATSAPP", "KONTAK", "PENGATURAN")
-                        allMenus.forEach { m ->
-                            extDao.insertMenuPermission(MenuPermissionEntity(userId = ownerId, menuKey = m, allowed = true))
-                            extDao.insertMenuPermission(MenuPermissionEntity(userId = kasirId, menuKey = m, allowed = m in listOf("POS_KASIR", "RIWAYAT_TRANSAKSI", "PRODUK", "STOK_INVENTARIS", "TARIF_ADMIN", "KONTAK")))
-                        }
-                        extDao.insertPrinter(PrinterEntity(name = "Printer Thermal 58mm"))
-                        extDao.insertCashierDevice(CashierDeviceEntity(name = "Kasir Utama Gerai Una", role = "utama"))
+                    if (initializedFlag != "true") {
+                        repository.setSetting("db_initialized", "true")
                     }
                 }
+
                 // Sync tax rate from store profile
-                val profile = database.extendedPosDao().getStoreProfileSync()
+                val profile = extDao.getStoreProfileSync()
                 if (profile != null && profile.ppnBp > 0) {
                     _cartTaxRate.value = profile.ppnBp / 10000.0
                 }
@@ -305,22 +502,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         applyAuthenticatedUser(currentUser)
                         startCloudListeners(currentUser.uid)
                         syncNowWithFirebase(SyncMode.TWO_WAY, silent = true)
-                    } else if (firebaseSessionStore.isOfflineBypass()) {
-                        _authUiState.update {
-                            it.copy(
-                                hasEnteredApp = true,
-                                isOfflineMode = true,
-                                isCloudSignedIn = false
-                            )
-                        }
-                    }
-                } else if (firebaseSessionStore.isOfflineBypass()) {
-                    _authUiState.update {
-                        it.copy(
-                            hasEnteredApp = true,
-                            isOfflineMode = true,
-                            isCloudSignedIn = false
-                        )
                     }
                 }
             } catch (_: Exception) {
@@ -439,28 +620,156 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun enterOfflineMode(localUser: UserAccountEntity? = null) {
-        firebaseSessionStore.setOfflineBypass(true)
-        if (localUser != null) {
-            switchUserAccount(localUser)
+    fun setupMainAdmin(
+        storeName: String,
+        fullName: String,
+        username: String,
+        pin: String,
+        confirmPin: String
+    ) {
+        val validation = validateAdminSetupInput(storeName, fullName, username, pin, confirmPin)
+        if (!validation.isValid) {
+            val firstError = listOfNotNull(
+                validation.storeNameError,
+                validation.fullNameError,
+                validation.usernameError,
+                validation.pinError,
+                validation.confirmPinError
+            ).firstOrNull() ?: "Data Admin Utama belum lengkap"
+            _authUiState.update { it.copy(authError = firstError) }
+            return
         }
-        _authUiState.update {
-            it.copy(
-                hasEnteredApp = true,
-                isOfflineMode = true,
-                isCloudSignedIn = false,
-                authError = null,
-                authInfoMessage = null
-            )
+
+        viewModelScope.launch {
+            _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
+            try {
+                val cleanStore = storeName.trim()
+                val cleanFull = fullName.trim()
+                val cleanUsername = username.trim().lowercase()
+                val pinHash = GeraiUnaDatabase.hashPin(pin.trim())
+
+                val existingUsers = withContext(Dispatchers.IO) {
+                    database.extendedPosDao().getAllUsersList()
+                }
+                if (existingUsers.isNotEmpty()) {
+                    _authUiState.update {
+                        it.copy(
+                            isAuthLoading = false,
+                            authError = "Admin Utama sudah terdaftar. Silakan login menggunakan username & PIN."
+                        )
+                    }
+                    return@launch
+                }
+
+                val currentProfile = withContext(Dispatchers.IO) {
+                    database.extendedPosDao().getStoreProfileSync() ?: StoreProfileEntity()
+                }
+                repository.saveStoreProfile(currentProfile.copy(name = cleanStore))
+                firebaseSessionStore.setStoreNameHint(cleanStore)
+                repository.setSetting("db_initialized", "true")
+
+                val adminUser = UserAccountEntity(
+                    name = cleanFull,
+                    username = cleanUsername,
+                    role = "owner",
+                    pinHash = pinHash,
+                    isActive = true
+                )
+                val fullPermissions = ALL_PERMISSION_MENU_KEYS.associateWith { true }
+                val newUserId = repository.saveUserWithPermissions(adminUser, fullPermissions)
+
+                firebaseSessionStore.setOfflineBypass(false)
+                _activeUserId.value = newUserId
+                _activeRole.value = "Owner"
+                _activeUserName.value = cleanFull
+                _currentScreen.value = Screen.DASHBOARD
+                repository.setSetting("active_role", "Owner")
+                repository.setSetting("active_user_name", cleanFull)
+
+                _authUiState.update {
+                    it.copy(
+                        hasEnteredApp = true,
+                        isOfflineMode = true,
+                        isCloudSignedIn = false,
+                        fullName = cleanFull,
+                        storeName = cleanStore,
+                        isAuthLoading = false,
+                        authError = null,
+                        authInfoMessage = null
+                    )
+                }
+                _userMessage.value = "Admin Utama \"$cleanFull\" berhasil dibuat!"
+            } catch (e: Exception) {
+                _authUiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = "Gagal membuat Admin Utama: ${e.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    fun loginWithLocalCredentials(username: String, pin: String) {
+        viewModelScope.launch {
+            _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
+            try {
+                val allUsers = withContext(Dispatchers.IO) {
+                    database.extendedPosDao().getAllUsersList()
+                }
+                when (val result = authenticateLocalUser(username, pin, allUsers)) {
+                    is LocalAuthResult.Error -> {
+                        _authUiState.update {
+                            it.copy(isAuthLoading = false, authError = result.message)
+                        }
+                    }
+                    is LocalAuthResult.Success -> {
+                        val user = result.user
+                        val roleDisplay = if (user.role.equals("owner", ignoreCase = true)) "Owner" else "Kasir"
+                        firebaseSessionStore.setOfflineBypass(false)
+                        _activeUserId.value = user.id
+                        _activeRole.value = roleDisplay
+                        _activeUserName.value = user.name
+                        _currentScreen.value = Screen.DASHBOARD
+                        repository.setSetting("active_role", roleDisplay)
+                        repository.setSetting("active_user_name", user.name)
+
+                        _authUiState.update {
+                            it.copy(
+                                hasEnteredApp = true,
+                                isOfflineMode = true,
+                                isCloudSignedIn = false,
+                                fullName = user.name,
+                                isAuthLoading = false,
+                                authError = null,
+                                authInfoMessage = null
+                            )
+                        }
+                        _userMessage.value = "Selamat datang, ${user.name} ($roleDisplay)"
+                    }
+                }
+            } catch (e: Exception) {
+                _authUiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = "Gagal memverifikasi akun: ${e.message}"
+                    )
+                }
+            }
         }
     }
 
     fun logoutToLoginScreen() {
         viewModelScope.launch {
-            stopCloudListeners()
-            auth?.signOut()
-            firebaseSessionStore.setOfflineBypass(false)
-            GoogleAuthHelper.clearCredentialState(getApplication())
+            withContext(NonCancellable) {
+                stopCloudListeners()
+                auth?.signOut()
+                firebaseSessionStore.setOfflineBypass(false)
+                GoogleAuthHelper.clearCredentialState(getApplication())
+            }
+            _activeUserId.value = 0L
+            _activeRole.value = ""
+            _activeUserName.value = ""
             _currentScreen.value = Screen.DASHBOARD
             _authUiState.update {
                 it.copy(
@@ -470,7 +779,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     userId = "",
                     userEmail = "",
                     authError = null,
-                    authInfoMessage = "Anda telah keluar. Pilih akun Google lain atau masuk di perangkat lain."
+                    authInfoMessage = "Anda telah keluar. Silakan login kembali."
                 )
             }
         }
@@ -559,6 +868,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val suppliers = repository.suppliers.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val unitConversions = repository.unitConversions.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val allProductTierPrices: StateFlow<List<ProductTierPriceEntity>> = repository.allTierPrices.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val recentBarcodeScans: StateFlow<List<BarcodeScanLogEntity>> = repository.recentBarcodeScans.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val aiLogs = repository.aiCommandLogs.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Multi Kas & Konter Flows
@@ -593,6 +903,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val bundles: StateFlow<List<BundlePackageEntity>> = repository.bundles.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val bundleItems: StateFlow<List<BundleItemEntity>> = repository.bundleItems.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val promos: StateFlow<List<PromoEntity>> = repository.promos.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val appSettings: StateFlow<List<AppSettingsEntity>> = repository.appSettings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Cart State for POS Kasir
     private val _cart = MutableStateFlow<List<CartItem>>(emptyList())
@@ -618,8 +929,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         listOf(
             ChatMessage(
                 isUser = false,
-                senderName = "Gerai Una AI",
-                text = "Halo Egis Bahricha! Saya Asisten AI Gerai Una.\nKetik perintah operasional toko apa saja, misalnya:\n• \"Baru belanja di grosir aqua 2 dus harga 45 ribu, indomie goreng 5 karton harga 110 ribu\"\n• \"Tambah produk baru Rinso cair 800 ml modal 14 ribu jual 18 ribu\"\n• \"Pengeluaran listrik 250 ribu\"\n• \"Tambah stok Aqua 20 botol\"\n• \"Berapa stok Aqua?\"\n• \"Berapa utang saya ke grosir?\""
+                senderName = "Asisten AI Toko",
+                text = "Halo! Saya Asisten AI POS.\nKetik perintah operasional toko apa saja, misalnya:\n• \"Tambah produk baru Kopi Hitam 100g modal 8 ribu jual 12 ribu\"\n• \"Pengeluaran listrik 250 ribu\"\n• \"Tambah stok Kopi Hitam 20 pcs\"\n• \"Berapa stok produk?\""
             )
         )
     )
@@ -852,6 +1163,122 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         _cartTaxRate.value = rate
     }
 
+    fun scanBarcodeAndAddToCart(rawCode: String, source: String = "CAMERA"): BarcodeLookupOutcome {
+        val outcome = resolveBarcodeToCartMatch(
+            rawCode = rawCode,
+            products = products.value,
+            variants = productVariants.value,
+            conversions = unitConversions.value
+        )
+        val cleaned = rawCode.trim()
+        when (outcome) {
+            is BarcodeLookupOutcome.AddedVariant -> {
+                addToCart(product = outcome.product, variant = outcome.variant)
+                logBarcodeScanAsync(
+                    BarcodeScanLogEntity(
+                        barcode = cleaned,
+                        productId = outcome.product.id,
+                        variantId = outcome.variant.id,
+                        productName = "${outcome.product.name} (${outcome.variant.name})",
+                        matchedPrice = outcome.variant.sellingPrice,
+                        matchedStock = outcome.variant.stock,
+                        matched = true,
+                        source = source
+                    )
+                )
+            }
+            is BarcodeLookupOutcome.AddedProduct -> {
+                val product = outcome.product
+                if (product.productType == "DIGITAL" && product.adminTierGroupId != null) {
+                    val tierSvc = adminTiers.value.find { it.service.id == product.adminTierGroupId }
+                    val calc = TierPricingResolver.calculate(tierSvc, product.sellingPrice)
+                    addToCart(
+                        product = product,
+                        storeAdminFee = calc.storeAdminFee,
+                        providerAdminFee = calc.providerAdminFee,
+                        agentCommission = calc.agentCommission
+                    )
+                } else {
+                    addToCart(product = product)
+                }
+                logBarcodeScanAsync(
+                    BarcodeScanLogEntity(
+                        barcode = cleaned,
+                        productId = product.id,
+                        productName = product.name,
+                        matchedPrice = product.sellingPrice,
+                        matchedStock = product.stock,
+                        matched = true,
+                        source = source
+                    )
+                )
+            }
+            is BarcodeLookupOutcome.NeedsSelection -> {
+                logBarcodeScanAsync(
+                    BarcodeScanLogEntity(
+                        barcode = cleaned,
+                        productId = outcome.product.id,
+                        productName = outcome.product.name,
+                        matchedPrice = outcome.product.sellingPrice,
+                        matchedStock = outcome.product.stock,
+                        matched = true,
+                        source = source
+                    )
+                )
+            }
+            is BarcodeLookupOutcome.NotFound -> {
+                if (cleaned.isNotEmpty()) {
+                    logBarcodeScanAsync(
+                        BarcodeScanLogEntity(
+                            barcode = cleaned,
+                            matched = false,
+                            source = source
+                        )
+                    )
+                }
+            }
+        }
+        return outcome
+    }
+
+    private fun logBarcodeScanAsync(log: BarcodeScanLogEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.recordBarcodeScan(log) }
+        }
+    }
+
+    fun quickCreateAndAddScannedProduct(
+        name: String,
+        barcode: String,
+        sellingPrice: Double,
+        costPrice: Double,
+        stock: Double = 10.0,
+        category: String = "Umum",
+        baseUnit: String = "pcs"
+    ) {
+        val cleanName = name.trim()
+        val cleanBarcode = barcode.trim()
+        if (cleanName.isBlank() || sellingPrice <= 0.0) return
+        viewModelScope.launch {
+            val newProduct = ProductEntity(
+                name = cleanName,
+                barcode = cleanBarcode,
+                category = category.ifBlank { "Umum" },
+                baseUnit = baseUnit.ifBlank { "pcs" },
+                sellingPrice = sellingPrice,
+                purchasePrice = costPrice.coerceAtLeast(0.0),
+                stock = stock.coerceAtLeast(0.0),
+                productType = "FISIK",
+                isActive = true
+            )
+            val insertedId = withContext(Dispatchers.IO) {
+                repository.insertProduct(newProduct)
+            }
+            addToCart(newProduct.copy(id = insertedId))
+            _userMessage.value = "Produk \"$cleanName\" disimpan & ditambahkan ke keranjang"
+        }
+    }
+
     fun checkoutSale(
         paymentMethod: String,
         amountPaid: Double,
@@ -880,7 +1307,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val subtotal = currentItems.sumOf { it.unitPrice * it.quantity }
                 val discount = _cartDiscount.value
-                val tax = ((subtotal - discount - promoDiscount).coerceAtLeast(0.0)) * _cartTaxRate.value
+                val tax = ((subtotal - discount).coerceAtLeast(0.0)) * _cartTaxRate.value
                 val totalItemStoreAdmin = currentItems.sumOf { it.storeAdminFee }
                 val finalAmount = (subtotal - discount - promoDiscount + tax + shippingCost + additionalFee + storeAdminFee + totalItemStoreAdmin).coerceAtLeast(0.0)
                 val remainingPayable = (finalAmount - depositUsed).coerceAtLeast(0.0)
@@ -967,8 +1394,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val subtotal = currentItems.sumOf { it.unitPrice * it.quantity }
                 val discount = _cartDiscount.value
-                val tax = (subtotal - discount) * _cartTaxRate.value
-                val total = (subtotal - discount + tax).coerceAtLeast(0.0)
+                val tax = ((subtotal - discount).coerceAtLeast(0.0)) * _cartTaxRate.value
+                val itemStoreAdmin = currentItems.sumOf { it.storeAdminFee }
+                val total = (subtotal - discount + tax + itemStoreAdmin).coerceAtLeast(0.0)
                 repository.holdSale(holdName, currentItems, _selectedCustomer.value, total, notes)
                 clearCart()
                 _userMessage.value = "Transaksi berhasil ditahan: $holdName"
@@ -983,24 +1411,46 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val json = pending.cartJson
                 val items = mutableListOf<CartItem>()
-                val regex = Regex("""\{"id":(\d+),"name":"(.*?)","unit":"(.*?)","qty":([\d.]+),"price":([\d.]+),"mul":([\d.]+)\}""")
-                regex.findAll(json).forEach { match ->
-                    val id = match.groupValues[1].toLong()
-                    val name = match.groupValues[2].replace("\\\"", "\"")
-                    val unit = match.groupValues[3]
-                    val qty = match.groupValues[4].toDouble()
-                    val price = match.groupValues[5].toDouble()
-                    val mul = match.groupValues[6].toDouble()
-                    items.add(
-                        CartItem(
-                            productId = id,
-                            productName = name,
-                            unitName = unit,
-                            multiplier = mul,
-                            unitPrice = price,
-                            quantity = qty
+                val parsedJsonArray = runCatching { JSONArray(json) }.getOrNull()
+                if (parsedJsonArray != null) {
+                    for (i in 0 until parsedJsonArray.length()) {
+                        val obj = parsedJsonArray.optJSONObject(i) ?: continue
+                        items.add(
+                            CartItem(
+                                productId = obj.optLong("id", 0L),
+                                productName = obj.optString("name", "Produk"),
+                                unitName = obj.optString("unit", "pcs"),
+                                multiplier = obj.optDouble("mul", 1.0),
+                                unitPrice = obj.optDouble("price", 0.0),
+                                quantity = obj.optDouble("qty", 1.0),
+                                maxAvailableBaseStock = obj.optDouble("maxStock", 999.0),
+                                variantId = if (obj.has("variantId") && !obj.isNull("variantId")) obj.optLong("variantId") else null,
+                                variantName = obj.optString("variantName", ""),
+                                bundleId = if (obj.has("bundleId") && !obj.isNull("bundleId")) obj.optLong("bundleId") else null,
+                                priceSource = obj.optString("priceSource", "tetap"),
+                                serviceNominal = if (obj.has("serviceNominal") && !obj.isNull("serviceNominal")) obj.optDouble("serviceNominal") else null,
+                                storeAdminFee = obj.optDouble("storeAdminFee", 0.0),
+                                providerAdminFee = obj.optDouble("providerAdminFee", 0.0),
+                                agentCommission = obj.optDouble("agentCommission", 0.0),
+                                serviceCashAccountId = if (obj.has("serviceCashAccountId") && !obj.isNull("serviceCashAccountId")) obj.optLong("serviceCashAccountId") else null,
+                                serviceDirection = obj.optString("serviceDirection", "SETOR")
+                            )
                         )
-                    )
+                    }
+                } else {
+                    val regex = Regex("""\{"id":(-?\d+),"name":"(.*?)","unit":"(.*?)","qty":([\d.]+),"price":([\d.]+),"mul":([\d.]+)\}""")
+                    regex.findAll(json).forEach { match ->
+                        items.add(
+                            CartItem(
+                                productId = match.groupValues[1].toLong(),
+                                productName = match.groupValues[2].replace("\\\"", "\""),
+                                unitName = match.groupValues[3],
+                                multiplier = match.groupValues[6].toDouble(),
+                                unitPrice = match.groupValues[5].toDouble(),
+                                quantity = match.groupValues[4].toDouble()
+                            )
+                        )
+                    }
                 }
                 _cart.value = items
                 if (pending.customerId != null) {
@@ -1229,6 +1679,82 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun saveManualProduct(
+        existingProduct: ProductEntity?,
+        name: String,
+        sellingPrice: Double,
+        purchasePrice: Double,
+        stock: Double,
+        minStock: Double,
+        barcode: String,
+        category: String,
+        baseUnit: String,
+        allowDecimalQty: Boolean
+    ) {
+        val cleanName = name.trim()
+        if (cleanName.isBlank() || sellingPrice < 0.0) return
+
+        val cleanCategory = category.trim().ifBlank { "Umum" }
+        val cleanUnit = baseUnit.trim().ifBlank { "pcs" }
+        val cleanBarcode = barcode.trim()
+
+        viewModelScope.launch {
+            if (existingProduct == null) {
+                val created = ProductEntity(
+                    name = cleanName,
+                    barcode = cleanBarcode,
+                    category = cleanCategory,
+                    baseUnit = cleanUnit,
+                    purchasePrice = purchasePrice.coerceAtLeast(0.0),
+                    sellingPrice = sellingPrice.coerceAtLeast(0.0),
+                    stock = stock,
+                    minStock = minStock.coerceAtLeast(0.0),
+                    productType = "FISIK",
+                    allowDecimalQty = allowDecimalQty,
+                    isActive = true
+                )
+                repository.insertProduct(created)
+                _userMessage.value = "Produk \"$cleanName\" disimpan ke database"
+            } else {
+                val stockChanged = existingProduct.stock != stock
+                val updated = existingProduct.copy(
+                    name = cleanName,
+                    barcode = cleanBarcode,
+                    category = cleanCategory,
+                    baseUnit = cleanUnit,
+                    purchasePrice = purchasePrice.coerceAtLeast(0.0),
+                    sellingPrice = sellingPrice.coerceAtLeast(0.0),
+                    stock = stock,
+                    minStock = minStock.coerceAtLeast(0.0),
+                    allowDecimalQty = allowDecimalQty
+                )
+                repository.updateProduct(updated)
+                if (stockChanged) {
+                    repository.adjustStock(
+                        productId = updated.id,
+                        newStock = stock,
+                        reason = "Pembaruan stok manual",
+                        user = _activeUserName.value
+                    )
+                }
+                _userMessage.value = "Produk \"$cleanName\" berhasil diperbarui"
+            }
+        }
+    }
+
+    fun stepProductStock(product: ProductEntity, delta: Double) {
+        viewModelScope.launch {
+            val nextStock = (product.stock + delta).coerceAtLeast(0.0)
+            repository.adjustStock(
+                productId = product.id,
+                newStock = nextStock,
+                reason = if (delta >= 0) "Tambah stok cepat" else "Kurangi stok cepat",
+                user = _activeUserName.value
+            )
+            _userMessage.value = "Stok ${product.name}: ${if (product.allowDecimalQty) nextStock else nextStock.toInt()} ${product.baseUnit}"
+        }
+    }
+
     fun saveProductWithDetails(
         product: ProductEntity,
         conversions: List<UnitConversionEntity>,
@@ -1269,7 +1795,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 repository.updateProduct(finalProduct)
                 finalProduct.id
             }
-            conversions.forEach { repository.insertConversion(it.copy(productId = savedId)) }
+            repository.replaceUnitConversions(savedId, conversions)
             repository.replaceProductTierPrices(savedId, tierPrices)
             repository.replaceProductVariants(savedId, variants)
             repository.replaceWholesaleTiers(savedId, wholesaleTiers)
@@ -1281,12 +1807,28 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private var lastDeletedProduct: ProductEntity? = null
+    private data class DeletedProductSnapshot(
+        val product: ProductEntity,
+        val conversions: List<UnitConversionEntity>,
+        val tierPrices: List<ProductTierPriceEntity>,
+        val variants: List<ProductVariantEntity>,
+        val wholesaleTiers: List<WholesaleTierEntity>,
+        val aliases: List<ProductAliasEntity>
+    )
+
+    private var lastDeletedProduct: DeletedProductSnapshot? = null
 
     fun deleteProduct(product: ProductEntity) {
         viewModelScope.launch {
-            lastDeletedProduct = product
-            repository.deleteProduct(product)
+            lastDeletedProduct = DeletedProductSnapshot(
+                product = product,
+                conversions = repository.getConversionsList(product.id),
+                tierPrices = repository.getTierPricesList(product.id),
+                variants = repository.getVariantsForProductList(product.id),
+                wholesaleTiers = repository.getWholesaleTiersList(product.id),
+                aliases = repository.getAliasesForProductList(product.id)
+            )
+            repository.deleteProductCascade(product)
             _userMessage.value = "Produk dihapus"
         }
     }
@@ -1294,9 +1836,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     fun undoDeleteProduct() {
         val deleted = lastDeletedProduct ?: return
         viewModelScope.launch {
-            repository.insertProduct(deleted)
+            val restoredId = repository.insertProduct(deleted.product)
+            repository.replaceUnitConversions(restoredId, deleted.conversions)
+            repository.replaceProductTierPrices(restoredId, deleted.tierPrices)
+            repository.replaceProductVariants(restoredId, deleted.variants)
+            repository.replaceWholesaleTiers(restoredId, deleted.wholesaleTiers)
+            deleted.aliases.forEach { repository.learnProductAlias(restoredId, it.alias) }
             lastDeletedProduct = null
-            _userMessage.value = "Produk \"${deleted.name}\" dikembalikan"
+            _userMessage.value = "Produk \"${deleted.product.name}\" dikembalikan"
         }
     }
 
@@ -1374,13 +1921,67 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveUserAccount(user: UserAccountEntity, permissions: Map<String, Boolean>) {
         viewModelScope.launch {
-            repository.saveUserWithPermissions(user, permissions)
-            _userMessage.value = "Pengguna \"${user.name}\" & izin menu disimpan"
+            if (!(_activeRole.value.equals("Owner", ignoreCase = true) || _activeRole.value.equals("Admin", ignoreCase = true))) {
+                _userMessage.value = "Hanya Admin Utama / Owner yang dapat mengelola akun pengguna"
+                return@launch
+            }
+            val normalizedUsername = user.username.trim().lowercase()
+            if (normalizedUsername.length < 3 || normalizedUsername.contains(" ")) {
+                _userMessage.value = "Username minimal 3 karakter dan tanpa spasi"
+                return@launch
+            }
+            val existingUsers = withContext(Dispatchers.IO) {
+                database.extendedPosDao().getAllUsersList()
+            }
+            val duplicate = existingUsers.any {
+                it.id != user.id && it.username.trim().equals(normalizedUsername, ignoreCase = true)
+            }
+            if (duplicate) {
+                _userMessage.value = "Username \"$normalizedUsername\" sudah digunakan"
+                return@launch
+            }
+            val activeOwnersAfter = existingUsers.count {
+                it.id != user.id && it.isActive && it.role.equals("owner", ignoreCase = true)
+            } + if (user.isActive && user.role.equals("owner", ignoreCase = true)) 1 else 0
+            if (activeOwnersAfter == 0) {
+                _userMessage.value = "Minimal harus ada 1 akun Admin Utama / Owner yang aktif"
+                return@launch
+            }
+
+            val sanitized = user.copy(
+                name = user.name.trim(),
+                username = normalizedUsername,
+                updatedAt = System.currentTimeMillis()
+            )
+            repository.saveUserWithPermissions(sanitized, permissions)
+            if (sanitized.id == _activeUserId.value && sanitized.id != 0L) {
+                _activeUserName.value = sanitized.name
+                _activeRole.value = if (sanitized.role.equals("owner", ignoreCase = true)) "Owner" else "Kasir"
+            }
+            _userMessage.value = "Pengguna \"${sanitized.name}\" (@$normalizedUsername) disimpan"
         }
     }
 
     fun deleteUserAccount(user: UserAccountEntity) {
         viewModelScope.launch {
+            if (!(_activeRole.value.equals("Owner", ignoreCase = true) || _activeRole.value.equals("Admin", ignoreCase = true))) {
+                _userMessage.value = "Hanya Admin Utama / Owner yang dapat menghapus akun"
+                return@launch
+            }
+            if (user.id == _activeUserId.value) {
+                _userMessage.value = "Tidak dapat menghapus akun yang sedang aktif digunakan"
+                return@launch
+            }
+            val existingUsers = withContext(Dispatchers.IO) {
+                database.extendedPosDao().getAllUsersList()
+            }
+            val remainingActiveOwners = existingUsers.count {
+                it.id != user.id && it.isActive && it.role.equals("owner", ignoreCase = true)
+            }
+            if (user.role.equals("owner", ignoreCase = true) && remainingActiveOwners == 0) {
+                _userMessage.value = "Minimal harus ada 1 Admin Utama / Owner tersisa"
+                return@launch
+            }
             repository.deleteUser(user)
             _userMessage.value = "Akun ${user.name} dihapus"
         }
@@ -1467,6 +2068,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun getItemsForPurchase(purchaseId: Long): List<PurchaseItemEntity> =
+        repository.getItemsForPurchase(purchaseId)
+
     // --- Stock Inventory Adjustments ---
 
     fun adjustStock(productId: Long, newStock: Double, reason: String) {
@@ -1485,23 +2089,57 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Financials ---
 
-    fun recordExpense(category: String, amount: Double, notes: String, source: String = "Kas Toko") {
+    fun recordExpense(
+        category: String,
+        amount: Double,
+        notes: String,
+        source: String = "Kas Toko",
+        cashAccountId: Long? = null
+    ) {
         viewModelScope.launch {
-            repository.recordExpense(category, amount, notes, source, _activeUserName.value)
+            repository.recordExpense(category, amount, notes, source, _activeUserName.value, cashAccountId)
             _userMessage.value = "Pengeluaran Rp ${formatRupiah(amount)} berhasil dicatat"
             scheduleAutoSync()
         }
     }
 
-    fun recordIncome(source: String, amount: Double, notes: String) {
+    fun recordIncome(
+        source: String,
+        amount: Double,
+        notes: String,
+        cashAccountId: Long? = null
+    ) {
         viewModelScope.launch {
-            repository.recordIncome(source, amount, notes, _activeUserName.value)
+            repository.recordIncome(source, amount, notes, _activeUserName.value, cashAccountId)
             _userMessage.value = "Pemasukan Rp ${formatRupiah(amount)} berhasil dicatat"
             scheduleAutoSync()
         }
     }
 
-    fun paySupplierDebt(supplierId: Long, amount: Double, invoice: String, method: String, notes: String) {
+    fun deleteExpense(expense: ExpenseEntity) {
+        viewModelScope.launch {
+            repository.deleteExpense(expense)
+            _userMessage.value = "Pengeluaran dihapus & saldo kas dikembalikan"
+            scheduleAutoSync()
+        }
+    }
+
+    fun deleteIncome(income: IncomeEntity) {
+        viewModelScope.launch {
+            repository.deleteIncome(income)
+            _userMessage.value = "Pemasukan dihapus & saldo kas disesuaikan"
+            scheduleAutoSync()
+        }
+    }
+
+    fun paySupplierDebt(
+        supplierId: Long,
+        amount: Double,
+        invoice: String,
+        method: String,
+        notes: String,
+        cashAccountId: Long? = null
+    ) {
         viewModelScope.launch {
             val supplier = suppliers.value.find { it.id == supplierId } ?: return@launch
             repository.recordDebtPayment(
@@ -1511,14 +2149,22 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 amount = amount,
                 paymentMethod = method,
                 notes = notes,
-                user = _activeUserName.value
+                user = _activeUserName.value,
+                cashAccountId = cashAccountId
             )
             _userMessage.value = "Pembayaran utang Rp ${formatRupiah(amount)} ke ${supplier.name} berhasil"
             scheduleAutoSync()
         }
     }
 
-    fun payCustomerReceivable(customerId: Long, amount: Double, invoice: String, method: String, notes: String) {
+    fun payCustomerReceivable(
+        customerId: Long,
+        amount: Double,
+        invoice: String,
+        method: String,
+        notes: String,
+        cashAccountId: Long? = null
+    ) {
         viewModelScope.launch {
             val customer = customers.value.find { it.id == customerId } ?: return@launch
             repository.recordDebtPayment(
@@ -1528,7 +2174,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 amount = amount,
                 paymentMethod = method,
                 notes = notes,
-                user = _activeUserName.value
+                user = _activeUserName.value,
+                cashAccountId = cashAccountId
             )
             _userMessage.value = "Penerimaan piutang Rp ${formatRupiah(amount)} dari ${customer.name} berhasil"
             scheduleAutoSync()
@@ -1557,6 +2204,20 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             if (supplier.id == 0L) repository.insertSupplier(supplier)
             else repository.updateSupplier(supplier)
             _userMessage.value = "Pemasok \"${supplier.name}\" disimpan"
+        }
+    }
+
+    fun deleteCustomer(customer: CustomerEntity) {
+        viewModelScope.launch {
+            repository.deleteCustomer(customer)
+            _userMessage.value = "Pelanggan \"${customer.name}\" dihapus"
+        }
+    }
+
+    fun deleteSupplier(supplier: SupplierEntity) {
+        viewModelScope.launch {
+            repository.deleteSupplier(supplier)
+            _userMessage.value = "Pemasok \"${supplier.name}\" dihapus"
         }
     }
 
@@ -1649,7 +2310,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                                 reason = "Stok masuk via AI Chat",
                                 user = _activeUserName.value
                             )
-                            _userMessage.value = "Stok ${item.matchedProduct.name} (+${item.quantity.toInt()} ${item.unit}) berhasil diperbarui!"
+                            val qtyLabel = if (item.quantity % 1.0 == 0.0) item.quantity.toLong().toString()
+                            else String.format(Locale.US, "%.2f", item.quantity).trimEnd('0').trimEnd('.')
+                            _userMessage.value = "Stok ${item.matchedProduct.name} (+$qtyLabel ${item.unit}) berhasil diperbarui!"
                         }
                     }
                     AIIntent.PURCHASE_ORDER -> {
@@ -1657,7 +2320,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                             ?: suppliers.value.firstOrNull()
                         val drafts = draft.items.map {
                             PurchaseItemDraft(
-                                productId = it.matchedProduct?.id ?: 1L,
+                                productId = it.matchedProduct?.id ?: 0L,
                                 productName = it.rawName,
                                 quantity = it.quantity,
                                 unit = it.unit,
@@ -1677,11 +2340,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     AIIntent.CREATE_PRODUCT -> {
                         val item = draft.items.firstOrNull()
                         if (item != null) {
+                            val parsedPurchase = runCatching {
+                                org.json.JSONObject(draft.draftJson).optDouble("purchase_price", Double.NaN)
+                            }.getOrNull()?.takeIf { !it.isNaN() }
+                                ?: draft.notes.substringAfter("Modal: ").substringBefore(",").toDoubleOrNull()
+                                ?: 0.0
                             val newProduct = ProductEntity(
                                 name = item.rawName,
                                 category = "Umum",
                                 baseUnit = item.unit,
-                                purchasePrice = draft.notes.substringAfter("Modal: ").substringBefore(",").toDoubleOrNull() ?: 0.0,
+                                purchasePrice = parsedPurchase,
                                 sellingPrice = item.price,
                                 stock = 0.0,
                                 minStock = 5.0
@@ -1746,12 +2414,47 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun resetDatabaseToDemo() {
+    fun saveOwnerWhatsAppPhone(phone: String) {
+        val cleaned = phone.trim()
+        if (cleaned.isBlank()) {
+            _userMessage.value = "Nomor WhatsApp pemilik tidak boleh kosong"
+            return
+        }
+        viewModelScope.launch {
+            repository.setSetting("owner_authorized_phone", cleaned)
+            _userMessage.value = "Nomor WhatsApp pemilik diperbarui ke $cleaned"
+        }
+    }
+
+    fun resetDatabaseToClean() {
         viewModelScope.launch {
             try {
+                withContext(NonCancellable) {
+                    stopCloudListeners()
+                    auth?.signOut()
+                    firebaseSessionStore.setOfflineBypass(false)
+                    firebaseSessionStore.setStoreNameHint("Toko Saya")
+                }
                 repository.resetDatabaseToInitial()
                 clearCart()
-                _userMessage.value = "Database Gerai Una berhasil di-reset ke data bawaan!"
+                _activeUserId.value = 0L
+                _activeRole.value = ""
+                _activeUserName.value = ""
+                _currentScreen.value = Screen.DASHBOARD
+                _authUiState.update {
+                    it.copy(
+                        hasEnteredApp = false,
+                        isCloudSignedIn = false,
+                        isOfflineMode = false,
+                        userId = "",
+                        userEmail = "",
+                        fullName = "",
+                        storeName = "Toko Saya",
+                        authError = null,
+                        authInfoMessage = "Database bersih tanpa data dummy. Silakan buat akun Admin Utama."
+                    )
+                }
+                _userMessage.value = "Database berhasil dibersihkan!"
             } catch (e: Exception) {
                 _userMessage.value = "Gagal reset: ${e.message}"
             }

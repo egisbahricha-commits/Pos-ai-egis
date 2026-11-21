@@ -42,7 +42,7 @@ data class FirebaseAuthUiState(
 data class UserStoreProfileDoc(
     @DocumentId val id: String = "",
     val ownerId: String = "",
-    val name: String = "GERAI UNA SMART POS",
+    val name: String = "Toko Saya",
     val address: String = "",
     val phone: String = "",
     val businessType: String = "keduanya",

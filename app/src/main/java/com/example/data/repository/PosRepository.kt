@@ -1,11 +1,14 @@
 package com.example.data.repository
 
+import androidx.room.withTransaction
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -79,9 +82,14 @@ class PosRepository(private val db: GeraiUnaDatabase) {
     val promos: Flow<List<PromoEntity>> by lazy { extDao.getAllPromos() }
     val cashMutations: Flow<List<CashMutationEntity>> by lazy { extDao.getAllCashMutations() }
     val shiftCashMovements: Flow<List<ShiftCashMovementEntity>> by lazy { extDao.getAllShiftCashMovements() }
+    val recentBarcodeScans: Flow<List<BarcodeScanLogEntity>> by lazy { productDao.getRecentBarcodeScans() }
 
     suspend fun getProductById(id: Long): ProductEntity? = productDao.getProductById(id)
-    suspend fun getProductByBarcode(barcode: String): ProductEntity? = productDao.getProductByBarcode(barcode)
+    suspend fun getProductByBarcode(barcode: String): ProductEntity? = productDao.getActiveProductByBarcode(barcode) ?: productDao.getProductByBarcode(barcode)
+    fun observeProductByBarcode(barcode: String): Flow<ProductEntity?> = productDao.observeProductByBarcode(barcode)
+    suspend fun getVariantByBarcode(barcode: String): ProductVariantEntity? = extDao.getActiveVariantByBarcode(barcode)
+    suspend fun recordBarcodeScan(log: BarcodeScanLogEntity): Long = productDao.recordBarcodeScan(log)
+    suspend fun clearBarcodeScanLogs() = productDao.clearBarcodeScanLogs()
     suspend fun searchProducts(query: String): List<ProductEntity> = productDao.searchProducts(query)
 
     suspend fun insertProduct(product: ProductEntity): Long = productDao.insertProduct(product)
@@ -96,6 +104,29 @@ class PosRepository(private val db: GeraiUnaDatabase) {
 
     suspend fun deleteConversion(conversion: UnitConversionEntity) =
         productDao.deleteConversion(conversion)
+
+    suspend fun replaceUnitConversions(productId: Long, conversions: List<UnitConversionEntity>) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            productDao.deleteConversionsForProduct(productId)
+            conversions.forEach { productDao.insertConversion(it.copy(id = 0L, productId = productId)) }
+        }
+    }
+
+    suspend fun getConversionsList(productId: Long): List<UnitConversionEntity> = productDao.getConversionsList(productId)
+    suspend fun getVariantsForProductList(productId: Long): List<ProductVariantEntity> = extDao.getVariantsForProduct(productId)
+    suspend fun getWholesaleTiersList(productId: Long): List<WholesaleTierEntity> = extDao.getWholesaleTiersForProduct(productId)
+    suspend fun getAliasesForProductList(productId: Long): List<ProductAliasEntity> = productDao.getAliasesForProduct(productId)
+
+    suspend fun deleteProductCascade(product: ProductEntity) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            productDao.deleteConversionsForProduct(product.id)
+            productDao.deleteTierPricesForProduct(product.id)
+            productDao.deleteAliasesForProduct(product.id)
+            extDao.deleteVariantsForProduct(product.id)
+            extDao.deleteWholesaleTiersForProduct(product.id)
+            productDao.deleteProduct(product)
+        }
+    }
 
     suspend fun learnProductAlias(productId: Long, alias: String) {
         val cleanAlias = alias.trim().lowercase()
@@ -140,6 +171,7 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         depositUsed: Double = 0.0,
         isPreOrder: Boolean = false
     ): SaleEntity = withContext(Dispatchers.IO) {
+        db.withTransaction {
         val now = System.currentTimeMillis()
         val invoiceNum = nextDocumentNumber("transaksi", if (isPreOrder) "PO-TRX" else "TRX")
         val subtotal = items.sumOf { it.unitPrice * it.quantity }
@@ -154,7 +186,16 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         val finalAmount = (subtotal - discount - promoDiscount + tax + shippingCost + additionalFee + effectiveStoreAdmin).coerceAtLeast(0.0)
         val effectiveDeposit = depositUsed.coerceAtMost(customer?.depositBalance ?: 0.0).coerceAtMost(finalAmount)
         val remainingPayable = (finalAmount - effectiveDeposit).coerceAtLeast(0.0)
-        val changeAmount = if (paymentMethod == "TUNAI") (amountPaid - remainingPayable).coerceAtLeast(0.0) else 0.0
+        val changeAmount = when (paymentMethod) {
+            "TUNAI" -> (amountPaid - remainingPayable).coerceAtLeast(0.0)
+            "SPLIT" -> (splitCashAmount + splitNonCashAmount - remainingPayable).coerceAtLeast(0.0)
+            else -> 0.0
+        }
+        val recordedAmountPaid = when (paymentMethod) {
+            "KREDIT" -> effectiveDeposit
+            "SPLIT" -> splitCashAmount + splitNonCashAmount + effectiveDeposit
+            else -> amountPaid + effectiveDeposit
+        }
         val pointsEarned = if (!isPreOrder && customer != null) (finalAmount / 10000.0).toInt() else 0
 
         val saleStatus = if (isPreOrder) "PRE_ORDER" else "COMPLETED"
@@ -170,7 +211,7 @@ class PosRepository(private val db: GeraiUnaDatabase) {
             tax = tax,
             finalAmount = finalAmount,
             paymentMethod = paymentMethod,
-            amountPaid = if (paymentMethod == "KREDIT") effectiveDeposit else (amountPaid + effectiveDeposit),
+            amountPaid = recordedAmountPaid,
             changeAmount = changeAmount,
             status = saleStatus,
             notes = notes,
@@ -358,16 +399,18 @@ class PosRepository(private val db: GeraiUnaDatabase) {
             )
         }
 
-        // Record cash sale into default Kas Toko & mutasi_kas
+        // Record sale inflows into Kas accounts & mutasi_kas
         if (!isPreOrder) {
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val defaultCashAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
             val cashPaidIn = when (paymentMethod) {
                 "TUNAI" -> remainingPayable
                 "SPLIT" -> splitCashAmount
                 else -> 0.0
             }
             if (cashPaidIn > 0) {
-                val allAcc = cashAccountDao.getAllAccountsList()
-                val targetCashAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
+                val selectedCashAcc = cashAccountId?.let { id -> cashAccountDao.getCashAccountById(id) }?.takeIf { it.accountType == "CASH" }
+                val targetCashAcc = selectedCashAcc ?: defaultCashAcc
                 if (targetCashAcc != null) {
                     cashAccountDao.updateBalance(targetCashAcc.id, targetCashAcc.balance + cashPaidIn)
                     extDao.insertCashMutation(
@@ -384,25 +427,54 @@ class PosRepository(private val db: GeraiUnaDatabase) {
                     )
                 }
             }
+
+            val nonCashPaidIn = when (paymentMethod) {
+                "QRIS", "TRANSFER" -> remainingPayable
+                "SPLIT" -> splitNonCashAmount
+                else -> 0.0
+            }
+            if (nonCashPaidIn > 0 && cashAccountId != null) {
+                val nonCashAcc = cashAccountDao.getCashAccountById(cashAccountId)
+                if (nonCashAcc != null) {
+                    cashAccountDao.updateBalance(nonCashAcc.id, nonCashAcc.balance + nonCashPaidIn)
+                    val methodDesc = if (paymentMethod == "SPLIT") splitPaymentMethod.ifBlank { "Non-Tunai" } else paymentMethod
+                    extDao.insertCashMutation(
+                        CashMutationEntity(
+                            cashAccountId = nonCashAcc.id,
+                            accountName = nonCashAcc.accountName,
+                            amount = nonCashPaidIn,
+                            mutationType = "penjualan",
+                            refType = "transaksi",
+                            refId = invoiceNum,
+                            notes = "Penjualan $methodDesc $invoiceNum",
+                            timestamp = now
+                        )
+                    )
+                }
+            }
         }
 
-        // Handle sale-level provider fee deduction if passed explicitly via payment dialog
-        if (!isPreOrder && cashAccountId != null && providerAdminFee > 0) {
-            val acc = cashAccountDao.getCashAccountById(cashAccountId)
+        // Handle sale-level provider fee / agent commission if passed explicitly via payment dialog
+        if (!isPreOrder && (providerAdminFee > 0 || agentCommission > 0)) {
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val defaultCashAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
+            val acc = (cashAccountId?.let { id -> cashAccountDao.getCashAccountById(id) }) ?: defaultCashAcc
             if (acc != null) {
-                cashAccountDao.updateBalance(cashAccountId, acc.balance - providerAdminFee + agentCommission)
-                extDao.insertCashMutation(
-                    CashMutationEntity(
-                        cashAccountId = acc.id,
-                        accountName = acc.accountName,
-                        amount = -providerAdminFee,
-                        mutationType = "admin_penyedia",
-                        refType = "transaksi",
-                        refId = invoiceNum,
-                        notes = "Admin penyedia $invoiceNum",
-                        timestamp = now
+                cashAccountDao.updateBalance(acc.id, acc.balance - providerAdminFee + agentCommission)
+                if (providerAdminFee > 0) {
+                    extDao.insertCashMutation(
+                        CashMutationEntity(
+                            cashAccountId = acc.id,
+                            accountName = acc.accountName,
+                            amount = -providerAdminFee,
+                            mutationType = "admin_penyedia",
+                            refType = "transaksi",
+                            refId = invoiceNum,
+                            notes = "Admin penyedia $invoiceNum",
+                            timestamp = now
+                        )
                     )
-                )
+                }
                 if (agentCommission > 0) {
                     extDao.insertCashMutation(
                         CashMutationEntity(
@@ -440,36 +512,152 @@ class PosRepository(private val db: GeraiUnaDatabase) {
             }
         }
 
-        return@withContext sale.copy(id = saleId)
+        sale.copy(id = saleId)
+        }
     }
 
     suspend fun completePreOrder(saleId: Long, user: String = "Kasir 1") = withContext(Dispatchers.IO) {
-        val sale = saleDao.getSaleById(saleId) ?: return@withContext
-        if (sale.status != "PRE_ORDER") return@withContext
-        val items = saleDao.getItemsForSale(saleId)
-        val now = System.currentTimeMillis()
-        saleDao.updateSale(sale.copy(status = "COMPLETED", amountPaid = sale.finalAmount))
-        for (item in items) {
-            val p = productDao.getProductById(item.productId)
-            if (p != null && !p.hasNoStock && !p.isUnlimitedStock) {
-                val oldStock = p.stock
-                val newStock = oldStock - item.quantity
-                productDao.updateStock(p.id, newStock)
-                stockMovementDao.insertMovement(
-                    StockMovementEntity(
-                        productId = p.id,
-                        productName = item.productName,
-                        date = now,
-                        movementType = "PENJUALAN_KELUAR",
-                        quantityChange = -item.quantity,
-                        unit = item.unit,
-                        previousStock = oldStock,
-                        currentStock = newStock,
-                        referenceNumber = sale.invoiceNumber,
-                        notes = "Penyelesaian Pre-Order",
-                        loggedBy = user
-                    )
+        db.withTransaction {
+            val sale = saleDao.getSaleById(saleId) ?: return@withTransaction
+            if (sale.status != "PRE_ORDER") return@withTransaction
+            val items = saleDao.getItemsForSale(saleId)
+            val now = System.currentTimeMillis()
+            val earnedPoints = if (sale.customerId != null) (sale.finalAmount / 10000.0).toInt() else 0
+            val updatedPaid = if (sale.paymentMethod == "KREDIT") sale.depositUsed else sale.finalAmount
+            saleDao.updateSale(
+                sale.copy(
+                    status = "COMPLETED",
+                    amountPaid = updatedPaid,
+                    pointsEarned = earnedPoints
                 )
+            )
+            for (item in items) {
+                if (item.productId < 0L) {
+                    val bItems = extDao.getItemsForBundle(-item.productId)
+                    for (bItem in bItems) {
+                        val bp = productDao.getProductById(bItem.productId)
+                        if (bp != null && !bp.hasNoStock && !bp.isUnlimitedStock) {
+                            val deduct = bItem.qty * item.quantity
+                            val oldStock = bp.stock
+                            val newStock = oldStock - deduct
+                            productDao.updateStock(bp.id, newStock)
+                            stockMovementDao.insertMovement(
+                                StockMovementEntity(
+                                    productId = bp.id,
+                                    productName = bp.name,
+                                    date = now,
+                                    movementType = "PENJUALAN_KELUAR",
+                                    quantityChange = -deduct,
+                                    unit = bp.baseUnit,
+                                    previousStock = oldStock,
+                                    currentStock = newStock,
+                                    referenceNumber = sale.invoiceNumber,
+                                    notes = "Penyelesaian Pre-Order Paket ${item.productName}",
+                                    loggedBy = user
+                                )
+                            )
+                        }
+                    }
+                    continue
+                }
+                val p = productDao.getProductById(item.productId)
+                if (p != null && !p.hasNoStock && !p.isUnlimitedStock) {
+                    val conversions = productDao.getConversionsList(p.id)
+                    val mul = if (item.unit.equals(p.baseUnit, ignoreCase = true)) {
+                        1.0
+                    } else {
+                        conversions.find { it.unitName.equals(item.unit, ignoreCase = true) }?.multiplier ?: 1.0
+                    }
+                    val deductBase = item.quantity * mul
+                    if (item.variantId != null) {
+                        val variant = extDao.getVariantById(item.variantId)
+                        if (variant != null) {
+                            extDao.updateVariantStock(variant.id, variant.stock - deductBase)
+                        }
+                    }
+                    val oldStock = p.stock
+                    val newStock = oldStock - deductBase
+                    productDao.updateStock(p.id, newStock)
+                    stockMovementDao.insertMovement(
+                        StockMovementEntity(
+                            productId = p.id,
+                            productName = item.productName,
+                            date = now,
+                            movementType = "PENJUALAN_KELUAR",
+                            quantityChange = -deductBase,
+                            unit = p.baseUnit,
+                            previousStock = oldStock,
+                            currentStock = newStock,
+                            referenceNumber = sale.invoiceNumber,
+                            notes = "Penyelesaian Pre-Order (${item.quantity} ${item.unit})",
+                            loggedBy = user
+                        )
+                    )
+                }
+            }
+            if (sale.customerId != null && earnedPoints > 0) {
+                val cust = contactDao.getAllCustomers().first().find { it.id == sale.customerId }
+                if (cust != null) {
+                    contactDao.updateCustomer(cust.copy(loyaltyPoints = cust.loyaltyPoints + earnedPoints))
+                }
+            }
+            val remainingPayable = (sale.finalAmount - sale.depositUsed).coerceAtLeast(0.0)
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val defaultCashAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
+            val cashPaidIn = when (sale.paymentMethod) {
+                "TUNAI" -> remainingPayable
+                "SPLIT" -> sale.splitCashAmount
+                else -> 0.0
+            }
+            if (cashPaidIn > 0) {
+                val selectedCashAcc = sale.cashAccountId?.let { id -> cashAccountDao.getCashAccountById(id) }?.takeIf { it.accountType == "CASH" }
+                val targetCashAcc = selectedCashAcc ?: defaultCashAcc
+                if (targetCashAcc != null) {
+                    cashAccountDao.updateBalance(targetCashAcc.id, targetCashAcc.balance + cashPaidIn)
+                    extDao.insertCashMutation(
+                        CashMutationEntity(
+                            cashAccountId = targetCashAcc.id,
+                            accountName = targetCashAcc.accountName,
+                            amount = cashPaidIn,
+                            mutationType = "penjualan",
+                            refType = "transaksi",
+                            refId = sale.invoiceNumber,
+                            notes = "Pelunasan Pre-Order ${sale.invoiceNumber}",
+                            timestamp = now
+                        )
+                    )
+                }
+            }
+            val nonCashPaidIn = when (sale.paymentMethod) {
+                "QRIS", "TRANSFER" -> remainingPayable
+                "SPLIT" -> sale.splitNonCashAmount
+                else -> 0.0
+            }
+            if (nonCashPaidIn > 0 && sale.cashAccountId != null) {
+                val nonCashAcc = cashAccountDao.getCashAccountById(sale.cashAccountId)
+                if (nonCashAcc != null) {
+                    cashAccountDao.updateBalance(nonCashAcc.id, nonCashAcc.balance + nonCashPaidIn)
+                    extDao.insertCashMutation(
+                        CashMutationEntity(
+                            cashAccountId = nonCashAcc.id,
+                            accountName = nonCashAcc.accountName,
+                            amount = nonCashPaidIn,
+                            mutationType = "penjualan",
+                            refType = "transaksi",
+                            refId = sale.invoiceNumber,
+                            notes = "Pelunasan Non-Tunai Pre-Order ${sale.invoiceNumber}",
+                            timestamp = now
+                        )
+                    )
+                }
+            }
+            if (cashPaidIn > 0) {
+                val openShift = shiftDao.getOpenShiftSync()
+                if (openShift != null) {
+                    val newCashSales = openShift.totalCashSales + cashPaidIn
+                    val newExpected = openShift.startingCash + openShift.cashIn - openShift.cashOut + newCashSales
+                    shiftDao.updateShift(openShift.copy(totalCashSales = newCashSales, expectedClosingCash = newExpected))
+                }
             }
         }
     }
@@ -478,65 +666,226 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         saleDao.getItemsForSale(saleId)
     }
 
+    suspend fun getItemsForPurchase(purchaseId: Long): List<PurchaseItemEntity> = withContext(Dispatchers.IO) {
+        purchaseDao.getItemsForPurchase(purchaseId)
+    }
+
     suspend fun refundSale(saleId: Long, reason: String = "Retur Barang Pelanggan", user: String = "Kasir 1") = withContext(Dispatchers.IO) {
-        val sale = saleDao.getSaleById(saleId) ?: return@withContext
-        if (sale.status == "REFUNDED") return@withContext
+        db.withTransaction {
+            val sale = saleDao.getSaleById(saleId) ?: return@withTransaction
+            if (sale.status == "REFUNDED" || sale.status == "CANCELLED") return@withTransaction
 
-        val items = saleDao.getItemsForSale(saleId)
-        val now = System.currentTimeMillis()
+            val wasStockDeducted = sale.status == "COMPLETED"
+            val items = saleDao.getItemsForSale(saleId)
+            val now = System.currentTimeMillis()
 
-        saleDao.updateSale(sale.copy(status = "REFUNDED", notes = "${sale.notes} [RETUR: $reason]"))
+            saleDao.updateSale(sale.copy(status = "REFUNDED", notes = "${sale.notes} [RETUR: $reason]".trim()))
 
-        for (item in items) {
-            val product = productDao.getProductById(item.productId)
-            if (product != null && !product.hasNoStock && !product.isUnlimitedStock) {
-                val oldStock = product.stock
-                val newStock = oldStock + item.quantity
-                productDao.updateStock(product.id, newStock)
+            if (wasStockDeducted) {
+                for (item in items) {
+                    if (item.productId < 0L) {
+                        val bItems = extDao.getItemsForBundle(-item.productId)
+                        for (bItem in bItems) {
+                            val bp = productDao.getProductById(bItem.productId)
+                            if (bp != null && !bp.hasNoStock && !bp.isUnlimitedStock) {
+                                val restored = bItem.qty * item.quantity
+                                val oldStock = bp.stock
+                                val newStock = oldStock + restored
+                                productDao.updateStock(bp.id, newStock)
+                                stockMovementDao.insertMovement(
+                                    StockMovementEntity(
+                                        productId = bp.id,
+                                        productName = bp.name,
+                                        date = now,
+                                        movementType = "RETUR",
+                                        quantityChange = restored,
+                                        unit = bp.baseUnit,
+                                        previousStock = oldStock,
+                                        currentStock = newStock,
+                                        referenceNumber = sale.invoiceNumber,
+                                        notes = "Retur Paket ${item.productName}: $reason",
+                                        loggedBy = user
+                                    )
+                                )
+                            }
+                        }
+                        continue
+                    }
 
-                if (item.variantId != null) {
-                    val v = extDao.getVariantById(item.variantId)
-                    if (v != null) {
-                        extDao.updateVariantStock(v.id, v.stock + item.quantity)
+                    val product = productDao.getProductById(item.productId)
+                    if (product != null && !product.hasNoStock && !product.isUnlimitedStock) {
+                        val conversions = productDao.getConversionsList(product.id)
+                        val mul = if (item.unit.equals(product.baseUnit, ignoreCase = true)) {
+                            1.0
+                        } else {
+                            conversions.find { it.unitName.equals(item.unit, ignoreCase = true) }?.multiplier ?: 1.0
+                        }
+                        val restoredBase = item.quantity * mul
+                        val oldStock = product.stock
+                        val newStock = oldStock + restoredBase
+                        productDao.updateStock(product.id, newStock)
+
+                        if (item.variantId != null) {
+                            val v = extDao.getVariantById(item.variantId)
+                            if (v != null) {
+                                extDao.updateVariantStock(v.id, v.stock + restoredBase)
+                            }
+                        }
+
+                        stockMovementDao.insertMovement(
+                            StockMovementEntity(
+                                productId = product.id,
+                                productName = product.name,
+                                date = now,
+                                movementType = "RETUR",
+                                quantityChange = restoredBase,
+                                unit = product.baseUnit,
+                                previousStock = oldStock,
+                                currentStock = newStock,
+                                referenceNumber = sale.invoiceNumber,
+                                notes = "Retur Penjualan (${item.quantity} ${item.unit}): $reason",
+                                loggedBy = user
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Reverse customer receivable, deposit, and loyalty points
+            if (sale.customerId != null) {
+                val customer = contactDao.getAllCustomers().first().find { it.id == sale.customerId }
+                if (customer != null) {
+                    val remainingPayable = (sale.finalAmount - sale.depositUsed).coerceAtLeast(0.0)
+                    val reversedReceivable = if (sale.paymentMethod == "KREDIT") {
+                        (customer.totalReceivable - remainingPayable).coerceAtLeast(0.0)
+                    } else {
+                        customer.totalReceivable
+                    }
+                    contactDao.updateCustomer(
+                        customer.copy(
+                            depositBalance = customer.depositBalance + sale.depositUsed,
+                            loyaltyPoints = (customer.loyaltyPoints - sale.pointsEarned).coerceAtLeast(0),
+                            totalReceivable = reversedReceivable
+                        )
+                    )
+                }
+            }
+
+            // Deduct cash/non-cash back from accounts & update open shift if completed
+            if (wasStockDeducted) {
+                val allAcc = cashAccountDao.getAllAccountsList()
+                val defaultCashAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
+                val netPaidOut = (sale.finalAmount - sale.depositUsed).coerceAtLeast(0.0)
+                val cashRefund = when (sale.paymentMethod) {
+                    "TUNAI" -> netPaidOut
+                    "SPLIT" -> sale.splitCashAmount
+                    else -> 0.0
+                }
+                if (cashRefund > 0) {
+                    val selectedCashAcc = sale.cashAccountId?.let { id -> cashAccountDao.getCashAccountById(id) }?.takeIf { it.accountType == "CASH" }
+                    val targetCashAcc = selectedCashAcc ?: defaultCashAcc
+                    if (targetCashAcc != null) {
+                        cashAccountDao.updateBalance(targetCashAcc.id, targetCashAcc.balance - cashRefund)
+                        extDao.insertCashMutation(
+                            CashMutationEntity(
+                                cashAccountId = targetCashAcc.id,
+                                accountName = targetCashAcc.accountName,
+                                amount = -cashRefund,
+                                mutationType = "retur",
+                                refType = "transaksi",
+                                refId = sale.invoiceNumber,
+                                notes = "Retur tunai ${sale.invoiceNumber}: $reason",
+                                timestamp = now
+                            )
+                        )
+                    }
+                    val openShift = shiftDao.getOpenShiftSync()
+                    if (openShift != null) {
+                        val newCashSales = (openShift.totalCashSales - cashRefund).coerceAtLeast(0.0)
+                        val newExpected = openShift.startingCash + openShift.cashIn - openShift.cashOut + newCashSales
+                        shiftDao.updateShift(openShift.copy(totalCashSales = newCashSales, expectedClosingCash = newExpected))
                     }
                 }
 
-                stockMovementDao.insertMovement(
-                    StockMovementEntity(
-                        productId = product.id,
-                        productName = product.name,
-                        date = now,
-                        movementType = "RETUR",
-                        quantityChange = item.quantity,
-                        unit = item.unit,
-                        previousStock = oldStock,
-                        currentStock = newStock,
-                        referenceNumber = sale.invoiceNumber,
-                        notes = "Retur Penjualan: $reason",
-                        loggedBy = user
-                    )
-                )
-            }
-        }
+                val nonCashRefund = when (sale.paymentMethod) {
+                    "QRIS", "TRANSFER" -> netPaidOut
+                    "SPLIT" -> sale.splitNonCashAmount
+                    else -> 0.0
+                }
+                if (nonCashRefund > 0 && sale.cashAccountId != null) {
+                    val nonCashAcc = cashAccountDao.getCashAccountById(sale.cashAccountId)
+                    if (nonCashAcc != null) {
+                        cashAccountDao.updateBalance(nonCashAcc.id, nonCashAcc.balance - nonCashRefund)
+                        extDao.insertCashMutation(
+                            CashMutationEntity(
+                                cashAccountId = nonCashAcc.id,
+                                accountName = nonCashAcc.accountName,
+                                amount = -nonCashRefund,
+                                mutationType = "retur",
+                                refType = "transaksi",
+                                refId = sale.invoiceNumber,
+                                notes = "Retur non-tunai ${sale.invoiceNumber}: $reason",
+                                timestamp = now
+                            )
+                        )
+                    }
+                }
 
-        // Deduct cash back from default cash account & record mutasi_kas
-        if (sale.paymentMethod == "TUNAI" && sale.finalAmount > 0) {
-            val allAcc = cashAccountDao.getAllAccountsList()
-            val targetCashAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
-            if (targetCashAcc != null) {
-                cashAccountDao.updateBalance(targetCashAcc.id, targetCashAcc.balance - sale.finalAmount)
-                extDao.insertCashMutation(
-                    CashMutationEntity(
-                        cashAccountId = targetCashAcc.id,
-                        accountName = targetCashAcc.accountName,
-                        amount = -sale.finalAmount,
-                        mutationType = "retur",
-                        refType = "transaksi",
-                        refId = sale.invoiceNumber,
-                        notes = "Retur ${sale.invoiceNumber}: $reason",
-                        timestamp = now
-                    )
-                )
+                // Reverse digital service cash mutations & balances if any
+                for (item in items) {
+                    if (item.productId < 0L) continue
+                    val product = productDao.getProductById(item.productId)
+                    val isDigital = product?.productType == "DIGITAL" || (item.serviceNominal != null && item.serviceNominal > 0.0)
+                    if (!isDigital) continue
+                    val svcAccountId = product?.serviceCashAccountId ?: sale.cashAccountId ?: continue
+                    val svcAcc = cashAccountDao.getCashAccountById(svcAccountId) ?: continue
+                    val svcDir = product?.serviceDirection ?: "SETOR"
+                    val nominal = item.serviceNominal ?: 0.0
+                    val reverseNominalDelta = if (svcDir.equals("TARIK", ignoreCase = true)) -nominal else nominal
+                    val totalDelta = reverseNominalDelta + item.providerAdminFee - item.agentCommission
+                    if (totalDelta != 0.0) {
+                        cashAccountDao.updateBalance(svcAcc.id, svcAcc.balance + totalDelta)
+                        extDao.insertCashMutation(
+                            CashMutationEntity(
+                                cashAccountId = svcAcc.id,
+                                accountName = svcAcc.accountName,
+                                amount = totalDelta,
+                                mutationType = "retur",
+                                refType = "transaksi",
+                                refId = sale.invoiceNumber,
+                                notes = "Retur layanan ${item.productName}: $reason",
+                                timestamp = now
+                            )
+                        )
+                    }
+                }
+
+                // Reverse any remaining sale-level provider fee / agent commission
+                val itemProvSum = items.sumOf { it.providerAdminFee }
+                val itemAgentSum = items.sumOf { it.agentCommission }
+                val remProv = (sale.providerAdminFee - itemProvSum).coerceAtLeast(0.0)
+                val remAgent = (sale.agentCommission - itemAgentSum).coerceAtLeast(0.0)
+                if (remProv > 0.0 || remAgent > 0.0) {
+                    val feeAcc = (sale.cashAccountId?.let { id -> cashAccountDao.getCashAccountById(id) }) ?: defaultCashAcc
+                    if (feeAcc != null) {
+                        val netReverse = remProv - remAgent
+                        if (netReverse != 0.0) {
+                            cashAccountDao.updateBalance(feeAcc.id, feeAcc.balance + netReverse)
+                            extDao.insertCashMutation(
+                                CashMutationEntity(
+                                    cashAccountId = feeAcc.id,
+                                    accountName = feeAcc.accountName,
+                                    amount = netReverse,
+                                    mutationType = "retur",
+                                    refType = "transaksi",
+                                    refId = sale.invoiceNumber,
+                                    notes = "Retur admin/komisi ${sale.invoiceNumber}",
+                                    timestamp = now
+                                )
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -552,57 +901,61 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         notes: String = "",
         initialStatus: String = "DRAFT"
     ): PurchaseEntity = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val invoice = if (invoiceNumber.isNotBlank()) invoiceNumber else nextDocumentNumber("pesanan_beli", "PO")
-        val subtotal = items.sumOf { it.purchasePrice * it.quantity }
-        val finalAmount = (subtotal - discount + additionalCost).coerceAtLeast(0.0)
+        db.withTransaction {
+            val now = System.currentTimeMillis()
+            val invoice = if (invoiceNumber.isNotBlank()) invoiceNumber else nextDocumentNumber("pesanan_beli", "PO")
+            val subtotal = items.sumOf { it.purchasePrice * it.quantity }
+            val finalAmount = (subtotal - discount + additionalCost).coerceAtLeast(0.0)
 
-        val purchase = PurchaseEntity(
-            invoiceNumber = invoice,
-            date = now,
-            supplierId = supplier?.id,
-            supplierName = supplier?.name ?: "Pemasok Umum",
-            subtotal = subtotal,
-            discount = discount,
-            additionalCost = additionalCost,
-            finalAmount = finalAmount,
-            paymentMethod = paymentMethod,
-            paymentStatus = if (paymentMethod == "TUNAI") "LUNAS" else "BELUM_LUNAS",
-            status = initialStatus,
-            notes = notes
-        )
-        val purchaseId = purchaseDao.insertPurchase(purchase)
-
-        val purchaseItems = items.map { item ->
-            PurchaseItemEntity(
-                purchaseId = purchaseId,
-                productId = item.productId,
-                productName = item.productName,
-                quantity = item.quantity,
-                unit = item.unit,
-                purchasePrice = item.purchasePrice,
-                subtotal = item.quantity * item.purchasePrice
+            val purchase = PurchaseEntity(
+                invoiceNumber = invoice,
+                date = now,
+                supplierId = supplier?.id,
+                supplierName = supplier?.name ?: "Pemasok Umum",
+                subtotal = subtotal,
+                discount = discount,
+                additionalCost = additionalCost,
+                finalAmount = finalAmount,
+                paymentMethod = paymentMethod,
+                paymentStatus = if (paymentMethod == "TUNAI") "LUNAS" else "BELUM_LUNAS",
+                status = initialStatus,
+                notes = notes
             )
-        }
-        purchaseDao.insertPurchaseItems(purchaseItems)
+            val purchaseId = purchaseDao.insertPurchase(purchase)
 
-        if (initialStatus == "DITERIMA") {
-            processGoodsReceipt(purchase.copy(id = purchaseId), purchaseItems)
-        }
+            val purchaseItems = items.map { item ->
+                PurchaseItemEntity(
+                    purchaseId = purchaseId,
+                    productId = item.productId,
+                    productName = item.productName,
+                    quantity = item.quantity,
+                    unit = item.unit,
+                    purchasePrice = item.purchasePrice,
+                    subtotal = item.quantity * item.purchasePrice
+                )
+            }
+            purchaseDao.insertPurchaseItems(purchaseItems)
 
-        return@withContext purchase.copy(id = purchaseId)
+            if (initialStatus == "DITERIMA") {
+                processGoodsReceipt(purchase.copy(id = purchaseId), purchaseItems)
+            }
+
+            purchase.copy(id = purchaseId)
+        }
     }
 
     suspend fun confirmPurchaseReceipt(purchaseId: Long, user: String = "Petugas Stok") = withContext(Dispatchers.IO) {
-        val purchase = purchaseDao.getPurchaseById(purchaseId) ?: return@withContext
-        if (purchase.status == "DITERIMA") return@withContext
+        db.withTransaction {
+            val purchase = purchaseDao.getPurchaseById(purchaseId) ?: return@withTransaction
+            if (purchase.status == "DITERIMA") return@withTransaction
 
-        val items = purchaseDao.getItemsForPurchase(purchaseId)
-        val now = System.currentTimeMillis()
-        val updatedPurchase = purchase.copy(status = "DITERIMA", receivedDate = now)
-        purchaseDao.updatePurchase(updatedPurchase)
+            val items = purchaseDao.getItemsForPurchase(purchaseId)
+            val now = System.currentTimeMillis()
+            val updatedPurchase = purchase.copy(status = "DITERIMA", receivedDate = now)
+            purchaseDao.updatePurchase(updatedPurchase)
 
-        processGoodsReceipt(updatedPurchase, items, user)
+            processGoodsReceipt(updatedPurchase, items, user)
+        }
     }
 
     private suspend fun processGoodsReceipt(
@@ -679,28 +1032,30 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         reason: String,
         user: String = "Petugas Stok"
     ) = withContext(Dispatchers.IO) {
-        val product = productDao.getProductById(productId) ?: return@withContext
-        val oldStock = product.stock
-        val diff = newStock - oldStock
-        val movementType = if (diff >= 0) "PENYESUAIAN_MASUK" else "PENYESUAIAN_KELUAR"
+        db.withTransaction {
+            val product = productDao.getProductById(productId) ?: return@withTransaction
+            val oldStock = product.stock
+            val diff = newStock - oldStock
+            val movementType = if (diff >= 0) "PENYESUAIAN_MASUK" else "PENYESUAIAN_KELUAR"
 
-        productDao.updateStock(productId, newStock)
+            productDao.updateStock(productId, newStock)
 
-        stockMovementDao.insertMovement(
-            StockMovementEntity(
-                productId = product.id,
-                productName = product.name,
-                date = System.currentTimeMillis(),
-                movementType = movementType,
-                quantityChange = diff,
-                unit = product.baseUnit,
-                previousStock = oldStock,
-                currentStock = newStock,
-                referenceNumber = "ADJ-" + System.currentTimeMillis().toString().takeLast(6),
-                notes = reason,
-                loggedBy = user
+            stockMovementDao.insertMovement(
+                StockMovementEntity(
+                    productId = product.id,
+                    productName = product.name,
+                    date = System.currentTimeMillis(),
+                    movementType = movementType,
+                    quantityChange = diff,
+                    unit = product.baseUnit,
+                    previousStock = oldStock,
+                    currentStock = newStock,
+                    referenceNumber = "ADJ-" + System.currentTimeMillis().toString().takeLast(6),
+                    notes = reason,
+                    loggedBy = user
+                )
             )
-        )
+        }
     }
 
     suspend fun quickStockIn(
@@ -710,31 +1065,33 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         reason: String = "Stok Masuk Cepat",
         user: String = "Admin"
     ) = withContext(Dispatchers.IO) {
-        val product = productDao.getProductById(productId) ?: return@withContext
-        val conversions = productDao.getConversionsForProduct(product.id).first()
-        val conversion = conversions.find { it.unitName.equals(unit, ignoreCase = true) }
-        val multiplier = conversion?.multiplier ?: 1.0
-        val baseQty = quantity * multiplier
+        db.withTransaction {
+            val product = productDao.getProductById(productId) ?: return@withTransaction
+            val conversions = productDao.getConversionsForProduct(product.id).first()
+            val conversion = conversions.find { it.unitName.equals(unit, ignoreCase = true) }
+            val multiplier = conversion?.multiplier ?: 1.0
+            val baseQty = quantity * multiplier
 
-        val oldStock = product.stock
-        val newStock = oldStock + baseQty
-        productDao.updateStock(product.id, newStock)
+            val oldStock = product.stock
+            val newStock = oldStock + baseQty
+            productDao.updateStock(product.id, newStock)
 
-        stockMovementDao.insertMovement(
-            StockMovementEntity(
-                productId = product.id,
-                productName = product.name,
-                date = System.currentTimeMillis(),
-                movementType = "PENYESUAIAN_MASUK",
-                quantityChange = baseQty,
-                unit = product.baseUnit,
-                previousStock = oldStock,
-                currentStock = newStock,
-                referenceNumber = "STK-" + System.currentTimeMillis().toString().takeLast(6),
-                notes = "$reason ($quantity $unit)",
-                loggedBy = user
+            stockMovementDao.insertMovement(
+                StockMovementEntity(
+                    productId = product.id,
+                    productName = product.name,
+                    date = System.currentTimeMillis(),
+                    movementType = "PENYESUAIAN_MASUK",
+                    quantityChange = baseQty,
+                    unit = product.baseUnit,
+                    previousStock = oldStock,
+                    currentStock = newStock,
+                    referenceNumber = "STK-" + System.currentTimeMillis().toString().takeLast(6),
+                    notes = "$reason ($quantity $unit)",
+                    loggedBy = user
+                )
             )
-        )
+        }
     }
 
     // Expense & Income (with Multi Kas Ledger)
@@ -743,73 +1100,135 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         amount: Double,
         notes: String,
         source: String = "Kas Toko",
-        user: String = "Admin"
+        user: String = "Admin",
+        cashAccountId: Long? = null
     ): Long = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val id = financeDao.insertExpense(
-            ExpenseEntity(
-                category = category,
-                amount = amount,
-                date = now,
-                notes = notes,
-                paymentSource = source,
-                recordedBy = user
-            )
-        )
-        val allAcc = cashAccountDao.getAllAccountsList()
-        val acc = allAcc.find { it.accountName.equals(source, ignoreCase = true) } ?: allAcc.find { it.isDefault } ?: allAcc.firstOrNull()
-        if (acc != null && amount > 0) {
-            cashAccountDao.updateBalance(acc.id, acc.balance - amount)
-            extDao.insertCashMutation(
-                CashMutationEntity(
-                    cashAccountId = acc.id,
-                    accountName = acc.accountName,
-                    amount = -amount,
-                    mutationType = "pengeluaran",
-                    refType = "pengeluaran",
-                    refId = id.toString(),
-                    notes = "$category: $notes",
-                    timestamp = now
+        db.withTransaction {
+            val now = System.currentTimeMillis()
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val acc = (cashAccountId?.let { id -> allAcc.find { it.id == id } }
+                ?: allAcc.find { it.accountName.equals(source, ignoreCase = true) }
+                ?: allAcc.find { it.isDefault }
+                ?: allAcc.firstOrNull())
+            val resolvedSource = acc?.accountName ?: source
+            val id = financeDao.insertExpense(
+                ExpenseEntity(
+                    category = category,
+                    amount = amount,
+                    date = now,
+                    notes = notes,
+                    paymentSource = resolvedSource,
+                    recordedBy = user
                 )
             )
+            if (acc != null && amount > 0) {
+                cashAccountDao.updateBalance(acc.id, acc.balance - amount)
+                extDao.insertCashMutation(
+                    CashMutationEntity(
+                        cashAccountId = acc.id,
+                        accountName = acc.accountName,
+                        amount = -amount,
+                        mutationType = "pengeluaran",
+                        refType = "pengeluaran",
+                        refId = id.toString(),
+                        notes = "$category: $notes",
+                        timestamp = now
+                    )
+                )
+            }
+            id
         }
-        id
     }
 
     suspend fun recordIncome(
         source: String,
         amount: Double,
         notes: String,
-        user: String = "Admin"
+        user: String = "Admin",
+        cashAccountId: Long? = null
     ): Long = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val id = financeDao.insertIncome(
-            IncomeEntity(
-                source = source,
-                amount = amount,
-                date = now,
-                notes = notes,
-                recordedBy = user
-            )
-        )
-        val allAcc = cashAccountDao.getAllAccountsList()
-        val acc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
-        if (acc != null && amount > 0) {
-            cashAccountDao.updateBalance(acc.id, acc.balance + amount)
-            extDao.insertCashMutation(
-                CashMutationEntity(
-                    cashAccountId = acc.id,
-                    accountName = acc.accountName,
+        db.withTransaction {
+            val now = System.currentTimeMillis()
+            val id = financeDao.insertIncome(
+                IncomeEntity(
+                    source = source,
                     amount = amount,
-                    mutationType = "penjualan",
-                    refType = "pemasukan",
-                    refId = id.toString(),
-                    notes = "$source: $notes",
-                    timestamp = now
+                    date = now,
+                    notes = notes,
+                    recordedBy = user
                 )
             )
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val acc = (cashAccountId?.let { cId -> allAcc.find { it.id == cId } }
+                ?: allAcc.find { it.isDefault }
+                ?: allAcc.find { it.accountType == "CASH" }
+                ?: allAcc.firstOrNull())
+            if (acc != null && amount > 0) {
+                cashAccountDao.updateBalance(acc.id, acc.balance + amount)
+                extDao.insertCashMutation(
+                    CashMutationEntity(
+                        cashAccountId = acc.id,
+                        accountName = acc.accountName,
+                        amount = amount,
+                        mutationType = "penjualan",
+                        refType = "pemasukan",
+                        refId = id.toString(),
+                        notes = "$source: $notes",
+                        timestamp = now
+                    )
+                )
+            }
+            id
         }
-        id
+    }
+
+    suspend fun deleteExpense(expense: ExpenseEntity) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val acc = allAcc.find { it.accountName.equals(expense.paymentSource, ignoreCase = true) }
+                ?: allAcc.find { it.isDefault }
+            if (acc != null && expense.amount > 0) {
+                cashAccountDao.updateBalance(acc.id, acc.balance + expense.amount)
+                extDao.insertCashMutation(
+                    CashMutationEntity(
+                        cashAccountId = acc.id,
+                        accountName = acc.accountName,
+                        amount = expense.amount,
+                        mutationType = "koreksi",
+                        refType = "hapus_pengeluaran",
+                        refId = expense.id.toString(),
+                        notes = "Hapus pengeluaran ${expense.category}",
+                        timestamp = System.currentTimeMillis()
+                    )
+                )
+            }
+            financeDao.deleteExpense(expense)
+        }
+    }
+
+    suspend fun deleteIncome(income: IncomeEntity) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val acc = allAcc.find { it.isDefault }
+                ?: allAcc.find { it.accountType == "CASH" }
+                ?: allAcc.firstOrNull()
+            if (acc != null && income.amount > 0) {
+                cashAccountDao.updateBalance(acc.id, acc.balance - income.amount)
+                extDao.insertCashMutation(
+                    CashMutationEntity(
+                        cashAccountId = acc.id,
+                        accountName = acc.accountName,
+                        amount = -income.amount,
+                        mutationType = "koreksi",
+                        refType = "hapus_pemasukan",
+                        refId = income.id.toString(),
+                        notes = "Hapus pemasukan ${income.source}",
+                        timestamp = System.currentTimeMillis()
+                    )
+                )
+            }
+            financeDao.deleteIncome(income)
+        }
     }
 
     // Debt Payment (with Multi Kas Ledger)
@@ -820,66 +1239,72 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         amount: Double,
         paymentMethod: String = "TUNAI",
         notes: String = "",
-        user: String = "Admin"
+        user: String = "Admin",
+        cashAccountId: Long? = null
     ) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val payId = financeDao.insertDebtPayment(
-            DebtPaymentEntity(
-                type = type,
-                partyId = partyId,
-                partyName = partyName,
-                amount = amount,
-                date = now,
-                paymentMethod = paymentMethod,
-                notes = notes,
-                recordedBy = user
+        db.withTransaction {
+            val now = System.currentTimeMillis()
+            val payId = financeDao.insertDebtPayment(
+                DebtPaymentEntity(
+                    type = type,
+                    partyId = partyId,
+                    partyName = partyName,
+                    amount = amount,
+                    date = now,
+                    paymentMethod = paymentMethod,
+                    notes = notes,
+                    recordedBy = user
+                )
             )
-        )
 
-        val allAcc = cashAccountDao.getAllAccountsList()
-        val targetAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val targetAcc = (cashAccountId?.let { cId -> allAcc.find { it.id == cId } }
+                ?: allAcc.find { it.isDefault }
+                ?: allAcc.find { it.accountType == "CASH" }
+                ?: allAcc.firstOrNull())
 
-        if (type == "UTANG_PEMASOK" && partyId != null) {
-            val supplier = contactDao.getAllSuppliers().first().find { it.id == partyId }
-            if (supplier != null) {
-                val updatedDebt = (supplier.totalDebt - amount).coerceAtLeast(0.0)
-                contactDao.updateSupplier(supplier.copy(totalDebt = updatedDebt))
-            }
-            if (targetAcc != null && amount > 0) {
-                cashAccountDao.updateBalance(targetAcc.id, targetAcc.balance - amount)
-                extDao.insertCashMutation(
-                    CashMutationEntity(
-                        cashAccountId = targetAcc.id,
-                        accountName = targetAcc.accountName,
-                        amount = -amount,
-                        mutationType = "bayar_supplier",
-                        refType = "debt_payment",
-                        refId = payId.toString(),
-                        notes = "Bayar utang ke $partyName",
-                        timestamp = now
+            if (type == "UTANG_PEMASOK" && partyId != null) {
+                val supplier = contactDao.getAllSuppliers().first().find { it.id == partyId }
+                if (supplier != null) {
+                    val updatedDebt = (supplier.totalDebt - amount).coerceAtLeast(0.0)
+                    contactDao.updateSupplier(supplier.copy(totalDebt = updatedDebt))
+                }
+                if (targetAcc != null && amount > 0) {
+                    cashAccountDao.updateBalance(targetAcc.id, targetAcc.balance - amount)
+                    extDao.insertCashMutation(
+                        CashMutationEntity(
+                            cashAccountId = targetAcc.id,
+                            accountName = targetAcc.accountName,
+                            amount = -amount,
+                            mutationType = "bayar_supplier",
+                            refType = "debt_payment",
+                            refId = payId.toString(),
+                            notes = "Bayar utang ke $partyName",
+                            timestamp = now
+                        )
                     )
-                )
-            }
-        } else if (type == "PIUTANG_PELANGGAN" && partyId != null) {
-            val customer = contactDao.getAllCustomers().first().find { it.id == partyId }
-            if (customer != null) {
-                val updatedReceivable = (customer.totalReceivable - amount).coerceAtLeast(0.0)
-                contactDao.updateCustomer(customer.copy(totalReceivable = updatedReceivable))
-            }
-            if (targetAcc != null && amount > 0) {
-                cashAccountDao.updateBalance(targetAcc.id, targetAcc.balance + amount)
-                extDao.insertCashMutation(
-                    CashMutationEntity(
-                        cashAccountId = targetAcc.id,
-                        accountName = targetAcc.accountName,
-                        amount = amount,
-                        mutationType = "piutang_bayar",
-                        refType = "debt_payment",
-                        refId = payId.toString(),
-                        notes = "Terima piutang dari $partyName",
-                        timestamp = now
+                }
+            } else if (type == "PIUTANG_PELANGGAN" && partyId != null) {
+                val customer = contactDao.getAllCustomers().first().find { it.id == partyId }
+                if (customer != null) {
+                    val updatedReceivable = (customer.totalReceivable - amount).coerceAtLeast(0.0)
+                    contactDao.updateCustomer(customer.copy(totalReceivable = updatedReceivable))
+                }
+                if (targetAcc != null && amount > 0) {
+                    cashAccountDao.updateBalance(targetAcc.id, targetAcc.balance + amount)
+                    extDao.insertCashMutation(
+                        CashMutationEntity(
+                            cashAccountId = targetAcc.id,
+                            accountName = targetAcc.accountName,
+                            amount = amount,
+                            mutationType = "piutang_bayar",
+                            refType = "debt_payment",
+                            refId = payId.toString(),
+                            notes = "Terima piutang dari $partyName",
+                            timestamp = now
+                        )
                     )
-                )
+                }
             }
         }
     }
@@ -891,23 +1316,25 @@ class PosRepository(private val db: GeraiUnaDatabase) {
 
     suspend fun topUpCustomerDeposit(customer: CustomerEntity, amount: Double) = withContext(Dispatchers.IO) {
         if (amount <= 0) return@withContext
-        contactDao.updateCustomer(customer.copy(depositBalance = customer.depositBalance + amount))
-        val allAcc = cashAccountDao.getAllAccountsList()
-        val targetAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
-        if (targetAcc != null) {
-            cashAccountDao.updateBalance(targetAcc.id, targetAcc.balance + amount)
-            extDao.insertCashMutation(
-                CashMutationEntity(
-                    cashAccountId = targetAcc.id,
-                    accountName = targetAcc.accountName,
-                    amount = amount,
-                    mutationType = "penjualan",
-                    refType = "deposit_pelanggan",
-                    refId = customer.id.toString(),
-                    notes = "Top up deposit pelanggan ${customer.name}",
-                    timestamp = System.currentTimeMillis()
+        db.withTransaction {
+            contactDao.updateCustomer(customer.copy(depositBalance = customer.depositBalance + amount))
+            val allAcc = cashAccountDao.getAllAccountsList()
+            val targetAcc = allAcc.find { it.isDefault } ?: allAcc.find { it.accountType == "CASH" } ?: allAcc.firstOrNull()
+            if (targetAcc != null) {
+                cashAccountDao.updateBalance(targetAcc.id, targetAcc.balance + amount)
+                extDao.insertCashMutation(
+                    CashMutationEntity(
+                        cashAccountId = targetAcc.id,
+                        accountName = targetAcc.accountName,
+                        amount = amount,
+                        mutationType = "penjualan",
+                        refType = "deposit_pelanggan",
+                        refId = customer.id.toString(),
+                        notes = "Top up deposit pelanggan ${customer.name}",
+                        timestamp = System.currentTimeMillis()
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -926,20 +1353,22 @@ class PosRepository(private val db: GeraiUnaDatabase) {
 
     // Multi Kas Accounts & Ledger
     suspend fun insertCashAccount(account: CashAccountEntity): Long = withContext(Dispatchers.IO) {
-        val id = cashAccountDao.insertCashAccount(account)
-        if (account.balance != 0.0) {
-            extDao.insertCashMutation(
-                CashMutationEntity(
-                    cashAccountId = id,
-                    accountName = account.accountName,
-                    amount = account.balance,
-                    mutationType = "saldo_awal",
-                    notes = "Saldo awal akun ${account.accountName}",
-                    timestamp = System.currentTimeMillis()
+        db.withTransaction {
+            val id = cashAccountDao.insertCashAccount(account)
+            if (account.balance != 0.0) {
+                extDao.insertCashMutation(
+                    CashMutationEntity(
+                        cashAccountId = id,
+                        accountName = account.accountName,
+                        amount = account.balance,
+                        mutationType = "saldo_awal",
+                        notes = "Saldo awal akun ${account.accountName}",
+                        timestamp = System.currentTimeMillis()
+                    )
                 )
-            )
+            }
+            id
         }
-        id
     }
 
     suspend fun updateCashAccount(account: CashAccountEntity) = cashAccountDao.updateCashAccount(account)
@@ -947,82 +1376,90 @@ class PosRepository(private val db: GeraiUnaDatabase) {
     suspend fun setDefaultCashAccount(id: Long) = cashAccountDao.setDefaultCashAccount(id)
 
     suspend fun adjustCashAccountBalance(accountId: Long, newBalance: Double, reason: String) = withContext(Dispatchers.IO) {
-        val acc = cashAccountDao.getCashAccountById(accountId) ?: return@withContext
-        val diff = newBalance - acc.balance
-        if (diff == 0.0) return@withContext
-        cashAccountDao.updateBalance(accountId, newBalance)
-        extDao.insertCashMutation(
-            CashMutationEntity(
-                cashAccountId = acc.id,
-                accountName = acc.accountName,
-                amount = diff,
-                mutationType = "koreksi",
-                refType = "koreksi",
-                refId = acc.id.toString(),
-                notes = reason.ifBlank { "Koreksi saldo manual" },
-                timestamp = System.currentTimeMillis()
+        db.withTransaction {
+            val acc = cashAccountDao.getCashAccountById(accountId) ?: return@withTransaction
+            val diff = newBalance - acc.balance
+            if (diff == 0.0) return@withTransaction
+            cashAccountDao.updateBalance(accountId, newBalance)
+            extDao.insertCashMutation(
+                CashMutationEntity(
+                    cashAccountId = acc.id,
+                    accountName = acc.accountName,
+                    amount = diff,
+                    mutationType = "koreksi",
+                    refType = "koreksi",
+                    refId = acc.id.toString(),
+                    notes = reason.ifBlank { "Koreksi saldo manual" },
+                    timestamp = System.currentTimeMillis()
+                )
             )
-        )
+        }
     }
 
     suspend fun transferCash(fromId: Long, toId: Long, amount: Double, notes: String, user: String) = withContext(Dispatchers.IO) {
-        val fromAcc = cashAccountDao.getCashAccountById(fromId) ?: return@withContext
-        val toAcc = cashAccountDao.getCashAccountById(toId) ?: return@withContext
-        val now = System.currentTimeMillis()
-        cashAccountDao.updateBalance(fromId, fromAcc.balance - amount)
-        cashAccountDao.updateBalance(toId, toAcc.balance + amount)
-        val tId = cashAccountDao.insertTransfer(
-            CashTransferEntity(
-                fromAccountId = fromId,
-                fromAccountName = fromAcc.accountName,
-                toAccountId = toId,
-                toAccountName = toAcc.accountName,
-                amount = amount,
-                notes = notes,
-                date = now,
-                loggedBy = user
+        db.withTransaction {
+            val fromAcc = cashAccountDao.getCashAccountById(fromId) ?: return@withTransaction
+            val toAcc = cashAccountDao.getCashAccountById(toId) ?: return@withTransaction
+            val now = System.currentTimeMillis()
+            cashAccountDao.updateBalance(fromId, fromAcc.balance - amount)
+            cashAccountDao.updateBalance(toId, toAcc.balance + amount)
+            val tId = cashAccountDao.insertTransfer(
+                CashTransferEntity(
+                    fromAccountId = fromId,
+                    fromAccountName = fromAcc.accountName,
+                    toAccountId = toId,
+                    toAccountName = toAcc.accountName,
+                    amount = amount,
+                    notes = notes,
+                    date = now,
+                    loggedBy = user
+                )
             )
-        )
-        extDao.insertCashMutation(
-            CashMutationEntity(
-                cashAccountId = fromId,
-                accountName = fromAcc.accountName,
-                amount = -amount,
-                mutationType = "transfer",
-                refType = "transfer_kas",
-                refId = tId.toString(),
-                notes = "Transfer ke ${toAcc.accountName}" + if (notes.isNotBlank()) " ($notes)" else "",
-                timestamp = now
+            extDao.insertCashMutation(
+                CashMutationEntity(
+                    cashAccountId = fromId,
+                    accountName = fromAcc.accountName,
+                    amount = -amount,
+                    mutationType = "transfer",
+                    refType = "transfer_kas",
+                    refId = tId.toString(),
+                    notes = "Transfer ke ${toAcc.accountName}" + if (notes.isNotBlank()) " ($notes)" else "",
+                    timestamp = now
+                )
             )
-        )
-        extDao.insertCashMutation(
-            CashMutationEntity(
-                cashAccountId = toId,
-                accountName = toAcc.accountName,
-                amount = amount,
-                mutationType = "transfer",
-                refType = "transfer_kas",
-                refId = tId.toString(),
-                notes = "Transfer dari ${fromAcc.accountName}" + if (notes.isNotBlank()) " ($notes)" else "",
-                timestamp = now
+            extDao.insertCashMutation(
+                CashMutationEntity(
+                    cashAccountId = toId,
+                    accountName = toAcc.accountName,
+                    amount = amount,
+                    mutationType = "transfer",
+                    refType = "transfer_kas",
+                    refId = tId.toString(),
+                    notes = "Transfer dari ${fromAcc.accountName}" + if (notes.isNotBlank()) " ($notes)" else "",
+                    timestamp = now
+                )
             )
-        )
+        }
     }
 
     // Admin Tier Services & Ranges
     suspend fun insertAdminTierService(service: AdminTierServiceEntity): Long = adminTierDao.insertService(service)
     suspend fun updateAdminTierService(service: AdminTierServiceEntity) = adminTierDao.updateService(service)
     suspend fun deleteAdminTierService(service: AdminTierServiceEntity) = withContext(Dispatchers.IO) {
-        adminTierDao.deleteRangesForService(service.id)
-        adminTierDao.deleteService(service)
+        db.withTransaction {
+            adminTierDao.deleteRangesForService(service.id)
+            adminTierDao.deleteService(service)
+        }
     }
     suspend fun insertAdminTierRange(range: AdminTierRangeEntity): Long = adminTierDao.insertRange(range)
     suspend fun updateAdminTierRange(range: AdminTierRangeEntity) = adminTierDao.updateRange(range)
     suspend fun deleteAdminTierRange(range: AdminTierRangeEntity) = adminTierDao.deleteRange(range)
     suspend fun replaceAdminTierRanges(serviceId: Long, ranges: List<AdminTierRangeEntity>) = withContext(Dispatchers.IO) {
-        adminTierDao.deleteRangesForService(serviceId)
-        ranges.sortedBy { it.minAmount }.forEach { r ->
-            adminTierDao.insertRange(r.copy(id = 0L, serviceId = serviceId))
+        db.withTransaction {
+            adminTierDao.deleteRangesForService(serviceId)
+            ranges.sortedBy { it.minAmount }.forEach { r ->
+                adminTierDao.insertRange(r.copy(id = 0L, serviceId = serviceId))
+            }
         }
     }
     suspend fun getTierRangesForService(serviceId: Long): List<AdminTierRangeEntity> = adminTierDao.getRangesList(serviceId)
@@ -1041,20 +1478,26 @@ class PosRepository(private val db: GeraiUnaDatabase) {
     suspend fun insertProductTierPrice(tier: ProductTierPriceEntity): Long = productDao.insertTierPrice(tier)
     suspend fun deleteProductTierPrice(tier: ProductTierPriceEntity) = productDao.deleteTierPrice(tier)
     suspend fun replaceProductTierPrices(productId: Long, tiers: List<ProductTierPriceEntity>) = withContext(Dispatchers.IO) {
-        productDao.deleteTierPricesForProduct(productId)
-        tiers.forEach { productDao.insertTierPrice(it.copy(id = 0L, productId = productId)) }
+        db.withTransaction {
+            productDao.deleteTierPricesForProduct(productId)
+            tiers.forEach { productDao.insertTierPrice(it.copy(id = 0L, productId = productId)) }
+        }
     }
 
     // Wholesale Tiers (harga_bertingkat)
     suspend fun replaceWholesaleTiers(productId: Long, tiers: List<WholesaleTierEntity>) = withContext(Dispatchers.IO) {
-        extDao.deleteWholesaleTiersForProduct(productId)
-        tiers.forEach { extDao.insertWholesaleTier(it.copy(id = 0L, productId = productId)) }
+        db.withTransaction {
+            extDao.deleteWholesaleTiersForProduct(productId)
+            tiers.forEach { extDao.insertWholesaleTier(it.copy(id = 0L, productId = productId)) }
+        }
     }
 
     // Product Variants
     suspend fun replaceProductVariants(productId: Long, variants: List<ProductVariantEntity>) = withContext(Dispatchers.IO) {
-        extDao.deleteVariantsForProduct(productId)
-        variants.forEach { extDao.insertVariant(it.copy(id = 0L, productId = productId)) }
+        db.withTransaction {
+            extDao.deleteVariantsForProduct(productId)
+            variants.forEach { extDao.insertVariant(it.copy(id = 0L, productId = productId)) }
+        }
     }
 
     // Product Batches
@@ -1064,18 +1507,22 @@ class PosRepository(private val db: GeraiUnaDatabase) {
 
     // Bundles (paket & paket_isi)
     suspend fun saveBundleWithItems(bundle: BundlePackageEntity, items: List<BundleItemEntity>): Long = withContext(Dispatchers.IO) {
-        val bundleId = if (bundle.id == 0L) extDao.insertBundle(bundle) else {
-            extDao.updateBundle(bundle)
-            bundle.id
+        db.withTransaction {
+            val bundleId = if (bundle.id == 0L) extDao.insertBundle(bundle) else {
+                extDao.updateBundle(bundle)
+                bundle.id
+            }
+            extDao.deleteItemsForBundle(bundleId)
+            items.forEach { extDao.insertBundleItem(it.copy(id = 0L, bundleId = bundleId)) }
+            bundleId
         }
-        extDao.deleteItemsForBundle(bundleId)
-        items.forEach { extDao.insertBundleItem(it.copy(id = 0L, bundleId = bundleId)) }
-        bundleId
     }
 
     suspend fun deleteBundle(bundle: BundlePackageEntity) = withContext(Dispatchers.IO) {
-        extDao.deleteItemsForBundle(bundle.id)
-        extDao.deleteBundle(bundle)
+        db.withTransaction {
+            extDao.deleteItemsForBundle(bundle.id)
+            extDao.deleteBundle(bundle)
+        }
     }
 
     // Promos
@@ -1097,20 +1544,24 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         user: UserAccountEntity,
         permissions: Map<String, Boolean>
     ): Long = withContext(Dispatchers.IO) {
-        val userId = if (user.id == 0L) extDao.insertUser(user) else {
-            extDao.updateUser(user)
-            user.id
+        db.withTransaction {
+            val userId = if (user.id == 0L) extDao.insertUser(user) else {
+                extDao.updateUser(user)
+                user.id
+            }
+            extDao.deletePermissionsForUser(userId)
+            permissions.forEach { (menuKey, allowed) ->
+                extDao.insertMenuPermission(MenuPermissionEntity(userId = userId, menuKey = menuKey, allowed = allowed))
+            }
+            userId
         }
-        extDao.deletePermissionsForUser(userId)
-        permissions.forEach { (menuKey, allowed) ->
-            extDao.insertMenuPermission(MenuPermissionEntity(userId = userId, menuKey = menuKey, allowed = allowed))
-        }
-        userId
     }
 
     suspend fun deleteUser(user: UserAccountEntity) = withContext(Dispatchers.IO) {
-        extDao.deletePermissionsForUser(user.id)
-        extDao.deleteUser(user)
+        db.withTransaction {
+            extDao.deletePermissionsForUser(user.id)
+            extDao.deleteUser(user)
+        }
     }
 
     suspend fun savePrinter(printer: PrinterEntity): Long = extDao.insertPrinter(printer)
@@ -1133,40 +1584,44 @@ class PosRepository(private val db: GeraiUnaDatabase) {
     }
 
     suspend fun closeShift(shiftId: Long, actualClosingCash: Double, notes: String) = withContext(Dispatchers.IO) {
-        val shifts = shiftDao.getAllShifts().first()
-        val shift = shifts.find { it.id == shiftId } ?: return@withContext
-        val diff = actualClosingCash - shift.expectedClosingCash
-        val updated = shift.copy(
-            endTime = System.currentTimeMillis(),
-            actualClosingCash = actualClosingCash,
-            difference = diff,
-            status = "CLOSED",
-            notes = if (notes.isNotBlank()) "${shift.notes} | $notes" else shift.notes
-        )
-        shiftDao.updateShift(updated)
+        db.withTransaction {
+            val shifts = shiftDao.getAllShifts().first()
+            val shift = shifts.find { it.id == shiftId } ?: return@withTransaction
+            val diff = actualClosingCash - shift.expectedClosingCash
+            val updated = shift.copy(
+                endTime = System.currentTimeMillis(),
+                actualClosingCash = actualClosingCash,
+                difference = diff,
+                status = "CLOSED",
+                notes = if (notes.isNotBlank()) "${shift.notes} | $notes" else shift.notes
+            )
+            shiftDao.updateShift(updated)
+        }
     }
 
     suspend fun recordShiftCashMovement(amount: Double, isCashIn: Boolean, reason: String) = withContext(Dispatchers.IO) {
-        val shift = shiftDao.getOpenShiftSync() ?: return@withContext
-        val newCashIn = if (isCashIn) shift.cashIn + amount else shift.cashIn
-        val newCashOut = if (!isCashIn) shift.cashOut + amount else shift.cashOut
-        val newExpected = shift.startingCash + newCashIn - newCashOut + shift.totalCashSales
-        shiftDao.updateShift(
-            shift.copy(
-                cashIn = newCashIn,
-                cashOut = newCashOut,
-                expectedClosingCash = newExpected,
-                notes = "${shift.notes} [${if (isCashIn) "Kas Masuk" else "Kas Keluar"}: $reason Rp ${amount.toLong()}]"
+        db.withTransaction {
+            val shift = shiftDao.getOpenShiftSync() ?: return@withTransaction
+            val newCashIn = if (isCashIn) shift.cashIn + amount else shift.cashIn
+            val newCashOut = if (!isCashIn) shift.cashOut + amount else shift.cashOut
+            val newExpected = shift.startingCash + newCashIn - newCashOut + shift.totalCashSales
+            shiftDao.updateShift(
+                shift.copy(
+                    cashIn = newCashIn,
+                    cashOut = newCashOut,
+                    expectedClosingCash = newExpected,
+                    notes = "${shift.notes} [${if (isCashIn) "Kas Masuk" else "Kas Keluar"}: $reason Rp ${amount.toLong()}]"
+                )
             )
-        )
-        extDao.insertShiftCashMovement(
-            ShiftCashMovementEntity(
-                shiftId = shift.id,
-                amount = if (isCashIn) amount else -amount,
-                notes = reason,
-                timestamp = System.currentTimeMillis()
+            extDao.insertShiftCashMovement(
+                ShiftCashMovementEntity(
+                    shiftId = shift.id,
+                    amount = if (isCashIn) amount else -amount,
+                    notes = reason,
+                    timestamp = System.currentTimeMillis()
+                )
             )
-        )
+        }
     }
 
     // Pending / Hold Sales
@@ -1177,17 +1632,33 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         totalAmount: Double,
         notes: String
     ): Long = withContext(Dispatchers.IO) {
-        val cartJson = buildString {
-            append("[")
-            cart.forEachIndexed { i, item ->
-                if (i > 0) append(",")
-                append("{\"id\":${item.productId},\"name\":\"${item.productName.replace("\"", "\\\"")}\",\"unit\":\"${item.unitName}\",\"qty\":${item.quantity},\"price\":${item.unitPrice},\"mul\":${item.multiplier}}")
-            }
-            append("]")
+        val jsonArray = JSONArray()
+        cart.forEach { item ->
+            jsonArray.put(
+                JSONObject().apply {
+                    put("id", item.productId)
+                    put("name", item.productName)
+                    put("unit", item.unitName)
+                    put("mul", item.multiplier)
+                    put("price", item.unitPrice)
+                    put("qty", item.quantity)
+                    put("maxStock", item.maxAvailableBaseStock)
+                    if (item.variantId != null) put("variantId", item.variantId)
+                    put("variantName", item.variantName)
+                    if (item.bundleId != null) put("bundleId", item.bundleId)
+                    put("priceSource", item.priceSource)
+                    if (item.serviceNominal != null) put("serviceNominal", item.serviceNominal)
+                    put("storeAdminFee", item.storeAdminFee)
+                    put("providerAdminFee", item.providerAdminFee)
+                    put("agentCommission", item.agentCommission)
+                    if (item.serviceCashAccountId != null) put("serviceCashAccountId", item.serviceCashAccountId)
+                    put("serviceDirection", item.serviceDirection)
+                }
+            )
         }
         val pending = PendingSaleEntity(
             holdName = holdName.ifBlank { "Antrian #${System.currentTimeMillis() % 1000}" },
-            cartJson = cartJson,
+            cartJson = jsonArray.toString(),
             customerId = customer?.id,
             customerName = customer?.name ?: "Pelanggan Umum",
             totalAmount = totalAmount,

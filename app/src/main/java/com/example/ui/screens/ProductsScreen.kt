@@ -53,6 +53,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -244,6 +245,14 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                 label = "Stok minus",
                                 selected = selectedStatusChip == "MINUS",
                                 onClick = { selectedStatusChip = if (selectedStatusChip == "MINUS") "SEMUA" else "MINUS" }
+                            )
+                        }
+                        item {
+                            DesignFilterChip(
+                                label = "Kelola Manual",
+                                selected = false,
+                                onClick = { viewModel.navigateTo(com.example.ui.viewmodel.Screen.MANAJEMEN_PRODUK) },
+                                modifier = Modifier.testTag("products_open_manual_mgr_chip")
                             )
                         }
                     }
@@ -606,7 +615,10 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                         if (conversions.isNotEmpty()) {
                                             Spacer(modifier = Modifier.height(4.dp))
                                             Text(
-                                                "Satuan lain: " + conversions.joinToString { "1 ${it.unitName} = ${it.multiplier.toInt()} ${product.baseUnit}" },
+                                                "Satuan lain: " + conversions.joinToString {
+                                                    val m = if (it.multiplier % 1.0 == 0.0) it.multiplier.toLong().toString() else it.multiplier.toString()
+                                                    "1 ${it.unitName} = $m ${product.baseUnit}"
+                                                },
                                                 style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
                                             )
                                         }
@@ -623,6 +635,9 @@ fun ProductsScreen(viewModel: PosViewModel) {
     }
 
     if (showAddEditDialog) {
+        val existingConversions = remember(productToEdit, unitConversions) {
+            productToEdit?.let { p -> unitConversions.filter { it.productId == p.id } } ?: emptyList()
+        }
         val existingTiers = remember(productToEdit, allTierPrices) {
             productToEdit?.let { p -> allTierPrices.filter { it.productId == p.id } } ?: emptyList()
         }
@@ -634,6 +649,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
         }
         AddEditProductDialog(
             product = productToEdit,
+            existingConversions = existingConversions,
             existingTiers = existingTiers,
             existingVariants = existingVariants,
             existingWholesale = existingWholesale,
@@ -842,6 +858,7 @@ private data class DigitalTierRangeDraft(
 @Composable
 fun AddEditProductDialog(
     product: ProductEntity?,
+    existingConversions: List<UnitConversionEntity> = emptyList(),
     existingTiers: List<ProductTierPriceEntity> = emptyList(),
     existingVariants: List<ProductVariantEntity> = emptyList(),
     existingWholesale: List<WholesaleTierEntity> = emptyList(),
@@ -862,13 +879,14 @@ fun AddEditProductDialog(
     ) -> Unit
 ) {
     val context = LocalContext.current
-    var name by remember { mutableStateOf(product?.name ?: "") }
-    var nameError by remember { mutableStateOf(false) }
-    var barcode by remember { mutableStateOf(product?.barcode ?: "") }
-    var autoBarcode by remember { mutableStateOf(product?.autoBarcode ?: false) }
-    var imageUri by remember(product?.id) { mutableStateOf(product?.imageUri ?: "") }
+    val productKey = product?.id
+    val initialProduct = product
+    var name by remember(productKey) { mutableStateOf(initialProduct?.name ?: "") }
+    var nameError by remember(productKey) { mutableStateOf(false) }
+    var barcode by remember(productKey) { mutableStateOf(initialProduct?.barcode ?: "") }
+    var autoBarcode by remember(productKey) { mutableStateOf(initialProduct?.autoBarcode ?: false) }
+    var imageUri by remember(productKey) { mutableStateOf(initialProduct?.imageUri ?: "") }
     var showBarcodeScanner by remember { mutableStateOf(false) }
-    var expandedTierIdx by remember(product?.id) { mutableStateOf<Int?>(0) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -880,28 +898,51 @@ fun AddEditProductDialog(
         }
     }
 
-    var category by remember { mutableStateOf(product?.category ?: if (defaultDigital) "Layanan Digital" else "Makanan & Minuman") }
-    var baseUnit by remember { mutableStateOf(product?.baseUnit ?: if (defaultDigital) "transaksi" else "pcs") }
-    var purchasePriceText by remember { mutableStateOf(product?.purchasePrice?.let { "${it.toLong()}" } ?: "") }
-    var sellingPriceText by remember { mutableStateOf(product?.sellingPrice?.let { "${it.toLong()}" } ?: "") }
-    var specialPriceText by remember { mutableStateOf(product?.specialPrice?.let { "${it.toLong()}" } ?: "") }
-    var strikePriceText by remember { mutableStateOf(product?.strikePrice?.let { "${it.toLong()}" } ?: "") }
-    var stockText by remember { mutableStateOf(product?.stock?.let { if (product.allowDecimalQty) it.toString() else "${it.toInt()}" } ?: "0") }
-    var minStockText by remember { mutableStateOf(product?.minStock?.let { "${it.toInt()}" } ?: "5") }
-    var isFlexiblePrice by remember { mutableStateOf(product?.isFlexiblePrice ?: false) }
-    var allowDecimalQty by remember { mutableStateOf(product?.allowDecimalQty ?: false) }
-    var hasNoStock by remember { mutableStateOf(product?.hasNoStock ?: false) }
-    var isDigitalProduct by remember { mutableStateOf(defaultDigital || (product?.productType == "DIGITAL") || (product?.isUnlimitedStock == true)) }
-
-    var selectedTierGroupId by remember { mutableStateOf(product?.adminTierGroupId) }
-    var selectedServiceCashId by remember { mutableStateOf(product?.serviceCashAccountId) }
-    var serviceDirection by remember { mutableStateOf(product?.serviceDirection ?: "SETOR") }
-    var previewNominalText by remember(product?.id) {
-        mutableStateOf(if ((product?.sellingPrice ?: 0.0) > 0.0) product!!.sellingPrice.toLong().toString() else "345000")
+    var category by remember(productKey, defaultDigital) {
+        mutableStateOf(initialProduct?.category ?: if (defaultDigital) "Layanan Digital" else "Makanan & Minuman")
+    }
+    var baseUnit by remember(productKey, defaultDigital) {
+        mutableStateOf(initialProduct?.baseUnit ?: if (defaultDigital) "transaksi" else "pcs")
+    }
+    var purchasePriceText by remember(productKey) {
+        mutableStateOf(initialProduct?.purchasePrice?.let { "${it.toLong()}" } ?: "")
+    }
+    var sellingPriceText by remember(productKey) {
+        mutableStateOf(initialProduct?.sellingPrice?.let { "${it.toLong()}" } ?: "")
+    }
+    var specialPriceText by remember(productKey) {
+        mutableStateOf(initialProduct?.specialPrice?.let { "${it.toLong()}" } ?: "")
+    }
+    var strikePriceText by remember(productKey) {
+        mutableStateOf(initialProduct?.strikePrice?.let { "${it.toLong()}" } ?: "")
+    }
+    var stockText by remember(productKey) {
+        mutableStateOf(
+            initialProduct?.stock?.let {
+                if (initialProduct.allowDecimalQty || it % 1.0 != 0.0) it.toString() else "${it.toInt()}"
+            } ?: "0"
+        )
+    }
+    var minStockText by remember(productKey) {
+        mutableStateOf(initialProduct?.minStock?.let { "${it.toInt()}" } ?: "5")
+    }
+    var isFlexiblePrice by remember(productKey) { mutableStateOf(initialProduct?.isFlexiblePrice ?: false) }
+    var allowDecimalQty by remember(productKey) { mutableStateOf(initialProduct?.allowDecimalQty ?: false) }
+    var hasNoStock by remember(productKey) { mutableStateOf(initialProduct?.hasNoStock ?: false) }
+    var isDigitalProduct by remember(productKey, defaultDigital) {
+        mutableStateOf(defaultDigital || (initialProduct?.productType == "DIGITAL") || (initialProduct?.isUnlimitedStock == true))
     }
 
-    val digitalTierRows = remember(product?.id) { mutableStateListOf<DigitalTierRangeDraft>() }
-    var digitalTierModified by remember(product?.id) { mutableStateOf(false) }
+    var selectedTierGroupId by remember(productKey) { mutableStateOf(initialProduct?.adminTierGroupId) }
+    var selectedServiceCashId by remember(productKey) { mutableStateOf(initialProduct?.serviceCashAccountId) }
+    var serviceDirection by remember(productKey) { mutableStateOf(initialProduct?.serviceDirection ?: "SETOR") }
+    var previewNominalText by remember(productKey) {
+        val initSell = initialProduct?.sellingPrice ?: 0.0
+        mutableStateOf(if (initSell > 0.0) initSell.toLong().toString() else "345000")
+    }
+
+    val digitalTierRows = remember(productKey) { mutableStateListOf<DigitalTierRangeDraft>() }
+    var digitalTierModified by remember(productKey) { mutableStateOf(false) }
 
     LaunchedEffect(selectedTierGroupId, adminTiers) {
         if (!digitalTierModified) {
@@ -924,70 +965,34 @@ fun AddEditProductDialog(
         }
     }
 
-    val digitalTierValidationError = remember(digitalTierRows.toList(), isDigitalProduct) {
-        if (!isDigitalProduct || digitalTierRows.isEmpty()) {
-            null
-        } else {
-            val parsed = digitalTierRows.mapIndexed { idx, row ->
-                val minV = row.minText.toDoubleOrNull()
-                val maxV = row.maxText.toDoubleOrNull() ?: 0.0
-                val feeV = row.storeFeeText.toDoubleOrNull()
-                if (minV == null || feeV == null) {
-                    return@remember "Tingkat #${idx + 1}: isi nominal 'Dari' dan 'Biaya Admin'"
-                }
-                if (maxV > 0.0 && minV > maxV) {
-                    return@remember "Tingkat #${idx + 1}: nominal 'Dari' melebihi 'Sampai'"
-                }
-                AdminTierRangeEntity(
-                    id = (idx + 1).toLong(),
-                    serviceId = selectedTierGroupId ?: 0L,
-                    minAmount = minV,
-                    maxAmount = maxV,
-                    storeAdminFee = feeV,
-                    providerAdminFee = row.providerFeeText.toDoubleOrNull() ?: 0.0,
-                    agentCommission = row.agentFeeText.toDoubleOrNull() ?: 0.0
-                )
-            }
-            val hasConflict = parsed.indices.any { i ->
-                TierPricingResolver.hasOverlap(
-                    existingRanges = parsed,
-                    minAmount = parsed[i].minAmount,
-                    maxAmount = parsed[i].maxAmount,
-                    excludeRangeId = parsed[i].id
-                )
-            }
-            if (hasConflict) "Ada rentang biaya admin yang bertumpukan" else null
-        }
+    val digitalTierValidationError = remember(digitalTierRows.toList(), isDigitalProduct, selectedTierGroupId) {
+        validateDigitalTierDrafts(digitalTierRows, isDigitalProduct, selectedTierGroupId)
     }
 
-    var conversionUnit by remember { mutableStateOf("") }
-    var conversionMultiplier by remember { mutableStateOf("") }
-    val conversionsList = remember { mutableStateListOf<UnitConversionEntity>() }
-
-    val tierRows = remember {
+    val conversionsList = remember(productKey, existingConversions) {
+        mutableStateListOf<UnitConversionEntity>().apply { addAll(existingConversions) }
+    }
+    val tierRows = remember(productKey, existingTiers) {
         mutableStateListOf<TierRowDraft>().apply {
             existingTiers.sortedBy { it.quantity }.forEach {
                 add(TierRowDraft(it.quantity.toInt().toString(), it.totalPrice.toLong().toString()))
             }
         }
     }
-
-    val variantRows = remember {
+    val variantRows = remember(productKey, existingVariants) {
         mutableStateListOf<VariantRowDraft>().apply {
             existingVariants.forEach {
                 add(VariantRowDraft(it.name, it.sellingPrice.toLong().toString(), it.stock.toInt().toString()))
             }
         }
     }
-
-    val wholesaleRows = remember {
+    val wholesaleRows = remember(productKey, existingWholesale) {
         mutableStateListOf<WholesaleRowDraft>().apply {
             existingWholesale.sortedBy { it.minQty }.forEach {
                 add(WholesaleRowDraft(it.minQty.toInt().toString(), it.pricePerUnit.toLong().toString()))
             }
         }
     }
-
     val duplicateQtyKeys = remember(tierRows.toList()) {
         val counts = tierRows.mapNotNull { it.qtyText.toIntOrNull() }.groupingBy { it }.eachCount()
         counts.filter { it.value > 1 }.keys
@@ -1004,818 +1009,131 @@ fun AddEditProductDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (product == null) "Tambah produk" else "Edit produk",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
-                        )
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = "Tutup", tint = Slate400)
-                        }
-                    }
-
-                    DesignSegmentedTabs(
-                        options = listOf("FISIK" to "Fisik", "DIGITAL" to "Digital"),
-                        selectedKey = if (isDigitalProduct) "DIGITAL" else "FISIK",
-                        onSelect = { isDigitalProduct = (it == "DIGITAL") }
+                    ProductDialogHeader(
+                        isEdit = product != null,
+                        isDigitalProduct = isDigitalProduct,
+                        onSelectDigital = { isDigitalProduct = it },
+                        onDismiss = onDismiss
                     )
                 }
 
-                // Product Photo Picker Row (Fisik & Digital)
                 item {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = BgCanvas,
-                        border = BorderStroke(1.dp, BorderDefault),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            ProductThumbnail(
-                                imageUri = imageUri,
-                                contentDescription = name.ifBlank { "Foto Produk" },
-                                isDigital = isDigitalProduct,
-                                size = 56.dp,
-                                shape = RoundedCornerShape(10.dp),
-                                iconSize = 26.dp
+                    ProductPhotoPickerCard(
+                        imageUri = imageUri,
+                        productName = name,
+                        isDigitalProduct = isDigitalProduct,
+                        onPickPhoto = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Foto Produk (${if (isDigitalProduct) "Digital" else "Fisik"})",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
-                                )
-                                Text(
-                                    text = if (imageUri.isBlank()) "Opsional • Tampil di kasir & daftar produk" else "Foto siap ditampilkan",
-                                    style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            photoPickerLauncher.launch(
-                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = BorderStroke(1.dp, AccentBlue),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        modifier = Modifier.testTag("product_pick_photo_btn")
-                                    ) {
-                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = if (imageUri.isBlank()) "Pilih Foto" else "Ganti Foto",
-                                            color = AccentBlue,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    if (imageUri.isNotBlank()) {
-                                        TextButton(
-                                            onClick = { imageUri = "" },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                                        ) {
-                                            Text("Hapus", color = Rose500, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                        },
+                        onClearPhoto = { imageUri = "" }
+                    )
                 }
 
                 item {
-                    DesignLabeledTextField(
-                        label = "Nama produk *",
-                        value = name,
-                        onValueChange = {
+                    ProductBasicFieldsSection(
+                        name = name,
+                        nameError = nameError,
+                        category = category,
+                        baseUnit = baseUnit,
+                        purchasePriceText = purchasePriceText,
+                        sellingPriceText = sellingPriceText,
+                        strikePriceText = strikePriceText,
+                        specialPriceText = specialPriceText,
+                        isFlexiblePrice = isFlexiblePrice,
+                        onNameChange = {
                             name = it
                             if (it.isNotBlank()) nameError = false
                         },
-                        placeholder = "mis. Buku tulis",
-                        isError = nameError,
-                        errorMessage = "Nama wajib diisi"
+                        onCategoryChange = { category = it },
+                        onBaseUnitChange = { baseUnit = it },
+                        onPurchasePriceChange = { purchasePriceText = it.filter { ch -> ch.isDigit() } },
+                        onSellingPriceChange = { sellingPriceText = it.filter { ch -> ch.isDigit() } },
+                        onStrikePriceChange = { strikePriceText = it.filter { ch -> ch.isDigit() } },
+                        onSpecialPriceChange = { specialPriceText = it.filter { ch -> ch.isDigit() } },
+                        onFlexibleChange = { isFlexiblePrice = it }
                     )
-                }
-
-                item {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DesignLabeledTextField(
-                            label = "Kategori",
-                            value = category,
-                            onValueChange = { category = it },
-                            modifier = Modifier.weight(1.4f)
-                        )
-                        DesignLabeledTextField(
-                            label = "Satuan",
-                            value = baseUnit,
-                            onValueChange = { baseUnit = it },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                item {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DesignLabeledTextField(
-                            label = "Harga modal",
-                            value = purchasePriceText,
-                            onValueChange = { purchasePriceText = it.filter { ch -> ch.isDigit() } },
-                            prefixText = "Rp ",
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                        DesignLabeledTextField(
-                            label = "Harga jual",
-                            value = sellingPriceText,
-                            onValueChange = { sellingPriceText = it.filter { ch -> ch.isDigit() } },
-                            prefixText = "Rp ",
-                            enabled = !isFlexiblePrice,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                item {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DesignLabeledTextField(
-                            label = "Harga coret (opsional)",
-                            value = strikePriceText,
-                            onValueChange = { strikePriceText = it.filter { ch -> ch.isDigit() } },
-                            prefixText = "Rp ",
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                        DesignLabeledTextField(
-                            label = "Harga khusus (opsional)",
-                            value = specialPriceText,
-                            onValueChange = { specialPriceText = it.filter { ch -> ch.isDigit() } },
-                            prefixText = "Rp ",
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Harga fleksibel", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = Slate900))
-                            Text("Kasir isi nominal sendiri saat transaksi", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp))
-                        }
-                        Switch(
-                            checked = isFlexiblePrice,
-                            onCheckedChange = { isFlexiblePrice = it },
-                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = AccentBlue)
-                        )
-                    }
                 }
 
                 if (!isDigitalProduct) {
                     item {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Qty Desimal (kg, liter, meter)", fontSize = 13.sp, color = Slate800)
-                            Switch(checked = allowDecimalQty, onCheckedChange = { allowDecimalQty = it }, colors = SwitchDefaults.colors(checkedTrackColor = AccentBlue))
-                        }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Produk Tanpa Stok (Jasa/Unlimited)", fontSize = 13.sp, color = Slate800)
-                            Switch(checked = hasNoStock, onCheckedChange = { hasNoStock = it }, colors = SwitchDefaults.colors(checkedTrackColor = AccentBlue))
-                        }
-                    }
-
-                    if (!hasNoStock) {
-                        item {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                DesignLabeledTextField(
-                                    label = "Stok awal (boleh minus)",
-                                    value = stockText,
-                                    onValueChange = { stockText = it },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    modifier = Modifier.weight(1f)
-                                )
-                                DesignLabeledTextField(
-                                    label = "Stok minimum",
-                                    value = minStockText,
-                                    onValueChange = { minStockText = it.filter { ch -> ch.isDigit() } },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
+                        ProductPhysicalStockSection(
+                            allowDecimalQty = allowDecimalQty,
+                            hasNoStock = hasNoStock,
+                            stockText = stockText,
+                            minStockText = minStockText,
+                            onDecimalChange = { allowDecimalQty = it },
+                            onNoStockChange = { hasNoStock = it },
+                            onStockChange = { stockText = it },
+                            onMinStockChange = { minStockText = it.filter { ch -> ch.isDigit() } }
+                        )
                     }
                 } else {
-                    // Digital service linking + Real-Time Tiered Pricing Auto-Fill
                     item {
-                        HorizontalDivider(color = BorderDefault)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Koneksi Layanan Digital & Tarif Berjenjang", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
-                            if (onOpenTierManager != null) {
-                                TextButton(
-                                    onClick = onOpenTierManager,
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Kelola Tarif", style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold))
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        DesignSegmentedTabs(
-                            options = listOf("SETOR" to "Setor / Transfer", "TARIK" to "Tarik Tunai"),
-                            selectedKey = serviceDirection,
-                            onSelect = { serviceDirection = it }
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text("Grup Tarif Berjenjang Otomatis:", fontSize = 11.sp, color = Slate600)
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            item {
-                                DesignFilterChip(
-                                    label = "Khusus Layanan Ini",
-                                    selected = selectedTierGroupId == null,
-                                    onClick = {
-                                        selectedTierGroupId = null
-                                        digitalTierModified = true
-                                    }
-                                )
-                            }
-                            items(tierServices) { ts ->
-                                DesignFilterChip(
-                                    label = ts.serviceName,
-                                    selected = selectedTierGroupId == ts.id,
-                                    onClick = {
-                                        selectedTierGroupId = if (selectedTierGroupId == ts.id) null else ts.id
-                                        digitalTierModified = false
-                                    }
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "Daftar Biaya Admin Berjenjang (${digitalTierRows.size} rentang)",
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
-                            )
-                            Text(
-                                "0/kosong = seterusnya",
-                                style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 10.sp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            digitalTierRows.forEachIndexed { idx, row ->
-                                val isExpanded = expandedTierIdx == idx
-                                val minLabel = row.minText.toDoubleOrNull()?.let { "Rp ${formatRupiah(it)}" } ?: "Rp 0"
-                                val maxLabel = row.maxText.toDoubleOrNull()?.takeIf { it > 0.0 }?.let { "Rp ${formatRupiah(it)}" } ?: "∞"
-                                val feeLabel = row.storeFeeText.toDoubleOrNull()?.let { "Rp ${formatRupiah(it)}" } ?: "Rp 0"
-
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = BgCanvas,
-                                    border = BorderStroke(1.dp, if (isExpanded) AccentBlue.copy(alpha = 0.6f) else BorderDefault),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable { expandedTierIdx = if (isExpanded) null else idx },
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    "Tingkat #${idx + 1}: $minLabel – $maxLabel",
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular(),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Text(
-                                                    "Admin Toko $feeLabel",
-                                                    style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 11.sp).tabular()
-                                                )
-                                            }
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                IconButton(
-                                                    onClick = {
-                                                        digitalTierModified = true
-                                                        digitalTierRows.removeAt(idx)
-                                                        if (expandedTierIdx == idx) expandedTierIdx = null
-                                                    },
-                                                    modifier = Modifier
-                                                        .size(32.dp)
-                                                        .testTag("product_digital_remove_tier_$idx")
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.DeleteOutline,
-                                                        contentDescription = "Kurangi / Hapus Biaya Admin",
-                                                        tint = Rose500,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                                Icon(
-                                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                                    contentDescription = if (isExpanded) "Tutup rincian" else "Edit rincian",
-                                                    tint = Slate500,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        }
-                                        if (isExpanded) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                DesignLabeledTextField(
-                                                    label = "Dari",
-                                                    value = row.minText,
-                                                    onValueChange = { v ->
-                                                        digitalTierModified = true
-                                                        digitalTierRows[idx] = row.copy(minText = v.filter { it.isDigit() })
-                                                    },
-                                                    prefixText = "Rp ",
-                                                    placeholder = "1",
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                DesignLabeledTextField(
-                                                    label = "Sampai",
-                                                    value = row.maxText,
-                                                    onValueChange = { v ->
-                                                        digitalTierModified = true
-                                                        digitalTierRows[idx] = row.copy(maxText = v.filter { it.isDigit() })
-                                                    },
-                                                    prefixText = "Rp ",
-                                                    placeholder = "Seterusnya",
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                            }
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                DesignLabeledTextField(
-                                                    label = "Biaya Admin",
-                                                    value = row.storeFeeText,
-                                                    onValueChange = { v ->
-                                                        digitalTierModified = true
-                                                        digitalTierRows[idx] = row.copy(storeFeeText = v.filter { it.isDigit() })
-                                                    },
-                                                    prefixText = "Rp ",
-                                                    placeholder = "5000",
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                    modifier = Modifier.weight(1.2f)
-                                                )
-                                                DesignLabeledTextField(
-                                                    label = "Penyedia",
-                                                    value = row.providerFeeText,
-                                                    onValueChange = { v ->
-                                                        digitalTierModified = true
-                                                        digitalTierRows[idx] = row.copy(providerFeeText = v.filter { it.isDigit() })
-                                                    },
-                                                    prefixText = "Rp ",
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                DesignLabeledTextField(
-                                                    label = "Fee Agen",
-                                                    value = row.agentFeeText,
-                                                    onValueChange = { v ->
-                                                        digitalTierModified = true
-                                                        digitalTierRows[idx] = row.copy(agentFeeText = v.filter { it.isDigit() })
-                                                    },
-                                                    prefixText = "Rp ",
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                    modifier = Modifier.weight(0.9f)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (digitalTierValidationError != null) {
-                                DesignStatusBadge(text = digitalTierValidationError, type = BadgeType.DANGER)
-                            }
-
-                            OutlinedButton(
-                                onClick = {
-                                    digitalTierModified = true
-                                    if (digitalTierRows.isEmpty()) {
-                                        digitalTierRows.add(
-                                            DigitalTierRangeDraft(
-                                                minText = "1",
-                                                maxText = "1000000",
-                                                storeFeeText = "5000"
-                                            )
-                                        )
-                                    } else {
-                                        val lastIdx = digitalTierRows.lastIndex
-                                        val lastRow = digitalTierRows[lastIdx]
-                                        val lastMin = lastRow.minText.toLongOrNull() ?: 1L
-                                        var lastMax = lastRow.maxText.toLongOrNull() ?: 0L
-                                        if (lastMax <= 0L) {
-                                            lastMax = if (lastMin <= 1L) 1_000_000L else lastMin + 1_999_999L
-                                            digitalTierRows[lastIdx] = lastRow.copy(maxText = lastMax.toString())
-                                        }
-                                        val lastAdmin = lastRow.storeFeeText.toLongOrNull() ?: 5_000L
-                                        val nextMin = lastMax + 1L
-                                        val nextMax = if (nextMin == 1_000_001L) 3_000_000L else nextMin + 1_999_999L
-                                        digitalTierRows.add(
-                                            DigitalTierRangeDraft(
-                                                minText = nextMin.toString(),
-                                                maxText = nextMax.toString(),
-                                                storeFeeText = (lastAdmin + 5_000L).toString()
-                                            )
-                                        )
-                                    }
-                                    expandedTierIdx = digitalTierRows.lastIndex
-                                },
-                                border = BorderStroke(1.dp, AccentBlue.copy(alpha = 0.45f)),
-                                colors = ButtonDefaults.outlinedButtonColors(containerColor = Sapphire50, contentColor = AccentBlue),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("product_digital_add_tier_btn")
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Tambah Biaya Admin", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-
-                        val draftRangesForPreview = remember(digitalTierRows.toList(), selectedTierGroupId) {
-                            digitalTierRows.mapIndexedNotNull { idx, row ->
-                                val minV = row.minText.toDoubleOrNull() ?: return@mapIndexedNotNull null
-                                val maxV = row.maxText.toDoubleOrNull() ?: 0.0
-                                val storeV = row.storeFeeText.toDoubleOrNull() ?: return@mapIndexedNotNull null
-                                AdminTierRangeEntity(
-                                    id = (idx + 1).toLong(),
-                                    serviceId = selectedTierGroupId ?: 0L,
-                                    minAmount = minV,
-                                    maxAmount = maxV,
-                                    storeAdminFee = storeV,
-                                    providerAdminFee = row.providerFeeText.toDoubleOrNull() ?: 0.0,
-                                    agentCommission = row.agentFeeText.toDoubleOrNull() ?: 0.0
-                                )
-                            }
-                        }
-                        val activeTierWithRanges = remember(adminTiers, selectedTierGroupId, name, draftRangesForPreview) {
-                            if (draftRangesForPreview.isNotEmpty()) {
-                                val baseService = selectedTierGroupId?.let { id -> adminTiers.find { it.service.id == id }?.service }
-                                    ?: AdminTierServiceEntity(
-                                        id = 0L,
-                                        serviceName = name.ifBlank { "Layanan Ini" },
-                                        serviceCode = "CUSTOM"
-                                    )
-                                AdminTierWithRanges(service = baseService, ranges = draftRangesForPreview)
-                            } else {
-                                selectedTierGroupId?.let { id -> adminTiers.find { it.service.id == id } }
-                                    ?: TierPricingResolver.resolveServiceGroup(adminTiers, null, name)
-                            }
-                        }
-                        val activeNominal = if (!isFlexiblePrice) {
-                            sellingPriceText.toDoubleOrNull() ?: 0.0
-                        } else {
-                            previewNominalText.toDoubleOrNull() ?: 0.0
-                        }
-                        val autoTierResult = remember(activeTierWithRanges, activeNominal) {
-                            TierPricingResolver.calculate(activeTierWithRanges, activeNominal)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Sapphire50,
-                            border = BorderStroke(1.dp, Sapphire200),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "Otomatisasi Tarif Berjenjang",
-                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800)
-                                    )
-                                    if (activeTierWithRanges != null) {
-                                        Text(
-                                            activeTierWithRanges.service.serviceName,
-                                            style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold)
-                                        )
-                                    }
-                                }
-
-                                if (isFlexiblePrice) {
-                                    DesignLabeledTextField(
-                                        label = "Nominal Transaksi / Uji Deteksi (Rp)",
-                                        value = previewNominalText,
-                                        onValueChange = { previewNominalText = it.filter { ch -> ch.isDigit() } },
-                                        prefixText = "Rp ",
-                                        placeholder = "mis. 345000",
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        modifier = Modifier.testTag("product_dialog_preview_nominal")
-                                    )
-                                } else {
-                                    Text(
-                                        "Nominal dideteksi real-time dari kolom Harga Jual: Rp ${formatRupiah(activeNominal)}",
-                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate600)
-                                    )
-                                }
-
-                                val matched = autoTierResult.matchedRange
-                                if (matched != null) {
-                                    val maxLabel = if (matched.maxAmount > 0.0) "Rp ${formatRupiah(matched.maxAmount)}" else "Seterusnya"
-                                    DesignStatusBadge(
-                                        text = "Cocok rentang: Rp ${formatRupiah(matched.minAmount)} – $maxLabel",
-                                        type = BadgeType.SUCCESS
-                                    )
-                                } else if (activeNominal > 0.0) {
-                                    DesignStatusBadge(
-                                        text = "Nominal di luar tabel rentang tarif",
-                                        type = BadgeType.WARNING
-                                    )
-                                }
-
-                                DesignLabeledTextField(
-                                    label = "Tarif Admin / Biaya Layanan (Terisi Otomatis)",
-                                    value = autoTierResult.storeAdminFee.toLong().toString(),
-                                    onValueChange = {},
-                                    prefixText = "Rp ",
-                                    enabled = false,
-                                    modifier = Modifier.testTag("product_dialog_auto_admin_fee")
-                                )
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        "Laba Bersih: Rp ${formatRupiah(autoTierResult.netProfit)}",
-                                        style = MaterialTheme.typography.labelSmall.copy(color = Emerald700, fontWeight = FontWeight.Bold)
-                                    )
-                                    Text(
-                                        "Total Tagihan: Rp ${formatRupiah(autoTierResult.totalCustomerPayable)}",
-                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate900, fontWeight = FontWeight.Bold)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text("Akun Kas Layanan Terkait:", fontSize = 11.sp, color = Slate600)
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(cashAccounts) { ca ->
-                                DesignFilterChip(
-                                    label = ca.accountName,
-                                    selected = selectedServiceCashId == ca.id,
-                                    onClick = { selectedServiceCashId = if (selectedServiceCashId == ca.id) null else ca.id }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        DesignLabeledTextField(
-                            label = "Barcode / SKU",
-                            value = barcode,
-                            onValueChange = { barcode = it },
-                            placeholder = "Scan atau ketik kode",
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedButton(
-                            onClick = { showBarcodeScanner = true },
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, AccentBlue),
-                            contentPadding = PaddingValues(horizontal = 10.dp),
-                            modifier = Modifier
-                                .height(50.dp)
-                                .testTag("product_dialog_scan_barcode_btn")
-                        ) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Scan", fontSize = 12.sp, color = AccentBlue, fontWeight = FontWeight.Bold)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                barcode = onGenerateBarcode()
-                                autoBarcode = true
+                        ProductDigitalServiceSection(
+                            productName = name,
+                            sellingPriceText = sellingPriceText,
+                            isFlexiblePrice = isFlexiblePrice,
+                            previewNominalText = previewNominalText,
+                            serviceDirection = serviceDirection,
+                            selectedTierGroupId = selectedTierGroupId,
+                            selectedServiceCashId = selectedServiceCashId,
+                            tierServices = tierServices,
+                            adminTiers = adminTiers,
+                            cashAccounts = cashAccounts,
+                            digitalTierRows = digitalTierRows,
+                            digitalTierValidationError = digitalTierValidationError,
+                            onOpenTierManager = onOpenTierManager,
+                            onServiceDirectionChange = { serviceDirection = it },
+                            onSelectTierGroup = { gid, modified ->
+                                selectedTierGroupId = gid
+                                digitalTierModified = modified
                             },
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, BorderInput),
-                            contentPadding = PaddingValues(horizontal = 10.dp),
-                            modifier = Modifier.height(50.dp)
-                        ) {
-                            Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Auto", fontSize = 12.sp)
-                        }
+                            onMarkTierModified = { digitalTierModified = true },
+                            onPreviewNominalChange = { previewNominalText = it.filter { ch -> ch.isDigit() } },
+                            onSelectServiceCash = { selectedServiceCashId = it }
+                        )
                     }
                 }
 
-                // VARIAN PRODUK
                 item {
-                    HorizontalDivider(color = BorderDefault)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Varian Produk (Ukuran / Warna)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        variantRows.forEachIndexed { idx, row ->
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Top) {
-                                DesignLabeledTextField("Nama", row.name, { variantRows[idx] = row.copy(name = it) }, modifier = Modifier.weight(1.2f))
-                                DesignLabeledTextField("Harga", row.sellingPriceText, { v -> variantRows[idx] = row.copy(sellingPriceText = v.filter { it.isDigit() }) }, prefixText = "Rp ", modifier = Modifier.weight(1.2f))
-                                DesignLabeledTextField("Stok", row.stockText, { v -> variantRows[idx] = row.copy(stockText = v.filter { it.isDigit() }) }, modifier = Modifier.weight(0.7f))
-                                IconButton(onClick = { variantRows.removeAt(idx) }, modifier = Modifier.padding(top = 24.dp)) {
-                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus varian", tint = Rose500)
-                                }
-                            }
+                    ProductBarcodeSection(
+                        barcode = barcode,
+                        onBarcodeChange = { barcode = it },
+                        onScanClick = { showBarcodeScanner = true },
+                        onAutoGenerateClick = {
+                            barcode = onGenerateBarcode()
+                            autoBarcode = true
                         }
-                        OutlinedButton(
-                            onClick = { variantRows.add(VariantRowDraft("Varian ${variantRows.size + 1}", sellingPriceText.ifBlank { "10000" }, "10")) },
-                            border = BorderStroke(1.dp, BorderDefault),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceStrong, contentColor = Slate800),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Tambah varian", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        }
-                    }
-                }
-
-                // HARGA BERTINGKAT / GROSIR (harga_bertingkat)
-                item {
-                    HorizontalDivider(color = BorderDefault)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Harga grosir bertingkat (harga per unit >= min beli)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        wholesaleRows.forEachIndexed { idx, row ->
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
-                                DesignLabeledTextField("Min qty (>=", row.minQtyText, { v -> wholesaleRows[idx] = row.copy(minQtyText = v.filter { it.isDigit() }) }, modifier = Modifier.weight(0.8f))
-                                DesignLabeledTextField("Harga / unit", row.pricePerUnitText, { v -> wholesaleRows[idx] = row.copy(pricePerUnitText = v.filter { it.isDigit() }) }, prefixText = "Rp ", modifier = Modifier.weight(1.3f))
-                                IconButton(onClick = { wholesaleRows.removeAt(idx) }, modifier = Modifier.padding(top = 24.dp)) {
-                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus grosir", tint = Rose500)
-                                }
-                            }
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                val nextMin = (wholesaleRows.mapNotNull { it.minQtyText.toIntOrNull() }.maxOrNull() ?: 0) + 5
-                                wholesaleRows.add(WholesaleRowDraft(nextMin.toString(), ""))
-                            },
-                            border = BorderStroke(1.dp, BorderDefault),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceStrong, contentColor = Slate800),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Tambah tingkat grosir", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        }
-                    }
-                }
-
-                // HARGA PER JUMLAH BELI
-                item {
-                    HorizontalDivider(color = BorderDefault)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        "Harga per jumlah beli",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        tierRows.forEachIndexed { idx, row ->
-                            val qtyInt = row.qtyText.toIntOrNull()
-                            val isDup = qtyInt != null && duplicateQtyKeys.contains(qtyInt)
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                DesignLabeledTextField(
-                                    label = "Jumlah beli",
-                                    value = row.qtyText,
-                                    onValueChange = { valStr -> tierRows[idx] = row.copy(qtyText = valStr.filter { it.isDigit() }) },
-                                    isError = isDup,
-                                    errorMessage = "Jumlah kembar",
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.weight(0.75f)
-                                )
-                                DesignLabeledTextField(
-                                    label = "Total harga",
-                                    value = row.totalPriceText,
-                                    onValueChange = { valStr -> tierRows[idx] = row.copy(totalPriceText = valStr.filter { it.isDigit() }) },
-                                    prefixText = "Rp ",
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.weight(1.35f)
-                                )
-                                IconButton(
-                                    onClick = { tierRows.removeAt(idx) },
-                                    modifier = Modifier.padding(top = 24.dp)
-                                ) {
-                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus baris", tint = Rose500)
-                                }
-                            }
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                val nextQty = (tierRows.mapNotNull { it.qtyText.toIntOrNull() }.maxOrNull() ?: 0) + 1
-                                tierRows.add(TierRowDraft(nextQty.toString(), ""))
-                            },
-                            border = BorderStroke(1.dp, BorderDefault),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceStrong, contentColor = Slate800),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Tambah baris", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        }
-                    }
                 }
 
-                // Multi-satuan
+                item {
+                    ProductVariantsSection(
+                        variantRows = variantRows,
+                        defaultPriceText = sellingPriceText
+                    )
+                }
+
+                item {
+                    ProductWholesaleSection(wholesaleRows = wholesaleRows)
+                }
+
+                item {
+                    ProductTierQtySection(
+                        tierRows = tierRows,
+                        duplicateQtyKeys = duplicateQtyKeys
+                    )
+                }
+
                 if (!isDigitalProduct) {
                     item {
-                        HorizontalDivider(color = BorderDefault)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text("Satuan grosir (opsional)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
-                            DesignLabeledTextField(
-                                label = "Satuan (dus)",
-                                value = conversionUnit,
-                                onValueChange = { conversionUnit = it },
-                                modifier = Modifier.weight(1f)
-                            )
-                            DesignLabeledTextField(
-                                label = "Isi ($baseUnit)",
-                                value = conversionMultiplier,
-                                onValueChange = { conversionMultiplier = it.filter { ch -> ch.isDigit() } },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.weight(1f)
-                            )
-                            Button(
-                                onClick = {
-                                    val mult = conversionMultiplier.toDoubleOrNull() ?: 1.0
-                                    if (conversionUnit.isNotBlank()) {
-                                        conversionsList.add(
-                                            UnitConversionEntity(
-                                                productId = product?.id ?: 0L,
-                                                unitName = conversionUnit.trim(),
-                                                multiplier = mult
-                                            )
-                                        )
-                                        conversionUnit = ""
-                                        conversionMultiplier = ""
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = SurfaceStrong, contentColor = Slate900),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.height(50.dp)
-                            ) {
-                                Text("+", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        conversionsList.forEach { conv ->
-                            Text("• 1 ${conv.unitName} = ${conv.multiplier.toInt()} $baseUnit", style = MaterialTheme.typography.bodySmall, color = Slate600)
-                        }
+                        ProductUnitConversionsSection(
+                            productId = product?.id ?: 0L,
+                            baseUnit = baseUnit,
+                            conversionsList = conversionsList
+                        )
                     }
                 }
 
@@ -1835,71 +1153,35 @@ fun AddEditProductDialog(
                                 if (name.isBlank()) {
                                     nameError = true
                                 } else if (duplicateQtyKeys.isEmpty() && digitalTierValidationError == null) {
-                                    val newProduct = ProductEntity(
-                                        id = product?.id ?: 0L,
+                                    saveProductDialogForm(
+                                        existingProductId = product?.id ?: 0L,
                                         barcode = barcode,
-                                        name = name.trim(),
-                                        category = category.trim().ifBlank { "Umum" },
-                                        baseUnit = baseUnit.trim().ifBlank { "pcs" },
-                                        purchasePrice = purchasePriceText.toDoubleOrNull() ?: 0.0,
-                                        sellingPrice = sellingPriceText.toDoubleOrNull() ?: 0.0,
-                                        stock = if (isDigitalProduct || hasNoStock) 999.0 else (stockText.toDoubleOrNull() ?: 0.0),
-                                        minStock = minStockText.toDoubleOrNull() ?: 5.0,
-                                        productType = if (isDigitalProduct) "DIGITAL" else "FISIK",
-                                        isUnlimitedStock = isDigitalProduct || hasNoStock,
+                                        name = name,
+                                        category = category,
+                                        baseUnit = baseUnit,
+                                        purchasePriceText = purchasePriceText,
+                                        sellingPriceText = sellingPriceText,
+                                        stockText = stockText,
+                                        minStockText = minStockText,
+                                        isDigitalProduct = isDigitalProduct,
                                         isFlexiblePrice = isFlexiblePrice,
-                                        hasNoStock = isDigitalProduct || hasNoStock,
+                                        hasNoStock = hasNoStock,
                                         allowDecimalQty = allowDecimalQty,
                                         autoBarcode = autoBarcode,
-                                        specialPrice = specialPriceText.toDoubleOrNull(),
-                                        strikePrice = strikePriceText.toDoubleOrNull(),
+                                        specialPriceText = specialPriceText,
+                                        strikePriceText = strikePriceText,
                                         imageUri = imageUri,
-                                        adminTierGroupId = if (isDigitalProduct) selectedTierGroupId else null,
-                                        serviceCashAccountId = if (isDigitalProduct) selectedServiceCashId else null,
-                                        serviceDirection = if (isDigitalProduct) serviceDirection else "SETOR"
+                                        selectedTierGroupId = selectedTierGroupId,
+                                        selectedServiceCashId = selectedServiceCashId,
+                                        serviceDirection = serviceDirection,
+                                        digitalTierModified = digitalTierModified,
+                                        conversionsList = conversionsList,
+                                        tierRows = tierRows,
+                                        variantRows = variantRows,
+                                        wholesaleRows = wholesaleRows,
+                                        digitalTierRows = digitalTierRows,
+                                        onSave = onSave
                                     )
-                                    val parsedTiers = tierRows.mapNotNull { r ->
-                                        val q = r.qtyText.toDoubleOrNull()
-                                        val p = r.totalPriceText.toDoubleOrNull()
-                                        if (q != null && q > 0 && p != null && p >= 0) {
-                                            ProductTierPriceEntity(productId = newProduct.id, quantity = q, totalPrice = p)
-                                        } else null
-                                    }
-                                    val parsedVariants = variantRows.mapNotNull { r ->
-                                        val sp = r.sellingPriceText.toDoubleOrNull() ?: 0.0
-                                        val st = r.stockText.toDoubleOrNull() ?: 0.0
-                                        if (r.name.isNotBlank()) {
-                                            ProductVariantEntity(productId = newProduct.id, name = r.name.trim(), sellingPrice = sp, stock = st)
-                                        } else null
-                                    }
-                                    val parsedWholesales = wholesaleRows.mapNotNull { r ->
-                                        val mq = r.minQtyText.toDoubleOrNull()
-                                        val ppu = r.pricePerUnitText.toDoubleOrNull()
-                                        if (mq != null && mq > 0 && ppu != null && ppu >= 0) {
-                                            WholesaleTierEntity(productId = newProduct.id, minQty = mq, pricePerUnit = ppu)
-                                        } else null
-                                    }
-                                    val parsedDigitalTiers = if (
-                                        isDigitalProduct &&
-                                        (digitalTierModified || (selectedTierGroupId == null && digitalTierRows.isNotEmpty()))
-                                    ) {
-                                        digitalTierRows.mapNotNull { r ->
-                                            val minV = r.minText.toDoubleOrNull() ?: return@mapNotNull null
-                                            val maxV = r.maxText.toDoubleOrNull() ?: 0.0
-                                            val storeV = r.storeFeeText.toDoubleOrNull() ?: return@mapNotNull null
-                                            AdminTierRangeEntity(
-                                                serviceId = selectedTierGroupId ?: 0L,
-                                                minAmount = minV,
-                                                maxAmount = maxV,
-                                                storeAdminFee = storeV,
-                                                providerAdminFee = r.providerFeeText.toDoubleOrNull() ?: 0.0,
-                                                agentCommission = r.agentFeeText.toDoubleOrNull() ?: 0.0
-                                            )
-                                        }
-                                    } else {
-                                        null
-                                    }
-                                    onSave(newProduct, conversionsList.toList(), parsedTiers, parsedVariants, parsedWholesales, parsedDigitalTiers)
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
@@ -1924,6 +1206,972 @@ fun AddEditProductDialog(
             },
             onDismiss = { showBarcodeScanner = false }
         )
+    }
+}
+
+private fun validateDigitalTierDrafts(
+    digitalTierRows: List<DigitalTierRangeDraft>,
+    isDigitalProduct: Boolean,
+    selectedTierGroupId: Long?
+): String? {
+    if (!isDigitalProduct || digitalTierRows.isEmpty()) return null
+    val parsed = ArrayList<AdminTierRangeEntity>(digitalTierRows.size)
+    for (idx in digitalTierRows.indices) {
+        val row = digitalTierRows[idx]
+        val minV = row.minText.toDoubleOrNull()
+        val maxV = row.maxText.toDoubleOrNull() ?: 0.0
+        val feeV = row.storeFeeText.toDoubleOrNull()
+        if (minV == null || feeV == null) {
+            return "Tingkat #${idx + 1}: isi nominal 'Dari' dan 'Biaya Admin'"
+        }
+        if (maxV > 0.0 && minV > maxV) {
+            return "Tingkat #${idx + 1}: nominal 'Dari' melebihi 'Sampai'"
+        }
+        parsed.add(
+            AdminTierRangeEntity(
+                id = (idx + 1).toLong(),
+                serviceId = selectedTierGroupId ?: 0L,
+                minAmount = minV,
+                maxAmount = maxV,
+                storeAdminFee = feeV,
+                providerAdminFee = row.providerFeeText.toDoubleOrNull() ?: 0.0,
+                agentCommission = row.agentFeeText.toDoubleOrNull() ?: 0.0
+            )
+        )
+    }
+    val hasConflict = parsed.indices.any { i ->
+        TierPricingResolver.hasOverlap(
+            existingRanges = parsed,
+            minAmount = parsed[i].minAmount,
+            maxAmount = parsed[i].maxAmount,
+            excludeRangeId = parsed[i].id
+        )
+    }
+    return if (hasConflict) "Ada rentang biaya admin yang bertumpukan" else null
+}
+
+private fun saveProductDialogForm(
+    existingProductId: Long,
+    barcode: String,
+    name: String,
+    category: String,
+    baseUnit: String,
+    purchasePriceText: String,
+    sellingPriceText: String,
+    stockText: String,
+    minStockText: String,
+    isDigitalProduct: Boolean,
+    isFlexiblePrice: Boolean,
+    hasNoStock: Boolean,
+    allowDecimalQty: Boolean,
+    autoBarcode: Boolean,
+    specialPriceText: String,
+    strikePriceText: String,
+    imageUri: String,
+    selectedTierGroupId: Long?,
+    selectedServiceCashId: Long?,
+    serviceDirection: String,
+    digitalTierModified: Boolean,
+    conversionsList: List<UnitConversionEntity>,
+    tierRows: List<TierRowDraft>,
+    variantRows: List<VariantRowDraft>,
+    wholesaleRows: List<WholesaleRowDraft>,
+    digitalTierRows: List<DigitalTierRangeDraft>,
+    onSave: (
+        ProductEntity,
+        List<UnitConversionEntity>,
+        List<ProductTierPriceEntity>,
+        List<ProductVariantEntity>,
+        List<WholesaleTierEntity>,
+        List<AdminTierRangeEntity>?
+    ) -> Unit
+) {
+    val newProduct = ProductEntity(
+        id = existingProductId,
+        barcode = barcode,
+        name = name.trim(),
+        category = category.trim().ifBlank { "Umum" },
+        baseUnit = baseUnit.trim().ifBlank { "pcs" },
+        purchasePrice = purchasePriceText.toDoubleOrNull() ?: 0.0,
+        sellingPrice = sellingPriceText.toDoubleOrNull() ?: 0.0,
+        stock = if (isDigitalProduct || hasNoStock) 999.0 else (stockText.toDoubleOrNull() ?: 0.0),
+        minStock = minStockText.toDoubleOrNull() ?: 5.0,
+        productType = if (isDigitalProduct) "DIGITAL" else "FISIK",
+        isUnlimitedStock = isDigitalProduct || hasNoStock,
+        isFlexiblePrice = isFlexiblePrice,
+        hasNoStock = isDigitalProduct || hasNoStock,
+        allowDecimalQty = allowDecimalQty,
+        autoBarcode = autoBarcode,
+        specialPrice = specialPriceText.toDoubleOrNull(),
+        strikePrice = strikePriceText.toDoubleOrNull(),
+        imageUri = imageUri,
+        adminTierGroupId = if (isDigitalProduct) selectedTierGroupId else null,
+        serviceCashAccountId = if (isDigitalProduct) selectedServiceCashId else null,
+        serviceDirection = if (isDigitalProduct) serviceDirection else "SETOR"
+    )
+    val parsedTiers = tierRows.mapNotNull { r ->
+        val q = r.qtyText.toDoubleOrNull()
+        val p = r.totalPriceText.toDoubleOrNull()
+        if (q != null && q > 0 && p != null && p >= 0) {
+            ProductTierPriceEntity(productId = newProduct.id, quantity = q, totalPrice = p)
+        } else null
+    }
+    val parsedVariants = variantRows.mapNotNull { r ->
+        val sp = r.sellingPriceText.toDoubleOrNull() ?: 0.0
+        val st = r.stockText.toDoubleOrNull() ?: 0.0
+        if (r.name.isNotBlank()) {
+            ProductVariantEntity(productId = newProduct.id, name = r.name.trim(), sellingPrice = sp, stock = st)
+        } else null
+    }
+    val parsedWholesales = wholesaleRows.mapNotNull { r ->
+        val mq = r.minQtyText.toDoubleOrNull()
+        val ppu = r.pricePerUnitText.toDoubleOrNull()
+        if (mq != null && mq > 0 && ppu != null && ppu >= 0) {
+            WholesaleTierEntity(productId = newProduct.id, minQty = mq, pricePerUnit = ppu)
+        } else null
+    }
+    val parsedDigitalTiers = if (
+        isDigitalProduct && (digitalTierModified || (selectedTierGroupId == null && digitalTierRows.isNotEmpty()))
+    ) {
+        digitalTierRows.mapNotNull { r ->
+            val minV = r.minText.toDoubleOrNull() ?: return@mapNotNull null
+            val maxV = r.maxText.toDoubleOrNull() ?: 0.0
+            val storeV = r.storeFeeText.toDoubleOrNull() ?: return@mapNotNull null
+            AdminTierRangeEntity(
+                serviceId = selectedTierGroupId ?: 0L,
+                minAmount = minV,
+                maxAmount = maxV,
+                storeAdminFee = storeV,
+                providerAdminFee = r.providerFeeText.toDoubleOrNull() ?: 0.0,
+                agentCommission = r.agentFeeText.toDoubleOrNull() ?: 0.0
+            )
+        }
+    } else null
+    onSave(newProduct, conversionsList.toList(), parsedTiers, parsedVariants, parsedWholesales, parsedDigitalTiers)
+}
+
+@Composable
+private fun ProductDialogHeader(
+    isEdit: Boolean,
+    isDigitalProduct: Boolean,
+    onSelectDigital: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            if (isEdit) "Edit produk" else "Tambah produk",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+        )
+        IconButton(onClick = onDismiss) {
+            Icon(Icons.Default.Close, contentDescription = "Tutup", tint = Slate400)
+        }
+    }
+
+    DesignSegmentedTabs(
+        options = listOf("FISIK" to "Fisik", "DIGITAL" to "Digital"),
+        selectedKey = if (isDigitalProduct) "DIGITAL" else "FISIK",
+        onSelect = { onSelectDigital(it == "DIGITAL") }
+    )
+}
+
+@Composable
+private fun ProductPhotoPickerCard(
+    imageUri: String,
+    productName: String,
+    isDigitalProduct: Boolean,
+    onPickPhoto: () -> Unit,
+    onClearPhoto: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = BgCanvas,
+        border = BorderStroke(1.dp, BorderDefault),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ProductThumbnail(
+                imageUri = imageUri,
+                contentDescription = productName.ifBlank { "Foto Produk" },
+                isDigital = isDigitalProduct,
+                size = 56.dp,
+                shape = RoundedCornerShape(10.dp),
+                iconSize = 26.dp
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Foto Produk (${if (isDigitalProduct) "Digital" else "Fisik"})",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                )
+                Text(
+                    text = if (imageUri.isBlank()) "Opsional • Tampil di kasir & daftar produk" else "Foto siap ditampilkan",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(
+                        onClick = onPickPhoto,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, AccentBlue),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.testTag("product_pick_photo_btn")
+                    ) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (imageUri.isBlank()) "Pilih Foto" else "Ganti Foto",
+                            color = AccentBlue,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (imageUri.isNotBlank()) {
+                        TextButton(
+                            onClick = onClearPhoto,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("Hapus", color = Rose500, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductBasicFieldsSection(
+    name: String,
+    nameError: Boolean,
+    category: String,
+    baseUnit: String,
+    purchasePriceText: String,
+    sellingPriceText: String,
+    strikePriceText: String,
+    specialPriceText: String,
+    isFlexiblePrice: Boolean,
+    onNameChange: (String) -> Unit,
+    onCategoryChange: (String) -> Unit,
+    onBaseUnitChange: (String) -> Unit,
+    onPurchasePriceChange: (String) -> Unit,
+    onSellingPriceChange: (String) -> Unit,
+    onStrikePriceChange: (String) -> Unit,
+    onSpecialPriceChange: (String) -> Unit,
+    onFlexibleChange: (Boolean) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        DesignLabeledTextField(
+            label = "Nama produk *",
+            value = name,
+            onValueChange = onNameChange,
+            placeholder = "mis. Buku tulis",
+            isError = nameError,
+            errorMessage = "Nama wajib diisi"
+        )
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DesignLabeledTextField(label = "Kategori", value = category, onValueChange = onCategoryChange, modifier = Modifier.weight(1.4f))
+            DesignLabeledTextField(label = "Satuan", value = baseUnit, onValueChange = onBaseUnitChange, modifier = Modifier.weight(1f))
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DesignLabeledTextField(
+                label = "Harga modal",
+                value = purchasePriceText,
+                onValueChange = onPurchasePriceChange,
+                prefixText = "Rp ",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            DesignLabeledTextField(
+                label = "Harga jual",
+                value = sellingPriceText,
+                onValueChange = onSellingPriceChange,
+                prefixText = "Rp ",
+                enabled = !isFlexiblePrice,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DesignLabeledTextField(
+                label = "Harga coret (opsional)",
+                value = strikePriceText,
+                onValueChange = onStrikePriceChange,
+                prefixText = "Rp ",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            DesignLabeledTextField(
+                label = "Harga khusus (opsional)",
+                value = specialPriceText,
+                onValueChange = onSpecialPriceChange,
+                prefixText = "Rp ",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Harga fleksibel", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = Slate900))
+                Text("Kasir isi nominal sendiri saat transaksi", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp))
+            }
+            Switch(
+                checked = isFlexiblePrice,
+                onCheckedChange = onFlexibleChange,
+                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = AccentBlue)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProductPhysicalStockSection(
+    allowDecimalQty: Boolean,
+    hasNoStock: Boolean,
+    stockText: String,
+    minStockText: String,
+    onDecimalChange: (Boolean) -> Unit,
+    onNoStockChange: (Boolean) -> Unit,
+    onStockChange: (String) -> Unit,
+    onMinStockChange: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Qty Desimal (kg, liter, meter)", fontSize = 13.sp, color = Slate800)
+            Switch(checked = allowDecimalQty, onCheckedChange = onDecimalChange, colors = SwitchDefaults.colors(checkedTrackColor = AccentBlue))
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Produk Tanpa Stok (Jasa/Unlimited)", fontSize = 13.sp, color = Slate800)
+            Switch(checked = hasNoStock, onCheckedChange = onNoStockChange, colors = SwitchDefaults.colors(checkedTrackColor = AccentBlue))
+        }
+        if (!hasNoStock) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesignLabeledTextField(
+                    label = "Stok awal (boleh minus)",
+                    value = stockText,
+                    onValueChange = onStockChange,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f)
+                )
+                DesignLabeledTextField(
+                    label = "Stok minimum",
+                    value = minStockText,
+                    onValueChange = onMinStockChange,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductDigitalServiceSection(
+    productName: String,
+    sellingPriceText: String,
+    isFlexiblePrice: Boolean,
+    previewNominalText: String,
+    serviceDirection: String,
+    selectedTierGroupId: Long?,
+    selectedServiceCashId: Long?,
+    tierServices: List<AdminTierServiceEntity>,
+    adminTiers: List<AdminTierWithRanges>,
+    cashAccounts: List<CashAccountEntity>,
+    digitalTierRows: SnapshotStateList<DigitalTierRangeDraft>,
+    digitalTierValidationError: String?,
+    onOpenTierManager: (() -> Unit)?,
+    onServiceDirectionChange: (String) -> Unit,
+    onSelectTierGroup: (Long?, Boolean) -> Unit,
+    onMarkTierModified: () -> Unit,
+    onPreviewNominalChange: (String) -> Unit,
+    onSelectServiceCash: (Long?) -> Unit
+) {
+    var expandedTierIdx by remember { mutableStateOf<Int?>(0) }
+
+    Column {
+        HorizontalDivider(color = BorderDefault)
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Koneksi Layanan Digital & Tarif Berjenjang", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+            if (onOpenTierManager != null) {
+                TextButton(onClick = onOpenTierManager, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+                    Text("Kelola Tarif", style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold))
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        DesignSegmentedTabs(
+            options = listOf("SETOR" to "Setor / Transfer", "TARIK" to "Tarik Tunai"),
+            selectedKey = serviceDirection,
+            onSelect = onServiceDirectionChange
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Grup Tarif Berjenjang Otomatis:", fontSize = 11.sp, color = Slate600)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            item {
+                DesignFilterChip(
+                    label = "Khusus Layanan Ini",
+                    selected = selectedTierGroupId == null,
+                    onClick = { onSelectTierGroup(null, true) }
+                )
+            }
+            items(tierServices) { ts ->
+                DesignFilterChip(
+                    label = ts.serviceName,
+                    selected = selectedTierGroupId == ts.id,
+                    onClick = {
+                        val nextId = if (selectedTierGroupId == ts.id) null else ts.id
+                        onSelectTierGroup(nextId, false)
+                    }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Daftar Biaya Admin Berjenjang (${digitalTierRows.size} rentang)",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+            )
+            Text("0/kosong = seterusnya", style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 10.sp))
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            digitalTierRows.forEachIndexed { idx, row ->
+                DigitalTierDraftRowCard(
+                    idx = idx,
+                    row = row,
+                    isExpanded = expandedTierIdx == idx,
+                    onToggleExpand = { expandedTierIdx = if (expandedTierIdx == idx) null else idx },
+                    onRemove = {
+                        onMarkTierModified()
+                        digitalTierRows.removeAt(idx)
+                        if (expandedTierIdx == idx) expandedTierIdx = null
+                    },
+                    onUpdateRow = { updated ->
+                        onMarkTierModified()
+                        digitalTierRows[idx] = updated
+                    }
+                )
+            }
+
+            if (digitalTierValidationError != null) {
+                DesignStatusBadge(text = digitalTierValidationError, type = BadgeType.DANGER)
+            }
+
+            OutlinedButton(
+                onClick = {
+                    onMarkTierModified()
+                    if (digitalTierRows.isEmpty()) {
+                        digitalTierRows.add(DigitalTierRangeDraft(minText = "1", maxText = "1000000", storeFeeText = "5000"))
+                    } else {
+                        val lastIdx = digitalTierRows.lastIndex
+                        val lastRow = digitalTierRows[lastIdx]
+                        val lastMin = lastRow.minText.toLongOrNull() ?: 1L
+                        var lastMax = lastRow.maxText.toLongOrNull() ?: 0L
+                        if (lastMax <= 0L) {
+                            lastMax = if (lastMin <= 1L) 1_000_000L else lastMin + 1_999_999L
+                            digitalTierRows[lastIdx] = lastRow.copy(maxText = lastMax.toString())
+                        }
+                        val lastAdmin = lastRow.storeFeeText.toLongOrNull() ?: 5_000L
+                        val nextMin = lastMax + 1L
+                        val nextMax = if (nextMin == 1_000_001L) 3_000_000L else nextMin + 1_999_999L
+                        digitalTierRows.add(
+                            DigitalTierRangeDraft(
+                                minText = nextMin.toString(),
+                                maxText = nextMax.toString(),
+                                storeFeeText = (lastAdmin + 5_000L).toString()
+                            )
+                        )
+                    }
+                    expandedTierIdx = digitalTierRows.lastIndex
+                },
+                border = BorderStroke(1.dp, AccentBlue.copy(alpha = 0.45f)),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = Sapphire50, contentColor = AccentBlue),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth().testTag("product_digital_add_tier_btn")
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Tambah Biaya Admin", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+        }
+
+        DigitalTierLivePreviewCard(
+            productName = productName,
+            sellingPriceText = sellingPriceText,
+            isFlexiblePrice = isFlexiblePrice,
+            previewNominalText = previewNominalText,
+            selectedTierGroupId = selectedTierGroupId,
+            adminTiers = adminTiers,
+            digitalTierRows = digitalTierRows,
+            onPreviewNominalChange = onPreviewNominalChange
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Akun Kas Layanan Terkait:", fontSize = 11.sp, color = Slate600)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(cashAccounts) { ca ->
+                DesignFilterChip(
+                    label = ca.accountName,
+                    selected = selectedServiceCashId == ca.id,
+                    onClick = { onSelectServiceCash(if (selectedServiceCashId == ca.id) null else ca.id) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DigitalTierDraftRowCard(
+    idx: Int,
+    row: DigitalTierRangeDraft,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onRemove: () -> Unit,
+    onUpdateRow: (DigitalTierRangeDraft) -> Unit
+) {
+    val minLabel = row.minText.toDoubleOrNull()?.let { "Rp ${formatRupiah(it)}" } ?: "Rp 0"
+    val maxLabel = row.maxText.toDoubleOrNull()?.takeIf { it > 0.0 }?.let { "Rp ${formatRupiah(it)}" } ?: "∞"
+    val feeLabel = row.storeFeeText.toDoubleOrNull()?.let { "Rp ${formatRupiah(it)}" } ?: "Rp 0"
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = BgCanvas,
+        border = BorderStroke(1.dp, if (isExpanded) AccentBlue.copy(alpha = 0.6f) else BorderDefault),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { onToggleExpand() },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Tingkat #${idx + 1}: $minLabel – $maxLabel",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "Admin Toko $feeLabel",
+                        style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 11.sp).tabular()
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onRemove,
+                        modifier = Modifier.size(32.dp).testTag("product_digital_remove_tier_$idx")
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Kurangi / Hapus Biaya Admin", tint = Rose500, modifier = Modifier.size(18.dp))
+                    }
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (isExpanded) "Tutup rincian" else "Edit rincian",
+                        tint = Slate500,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            if (isExpanded) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DesignLabeledTextField(
+                        label = "Dari",
+                        value = row.minText,
+                        onValueChange = { v -> onUpdateRow(row.copy(minText = v.filter { it.isDigit() })) },
+                        prefixText = "Rp ",
+                        placeholder = "1",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    DesignLabeledTextField(
+                        label = "Sampai",
+                        value = row.maxText,
+                        onValueChange = { v -> onUpdateRow(row.copy(maxText = v.filter { it.isDigit() })) },
+                        prefixText = "Rp ",
+                        placeholder = "Seterusnya",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DesignLabeledTextField(
+                        label = "Biaya Admin",
+                        value = row.storeFeeText,
+                        onValueChange = { v -> onUpdateRow(row.copy(storeFeeText = v.filter { it.isDigit() })) },
+                        prefixText = "Rp ",
+                        placeholder = "5000",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1.2f)
+                    )
+                    DesignLabeledTextField(
+                        label = "Penyedia",
+                        value = row.providerFeeText,
+                        onValueChange = { v -> onUpdateRow(row.copy(providerFeeText = v.filter { it.isDigit() })) },
+                        prefixText = "Rp ",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    DesignLabeledTextField(
+                        label = "Fee Agen",
+                        value = row.agentFeeText,
+                        onValueChange = { v -> onUpdateRow(row.copy(agentFeeText = v.filter { it.isDigit() })) },
+                        prefixText = "Rp ",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(0.9f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DigitalTierLivePreviewCard(
+    productName: String,
+    sellingPriceText: String,
+    isFlexiblePrice: Boolean,
+    previewNominalText: String,
+    selectedTierGroupId: Long?,
+    adminTiers: List<AdminTierWithRanges>,
+    digitalTierRows: List<DigitalTierRangeDraft>,
+    onPreviewNominalChange: (String) -> Unit
+) {
+    val draftRangesForPreview = remember(digitalTierRows.toList(), selectedTierGroupId) {
+        digitalTierRows.mapIndexedNotNull { idx, row ->
+            val minV = row.minText.toDoubleOrNull() ?: return@mapIndexedNotNull null
+            val maxV = row.maxText.toDoubleOrNull() ?: 0.0
+            val storeV = row.storeFeeText.toDoubleOrNull() ?: return@mapIndexedNotNull null
+            AdminTierRangeEntity(
+                id = (idx + 1).toLong(),
+                serviceId = selectedTierGroupId ?: 0L,
+                minAmount = minV,
+                maxAmount = maxV,
+                storeAdminFee = storeV,
+                providerAdminFee = row.providerFeeText.toDoubleOrNull() ?: 0.0,
+                agentCommission = row.agentFeeText.toDoubleOrNull() ?: 0.0
+            )
+        }
+    }
+    val activeTierWithRanges = remember(adminTiers, selectedTierGroupId, productName, draftRangesForPreview) {
+        if (draftRangesForPreview.isNotEmpty()) {
+            val baseService = selectedTierGroupId?.let { id -> adminTiers.find { it.service.id == id }?.service }
+                ?: AdminTierServiceEntity(id = 0L, serviceName = productName.ifBlank { "Layanan Ini" }, serviceCode = "CUSTOM")
+            AdminTierWithRanges(service = baseService, ranges = draftRangesForPreview)
+        } else {
+            selectedTierGroupId?.let { id -> adminTiers.find { it.service.id == id } }
+                ?: TierPricingResolver.resolveServiceGroup(adminTiers, null, productName)
+        }
+    }
+    val activeNominal = if (!isFlexiblePrice) (sellingPriceText.toDoubleOrNull() ?: 0.0) else (previewNominalText.toDoubleOrNull() ?: 0.0)
+    val autoTierResult = remember(activeTierWithRanges, activeNominal) {
+        TierPricingResolver.calculate(activeTierWithRanges, activeNominal)
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Sapphire50,
+        border = BorderStroke(1.dp, Sapphire200),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Otomatisasi Tarif Berjenjang", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800))
+                activeTierWithRanges?.let { resolved ->
+                    Text(resolved.service.serviceName, style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold))
+                }
+            }
+
+            if (isFlexiblePrice) {
+                DesignLabeledTextField(
+                    label = "Nominal Transaksi / Uji Deteksi (Rp)",
+                    value = previewNominalText,
+                    onValueChange = onPreviewNominalChange,
+                    prefixText = "Rp ",
+                    placeholder = "mis. 345000",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.testTag("product_dialog_preview_nominal")
+                )
+            } else {
+                Text(
+                    "Nominal dideteksi real-time dari kolom Harga Jual: Rp ${formatRupiah(activeNominal)}",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Slate600)
+                )
+            }
+
+            val matched = autoTierResult.matchedRange
+            if (matched != null) {
+                val maxLabel = if (matched.maxAmount > 0.0) "Rp ${formatRupiah(matched.maxAmount)}" else "Seterusnya"
+                DesignStatusBadge(text = "Cocok rentang: Rp ${formatRupiah(matched.minAmount)} – $maxLabel", type = BadgeType.SUCCESS)
+            } else if (activeNominal > 0.0) {
+                DesignStatusBadge(text = "Nominal di luar tabel rentang tarif", type = BadgeType.WARNING)
+            }
+
+            DesignLabeledTextField(
+                label = "Tarif Admin / Biaya Layanan (Terisi Otomatis)",
+                value = autoTierResult.storeAdminFee.toLong().toString(),
+                onValueChange = {},
+                prefixText = "Rp ",
+                enabled = false,
+                modifier = Modifier.testTag("product_dialog_auto_admin_fee")
+            )
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(
+                    "Laba Bersih: Rp ${formatRupiah(autoTierResult.netProfit)}",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Emerald700, fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    "Total Tagihan: Rp ${formatRupiah(autoTierResult.totalCustomerPayable)}",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Slate900, fontWeight = FontWeight.Bold)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductBarcodeSection(
+    barcode: String,
+    onBarcodeChange: (String) -> Unit,
+    onScanClick: () -> Unit,
+    onAutoGenerateClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        DesignLabeledTextField(
+            label = "Barcode / SKU",
+            value = barcode,
+            onValueChange = onBarcodeChange,
+            placeholder = "Scan atau ketik kode",
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedButton(
+            onClick = onScanClick,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, AccentBlue),
+            contentPadding = PaddingValues(horizontal = 10.dp),
+            modifier = Modifier.height(50.dp).testTag("product_dialog_scan_barcode_btn")
+        ) {
+            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Scan", fontSize = 12.sp, color = AccentBlue, fontWeight = FontWeight.Bold)
+        }
+        OutlinedButton(
+            onClick = onAutoGenerateClick,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, BorderInput),
+            contentPadding = PaddingValues(horizontal = 10.dp),
+            modifier = Modifier.height(50.dp)
+        ) {
+            Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Auto", fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun ProductVariantsSection(
+    variantRows: SnapshotStateList<VariantRowDraft>,
+    defaultPriceText: String
+) {
+    Column {
+        HorizontalDivider(color = BorderDefault)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Varian Produk (Ukuran / Warna)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            variantRows.forEachIndexed { idx, row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Top) {
+                    DesignLabeledTextField("Nama", row.name, { variantRows[idx] = row.copy(name = it) }, modifier = Modifier.weight(1.2f))
+                    DesignLabeledTextField("Harga", row.sellingPriceText, { v -> variantRows[idx] = row.copy(sellingPriceText = v.filter { it.isDigit() }) }, prefixText = "Rp ", modifier = Modifier.weight(1.2f))
+                    DesignLabeledTextField("Stok", row.stockText, { v -> variantRows[idx] = row.copy(stockText = v.filter { it.isDigit() }) }, modifier = Modifier.weight(0.7f))
+                    IconButton(onClick = { variantRows.removeAt(idx) }, modifier = Modifier.padding(top = 24.dp)) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus varian", tint = Rose500)
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = { variantRows.add(VariantRowDraft("Varian ${variantRows.size + 1}", defaultPriceText.ifBlank { "10000" }, "10")) },
+                border = BorderStroke(1.dp, BorderDefault),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceStrong, contentColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Tambah varian", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductWholesaleSection(
+    wholesaleRows: SnapshotStateList<WholesaleRowDraft>
+) {
+    Column {
+        HorizontalDivider(color = BorderDefault)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Harga grosir bertingkat (harga per unit >= min beli)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            wholesaleRows.forEachIndexed { idx, row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                    DesignLabeledTextField("Min qty (>=", row.minQtyText, { v -> wholesaleRows[idx] = row.copy(minQtyText = v.filter { it.isDigit() }) }, modifier = Modifier.weight(0.8f))
+                    DesignLabeledTextField("Harga / unit", row.pricePerUnitText, { v -> wholesaleRows[idx] = row.copy(pricePerUnitText = v.filter { it.isDigit() }) }, prefixText = "Rp ", modifier = Modifier.weight(1.3f))
+                    IconButton(onClick = { wholesaleRows.removeAt(idx) }, modifier = Modifier.padding(top = 24.dp)) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus grosir", tint = Rose500)
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val nextMin = (wholesaleRows.mapNotNull { it.minQtyText.toIntOrNull() }.maxOrNull() ?: 0) + 5
+                    wholesaleRows.add(WholesaleRowDraft(nextMin.toString(), ""))
+                },
+                border = BorderStroke(1.dp, BorderDefault),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceStrong, contentColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Tambah tingkat grosir", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductTierQtySection(
+    tierRows: SnapshotStateList<TierRowDraft>,
+    duplicateQtyKeys: Set<Int>
+) {
+    Column {
+        HorizontalDivider(color = BorderDefault)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Harga per jumlah beli", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+        Spacer(modifier = Modifier.height(6.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            tierRows.forEachIndexed { idx, row ->
+                val qtyInt = row.qtyText.toIntOrNull()
+                val isDup = qtyInt != null && duplicateQtyKeys.contains(qtyInt)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                    DesignLabeledTextField(
+                        label = "Jumlah beli",
+                        value = row.qtyText,
+                        onValueChange = { valStr -> tierRows[idx] = row.copy(qtyText = valStr.filter { it.isDigit() }) },
+                        isError = isDup,
+                        errorMessage = "Jumlah kembar",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(0.75f)
+                    )
+                    DesignLabeledTextField(
+                        label = "Total harga",
+                        value = row.totalPriceText,
+                        onValueChange = { valStr -> tierRows[idx] = row.copy(totalPriceText = valStr.filter { it.isDigit() }) },
+                        prefixText = "Rp ",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1.35f)
+                    )
+                    IconButton(onClick = { tierRows.removeAt(idx) }, modifier = Modifier.padding(top = 24.dp)) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus baris", tint = Rose500)
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val nextQty = (tierRows.mapNotNull { it.qtyText.toIntOrNull() }.maxOrNull() ?: 0) + 1
+                    tierRows.add(TierRowDraft(nextQty.toString(), ""))
+                },
+                border = BorderStroke(1.dp, BorderDefault),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceStrong, contentColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Tambah baris", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductUnitConversionsSection(
+    productId: Long,
+    baseUnit: String,
+    conversionsList: SnapshotStateList<UnitConversionEntity>
+) {
+    var conversionUnit by remember(productId) { mutableStateOf("") }
+    var conversionMultiplier by remember(productId) { mutableStateOf("") }
+
+    Column {
+        HorizontalDivider(color = BorderDefault)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Satuan grosir (opsional)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+            DesignLabeledTextField(label = "Satuan (dus)", value = conversionUnit, onValueChange = { conversionUnit = it }, modifier = Modifier.weight(1f))
+            DesignLabeledTextField(
+                label = "Isi ($baseUnit)",
+                value = conversionMultiplier,
+                onValueChange = { conversionMultiplier = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = {
+                    val mult = conversionMultiplier.toDoubleOrNull()?.takeIf { it > 0.0 } ?: 1.0
+                    if (conversionUnit.isNotBlank()) {
+                        conversionsList.add(UnitConversionEntity(productId = productId, unitName = conversionUnit.trim(), multiplier = mult))
+                        conversionUnit = ""
+                        conversionMultiplier = ""
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = SurfaceStrong, contentColor = Slate900),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.height(50.dp)
+            ) {
+                Text("+", fontWeight = FontWeight.Bold)
+            }
+        }
+        conversionsList.forEachIndexed { idx, conv ->
+            val multStr = if (conv.multiplier % 1.0 == 0.0) conv.multiplier.toLong().toString() else conv.multiplier.toString()
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("• 1 ${conv.unitName} = $multStr $baseUnit", style = MaterialTheme.typography.bodySmall, color = Slate600)
+                IconButton(onClick = { conversionsList.removeAt(idx) }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus satuan", tint = Rose500, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
     }
 }
 
