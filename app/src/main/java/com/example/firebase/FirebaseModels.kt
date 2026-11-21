@@ -264,3 +264,18 @@ data class CashierShiftDoc(
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
+
+@IgnoreExtraProperties
+data class LicenseDoc(
+    @DocumentId val id: String = "",
+    val licenseKey: String = "",
+    val storeName: String = "",
+    val ownerName: String = "",
+    val ownerEmail: String = "",
+    val deviceId: String = "",
+    val status: String = "ACTIVE",
+    val activatedAtMillis: Long = 0L,
+    val expiresAtMillis: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)

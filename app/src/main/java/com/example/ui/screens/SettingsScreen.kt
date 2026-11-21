@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
@@ -128,6 +129,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
     var showBackupInfoDialog by remember { mutableStateOf(false) }
 
     val isOwner = activeRole.equals("Owner", ignoreCase = true) || activeRole.equals("Admin", ignoreCase = true)
+    val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val activeUserId by viewModel.activeUserId.collectAsStateWithLifecycle()
     val primaryPrinter = printers.firstOrNull()
     val ppnPercent = (storeProfile?.ppnBp ?: 0) / 100.0
@@ -229,6 +231,17 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         subtitle = "Kembali ke halaman login untuk masuk akun Google atau ganti kasir",
                         onClick = { viewModel.logoutToLoginScreen() }
                     )
+                    if (isSuperAdmin) {
+                        HorizontalDivider(color = BorderDefault)
+                        SettingsMenuRow(
+                            icon = Icons.Default.AdminPanelSettings,
+                            title = "Dashboard Admin Pusat (Super Admin)",
+                            subtitle = "Kelola lisensi pelanggan & reset device binding",
+                            badgeText = "RAHASIA",
+                            badgeType = BadgeType.WARNING,
+                            onClick = { viewModel.navigateTo(Screen.SUPER_ADMIN) }
+                        )
+                    }
                 }
             }
         }

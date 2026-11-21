@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.MenuOpen
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -128,6 +129,7 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.StockInventoryScreen
 import com.example.ui.screens.TarifAdminScreen
 import com.example.ui.screens.WhatsAppScreen
+import com.example.ui.screens.SuperAdminScreen
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
@@ -269,6 +271,7 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.KONTAK -> "Pelanggan & Pemasok"
         Screen.PENGATURAN -> "Pengaturan"
         Screen.SEMUA_MENU -> "Semua Menu"
+        Screen.SUPER_ADMIN -> "Admin Pusat"
     }
 
     val (headerColor, headerIcon) = when (currentScreen) {
@@ -282,6 +285,7 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.AI_CHAT, Screen.WHATSAPP -> ModuleKasir to Icons.Default.AutoAwesome
         Screen.KEUANGAN, Screen.PENGELUARAN, Screen.PENDAPATAN,
         Screen.UTANG_PIUTANG, Screen.KONTAK, Screen.PENGATURAN, Screen.SEMUA_MENU -> ModulePengaturan to Icons.Default.Settings
+        Screen.SUPER_ADMIN -> ModulePengaturan to Icons.Default.AdminPanelSettings
     }
 
     val storeDisplayName = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya"
@@ -854,6 +858,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                             Screen.WHATSAPP -> WhatsAppScreen(viewModel)
                             Screen.KONTAK -> ContactsScreen(viewModel)
                             Screen.PENGATURAN -> SettingsScreen(viewModel)
+                            Screen.SUPER_ADMIN -> SuperAdminScreen(viewModel) { viewModel.navigateTo(Screen.PENGATURAN) }
                         }
                     }
                 }

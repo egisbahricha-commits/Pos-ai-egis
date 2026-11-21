@@ -20,6 +20,7 @@ import com.example.data.entity.SupplierEntity
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
@@ -979,6 +980,54 @@ class FirebaseSyncRepository(
         }
         pulledCount
     }
+
+    suspend fun getLicenseByKey(key: String): LicenseDoc? {
+        val docRef = db.collection("licenses").document(key)
+        return try {
+            val snap = docRef.get().await()
+            if (snap.exists()) {
+                snap.toObject(LicenseDoc::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun saveLicense(license: LicenseDoc) {
+        val key = license.licenseKey.ifBlank { license.id.ifBlank { "UNA-${System.currentTimeMillis()}" } }
+        val docRef = db.collection("licenses").document(key)
+        val payload = license.copy(id = key, licenseKey = key)
+        docRef.set(payload).await()
+    }
+
+    suspend fun getAllLicenses(): List<LicenseDoc> {
+        return try {
+            val snap = db.collection("licenses").get().await()
+            snap.toObjects(LicenseDoc::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun resetDeviceBinding(licenseKey: String) {
+        val docRef = db.collection("licenses").document(licenseKey)
+        docRef.update(
+            mapOf(
+                "deviceId" to "",
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
+    }
+
+    fun observeAllLicenses(): Flow<List<LicenseDoc>> =
+        db.collection("licenses")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObjects(
+                    LicenseDoc::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+            }
 
     private companion object {
         val VALID_ID_REGEX = Regex("^[a-zA-Z0-9_\\-]+$")

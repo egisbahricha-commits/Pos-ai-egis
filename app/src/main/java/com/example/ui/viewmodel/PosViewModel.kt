@@ -24,6 +24,7 @@ import com.example.firebase.FirebaseSessionStore
 import com.example.firebase.FirebaseSyncRepository
 import com.example.firebase.GoogleAuthHelper
 import com.example.firebase.GoogleSignInPayload
+import com.example.firebase.LicenseDoc
 import com.example.firebase.SyncMode
 import com.example.whatsapp.WhatsAppCommandCenter
 import com.example.whatsapp.WhatsAppMessageResponse
@@ -43,6 +44,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -73,7 +75,8 @@ enum class Screen {
     TARIF_ADMIN,
     CLOUD_MONITOR,
     SCAN_BARCODE,
-    MANAJEMEN_PRODUK
+    MANAJEMEN_PRODUK,
+    SUPER_ADMIN
 }
 
 data class ManualProductValidation(
@@ -330,6 +333,157 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         )
     )
     val authUiState: StateFlow<FirebaseAuthUiState> = _authUiState.asStateFlow()
+
+    val isSuperAdmin: StateFlow<Boolean> = _authUiState.map {
+        it.userEmail.equals("egisbahricha@gmail.com", ignoreCase = true)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    private val _allLicenses = MutableStateFlow<List<LicenseDoc>>(emptyList())
+    val allLicenses: StateFlow<List<LicenseDoc>> = _allLicenses.asStateFlow()
+
+    private var licensesJob: Job? = null
+
+    fun loadSuperAdminLicenses() {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            _userMessage.value = "Firebase tidak terhubung."
+            return
+        }
+        licensesJob?.cancel()
+        licensesJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val list = syncRepo.getAllLicenses()
+                _allLicenses.value = list
+            } catch (e: Exception) {
+                _userMessage.value = "Gagal memuat daftar lisensi: ${e.localizedMessage}"
+            }
+        }
+    }
+
+    fun resetCustomerDeviceBinding(licenseKey: String, onResult: (Boolean, String) -> Unit) {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            onResult(false, "Firebase tidak terhubung.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                syncRepo.resetDeviceBinding(licenseKey)
+                val list = syncRepo.getAllLicenses()
+                _allLicenses.value = list
+                withContext(Dispatchers.Main) {
+                    onResult(true, "Perangkat berhasil di-reset untuk lisensi $licenseKey")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal reset perangkat: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun generateNewLicense(storeName: String, ownerName: String, ownerEmail: String, onResult: (String?) -> Unit) {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            onResult(null)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val randomKey = "UNA-" + (1000..9999).random() + "-" + (1000..9999).random()
+                val doc = LicenseDoc(
+                    id = randomKey,
+                    licenseKey = randomKey,
+                    storeName = storeName,
+                    ownerName = ownerName,
+                    ownerEmail = ownerEmail,
+                    deviceId = "",
+                    status = "ACTIVE",
+                    activatedAtMillis = System.currentTimeMillis(),
+                    expiresAtMillis = System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000
+                )
+                syncRepo.saveLicense(doc)
+                val list = syncRepo.getAllLicenses()
+                _allLicenses.value = list
+                withContext(Dispatchers.Main) {
+                    onResult(randomKey)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(null)
+                }
+            }
+        }
+    }
+
+    fun activateLicenseKey(key: String, storeName: String, ownerName: String, email: String, onResult: (Boolean, String) -> Unit) {
+        val syncRepo = firebaseSyncRepository
+        val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var license = syncRepo?.getLicenseByKey(key.trim())
+                if (license == null) {
+                    if (syncRepo != null) {
+                        license = LicenseDoc(
+                            id = key.trim(),
+                            licenseKey = key.trim(),
+                            storeName = storeName,
+                            ownerName = ownerName,
+                            ownerEmail = email,
+                            deviceId = deviceId,
+                            status = "ACTIVE",
+                            activatedAtMillis = System.currentTimeMillis(),
+                            expiresAtMillis = System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000
+                        )
+                        syncRepo.saveLicense(license)
+                    } else {
+                        if (key.trim().length >= 6) {
+                            withContext(Dispatchers.Main) {
+                                repository.setSetting("license_activated", "true")
+                                repository.setSetting("license_key", key.trim())
+                                onResult(true, "Lisensi diaktifkan secara offline.")
+                            }
+                            return@launch
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                onResult(false, "Kunci lisensi tidak valid.")
+                            }
+                            return@launch
+                        }
+                    }
+                }
+
+                if (license.deviceId.isNotBlank() && license.deviceId != deviceId) {
+                    withContext(Dispatchers.Main) {
+                        onResult(false, "Lisensi ini sudah terikat di perangkat lain. Hubungi Admin Pusat (egisbahricha@gmail.com) untuk reset perangkat.")
+                    }
+                    return@launch
+                }
+
+                if (license.deviceId.isBlank() && syncRepo != null) {
+                    val updated = license.copy(deviceId = deviceId)
+                    syncRepo.saveLicense(updated)
+                }
+
+                repository.setSetting("license_activated", "true")
+                repository.setSetting("license_key", key.trim())
+
+                withContext(Dispatchers.Main) {
+                    onResult(true, "Lisensi berhasil diaktifkan!")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    if (key.trim().length >= 6) {
+                        repository.setSetting("license_activated", "true")
+                        repository.setSetting("license_key", key.trim())
+                        onResult(true, "Lisensi diaktifkan (Mode Offline).")
+                    } else {
+                        onResult(false, "Gagal aktivasi lisensi: ${e.localizedMessage}")
+                    }
+                }
+            }
+        }
+    }
 
     private val _cloudCashAccounts = MutableStateFlow<List<CashAccountDoc>>(emptyList())
     val cloudCashAccounts: StateFlow<List<CashAccountDoc>> = _cloudCashAccounts.asStateFlow()
