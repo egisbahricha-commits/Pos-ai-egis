@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.geraiunapos.egisba"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1"
+    versionCode = 3
+    versionName = "1.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -157,6 +157,6 @@ tasks.register<Copy>("exportApkToRepo") {
   dependsOn("assembleDebug")
   from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
   into(rootProject.layout.projectDirectory.dir("apk"))
-  rename("app-debug\\.apk", "gerai-una-pos-ai.apk")
+  rename("app-debug\\.apk", "kaslite-pos.apk")
 }
 

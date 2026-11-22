@@ -1,18 +1,18 @@
 package com.example
 
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.ai.GeraiUnaAIEngine
-import com.example.data.backup.KasGoBackupImporter
-import com.example.data.backup.KasGoImportOptions
+import com.example.data.backup.KasLiteBackupManager
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.AdminTierRangeEntity
 import com.example.data.entity.AdminTierServiceEntity
 import com.example.data.entity.AdminTierWithRanges
 import com.example.data.entity.BarcodeScanLogEntity
+import com.example.data.entity.CashAccountEntity
+import com.example.data.entity.CustomerEntity
 import com.example.data.entity.ExpenseEntity
 import com.example.data.entity.IncomeEntity
 import com.example.data.entity.ProductAliasEntity
@@ -20,27 +20,35 @@ import com.example.data.entity.ProductEntity
 import com.example.data.entity.ProductVariantEntity
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.SaleItemEntity
+import com.example.data.entity.StoreProfileEntity
 import com.example.data.entity.UnitConversionEntity
 import com.example.data.entity.UserAccountEntity
+import com.example.data.excel.ExcelProductReportManager
 import com.example.data.pricing.ProfitLossCalculator
 import com.example.data.pricing.ProfitLossPeriod
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.PosRepository
+import com.example.firebase.FirebaseSessionStore
+import com.example.firebase.LicenseAccessStatus
+import com.example.firebase.LocalLicenseSnapshot
 import com.example.ui.viewmodel.ALL_PERMISSION_MENU_KEYS
 import com.example.ui.viewmodel.BarcodeLookupOutcome
+import com.example.ui.viewmodel.DEMO_DURATION_MILLIS
 import com.example.ui.viewmodel.LocalAuthResult
+import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
+import com.example.ui.viewmodel.Screen
 import com.example.ui.viewmodel.authenticateLocalUser
+import com.example.ui.viewmodel.evaluateLocalLicenseState
+import com.example.ui.viewmodel.isScreenAllowedWhenDemoLocked
 import com.example.ui.viewmodel.resolveBarcodeToCartMatch
 import com.example.ui.viewmodel.validateAdminSetupInput
 import com.example.ui.viewmodel.validateManualProductInput
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import java.io.File
-import java.io.FileOutputStream
 import java.util.Calendar
 import java.util.Locale
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
+import java.util.zip.ZipInputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -126,11 +134,11 @@ class ExampleRobolectricTest {
         val storeDoc = com.example.firebase.UserStoreProfileDoc(
             id = "uid_owner_1",
             ownerId = "uid_owner_1",
-            name = "Gerai Una",
+            name = "KASLITE",
             ownerEmail = "egisbahricha@gmail.com"
         )
         assertEquals("uid_owner_1", storeDoc.ownerId)
-        assertEquals("Gerai Una", storeDoc.name)
+        assertEquals("KASLITE", storeDoc.name)
 
         val accountDoc = com.example.firebase.CashAccountDoc(
             id = "acc_1",
@@ -348,113 +356,301 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test KasGo kasgo backup inspect and import into Room`() = runBlocking {
+    fun `test KASLITE 3-day demo licensing, clock tamper protection, and product-only feature lock`() {
+        assertEquals("egisbahricha@gmail.com", SUPER_ADMIN_EMAIL)
+        assertEquals(3L * 24L * 60L * 60L * 1000L, DEMO_DURATION_MILLIS)
+
+        // 1. Unregistered snapshot
+        val unregistered = evaluateLocalLicenseState(null, 1_700_000_000_000L, "dev-1")
+        assertEquals(LicenseAccessStatus.UNREGISTERED, unregistered.accessStatus)
+
+        val start = 1_700_000_000_000L
+        val demoEnd = start + DEMO_DURATION_MILLIS
+        val demoSnap = LocalLicenseSnapshot(
+            licenseId = "lic_1",
+            licenseKey = "KASLITE-DEMO1",
+            ownerUid = "uid_cust",
+            ownerEmail = "pelanggan@gmail.com",
+            storeName = "Toko KASLITE",
+            deviceId = "dev-1",
+            planType = "DEMO",
+            status = "DEMO",
+            demoStartedAtMillis = start,
+            demoExpiresAtMillis = demoEnd,
+            maxSeenClockMillis = start + 1_000L
+        )
+
+        // 2. Demo active before expiry
+        val activeDemo = evaluateLocalLicenseState(demoSnap, start + 60_000L, "dev-1")
+        assertEquals(LicenseAccessStatus.DEMO_ACTIVE, activeDemo.accessStatus)
+        assertFalse(activeDemo.isLockedToProductOnly)
+        assertTrue(activeDemo.remainingMillis > 0L)
+
+        // 3. Demo expired after 3 days
+        val expiredDemo = evaluateLocalLicenseState(demoSnap, demoEnd + 1_000L, "dev-1")
+        assertEquals(LicenseAccessStatus.DEMO_EXPIRED, expiredDemo.accessStatus)
+        assertTrue(expiredDemo.isLockedToProductOnly)
+
+        // 4. Clock rollback blocked by monotonic maxSeenClockMillis
+        val rollbackSnap = demoSnap.copy(maxSeenClockMillis = demoEnd + 5_000L)
+        val rolledBack = evaluateLocalLicenseState(rollbackSnap, start + 10_000L, "dev-1")
+        assertEquals(LicenseAccessStatus.DEMO_EXPIRED, rolledBack.accessStatus)
+        assertTrue(rolledBack.isLockedToProductOnly)
+
+        // 5. Device mismatch & suspended locks
+        val mismatch = evaluateLocalLicenseState(demoSnap, start + 60_000L, "dev-other")
+        assertEquals(LicenseAccessStatus.DEVICE_MISMATCH, mismatch.accessStatus)
+        assertTrue(mismatch.isLockedToProductOnly)
+
+        val suspended = evaluateLocalLicenseState(demoSnap.copy(status = "SUSPENDED"), start + 60_000L, "dev-1")
+        assertEquals(LicenseAccessStatus.SUSPENDED, suspended.accessStatus)
+        assertTrue(suspended.isLockedToProductOnly)
+
+        // 6. FULL license unlocks all menus
+        val fullActive = evaluateLocalLicenseState(
+            demoSnap.copy(planType = "FULL", status = "ACTIVE", expiresAtMillis = 0L),
+            demoEnd + 10_000_000L,
+            "dev-1"
+        )
+        assertEquals(LicenseAccessStatus.FULL_ACTIVE, fullActive.accessStatus)
+        assertFalse(fullActive.isLockedToProductOnly)
+
+        // 7. Screen gating while locked: only Produk + Pengaturan
+        assertTrue(isScreenAllowedWhenDemoLocked(Screen.PRODUK))
+        assertTrue(isScreenAllowedWhenDemoLocked(Screen.MANAJEMEN_PRODUK))
+        assertTrue(isScreenAllowedWhenDemoLocked(Screen.SCAN_BARCODE))
+        assertTrue(isScreenAllowedWhenDemoLocked(Screen.PENGATURAN))
+        assertFalse(isScreenAllowedWhenDemoLocked(Screen.POS_KASIR))
+        assertFalse(isScreenAllowedWhenDemoLocked(Screen.DASHBOARD))
+        assertFalse(isScreenAllowedWhenDemoLocked(Screen.LAPORAN))
+        assertFalse(isScreenAllowedWhenDemoLocked(Screen.KEUANGAN))
+    }
+
+    @Test
+    fun `test Excel template export, CSV product import upsert, and 6-sheet XLSX report export`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val tempBuildDir = File(context.cacheDir, "kasgo_test_builder").apply {
+        val tempDir = File(context.cacheDir, "kaslite_excel_test").apply {
             deleteRecursively()
             mkdirs()
         }
-
-        // 1. Create sample SQLite database.db with Indonesian KasGo-style tables
-        val sampleDbFile = File(tempBuildDir, "database.db")
-        val sqlite = SQLiteDatabase.openOrCreateDatabase(sampleDbFile, null)
-        try {
-            sqlite.execSQL("CREATE TABLE kategori (id INTEGER PRIMARY KEY, nama TEXT)")
-            sqlite.execSQL("INSERT INTO kategori (id, nama) VALUES (1, 'Aksesoris HP')")
-
-            sqlite.execSQL("CREATE TABLE produk (id INTEGER PRIMARY KEY, nama_produk TEXT, kode_barcode TEXT, kategori_id INTEGER, satuan TEXT, harga_beli REAL, harga_jual REAL, stok REAL, foto TEXT)")
-            sqlite.execSQL("INSERT INTO produk VALUES (10, 'Kabel Data Type-C Fast', '899001122', 1, 'pcs', 12000, 25000, 18, 'photos/kabel.jpg')")
-
-            sqlite.execSQL("CREATE TABLE pelanggan (id INTEGER PRIMARY KEY, nama TEXT, no_hp TEXT, piutang REAL)")
-            sqlite.execSQL("INSERT INTO pelanggan VALUES (20, 'Pak Budi', '081299887766', 15000)")
-
-            sqlite.execSQL("CREATE TABLE akun_kas (id INTEGER PRIMARY KEY, nama_akun TEXT, saldo REAL, tipe TEXT)")
-            sqlite.execSQL("INSERT INTO akun_kas VALUES (1, 'Kas Konter Cell', 2500000, 'CASH')")
-
-            sqlite.execSQL("CREATE TABLE transaksi (id INTEGER PRIMARY KEY, no_nota TEXT, tanggal TEXT, nama_pelanggan TEXT, total_akhir REAL, metode_bayar TEXT, status TEXT)")
-            sqlite.execSQL("INSERT INTO transaksi VALUES (100, 'TRX-0099', '2026-11-18 10:30:00', 'Pak Budi', 50000, 'TUNAI', 'selesai')")
-
-            sqlite.execSQL("CREATE TABLE detail_transaksi (id INTEGER PRIMARY KEY, transaksi_id INTEGER, produk_id INTEGER, nama_produk TEXT, qty REAL, harga_jual REAL, subtotal REAL, harga_beli REAL)")
-            sqlite.execSQL("INSERT INTO detail_transaksi VALUES (1, 100, 10, 'Kabel Data Type-C Fast', 2, 25000, 50000, 12000)")
-
-            sqlite.execSQL("CREATE TABLE pengeluaran (id INTEGER PRIMARY KEY, kategori TEXT, nominal REAL, catatan TEXT)")
-            sqlite.execSQL("INSERT INTO pengeluaran VALUES (1, 'Token Listrik', 50000, 'Isi ulang konter')")
-        } finally {
-            sqlite.close()
-        }
-
-        // 2. Pack into kasgo-cell-data-test.kasgo ZIP archive
-        val kasgoArchive = File(tempBuildDir, "kasgo-cell-data-18112026-1703.kasgo")
-        ZipOutputStream(FileOutputStream(kasgoArchive)).use { zos ->
-            zos.putNextEntry(ZipEntry("manifest.json"))
-            zos.write("""{"appName":"KasGo Cell","versionName":"2.4","createdAt":"2026-11-18"}""".toByteArray())
-            zos.closeEntry()
-
-            zos.putNextEntry(ZipEntry("prefs/kasgo_settings.json"))
-            zos.write("""{"store_name":"UNA CELL BACKUP","store_phone":"0855123456","store_address":"Jl. Merdeka 1"}""".toByteArray())
-            zos.closeEntry()
-
-            zos.putNextEntry(ZipEntry("prefs/kasgo_document_number.json"))
-            zos.write("""{"last_trx":99}""".toByteArray())
-            zos.closeEntry()
-
-            zos.putNextEntry(ZipEntry("photos/kabel.jpg"))
-            zos.write(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte()))
-            zos.closeEntry()
-
-            zos.putNextEntry(ZipEntry("database.db"))
-            zos.write(sampleDbFile.readBytes())
-            zos.closeEntry()
-        }
-
-        // 3. Inspect .kasgo
-        val inspect = KasGoBackupImporter.inspectBackup(context, Uri.fromFile(kasgoArchive))
-        assertTrue("Inspect failed: ${inspect.errorMessage}", inspect.isValid)
-        assertEquals("UNA CELL BACKUP", inspect.storePreview.storeName)
-        assertEquals(1, inspect.productCount)
-        assertEquals(1, inspect.customerCount)
-        assertEquals(1, inspect.saleCount)
-        assertEquals(1, inspect.saleItemCount)
-        assertEquals(1, inspect.expenseCount)
-        assertEquals(1, inspect.photoCount)
-
-        // 4. Import into Room in-memory DB
-        val roomDb = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+        val db = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
             .allowMainThreadQueries()
             .build()
+
         try {
-            val summary = KasGoBackupImporter.importBackup(
-                context = context,
-                db = roomDb,
-                inspectResult = inspect,
-                options = KasGoImportOptions(replaceExisting = false, importStoreProfile = true)
+            // 1. Export & inspect .xlsx product template
+            val templateFile = File(tempDir, "Template_Produk_KASLITE.xlsx")
+            val tplRes = ExcelProductReportManager.exportProductTemplateXlsx(context, Uri.fromFile(templateFile))
+            assertTrue("Template export failed", tplRes.isSuccess)
+            assertTrue(templateFile.exists() && templateFile.length() > 0L)
+
+            val tplInspect = ExcelProductReportManager.inspectProductSpreadsheet(context, Uri.fromFile(templateFile))
+            assertEquals("XLSX", tplInspect.fileFormat)
+            assertEquals(2, tplInspect.rows.size)
+            assertEquals("Beras Ramos 5kg", tplInspect.rows.first().name)
+
+            // 2. Import template + custom CSV upsert
+            val tplSummary = ExcelProductReportManager.importProductsToRoom(db, tplInspect, updateExistingByBarcodeOrName = true)
+            assertEquals(2, tplSummary.insertedCount)
+
+            val csvFile = File(tempDir, "produk_baru.csv")
+            csvFile.writeText(
+                """
+                Nama Produk;Barcode;Kategori;Satuan;Harga Modal;Harga Jual;Stok;Tipe
+                Beras Ramos 5kg;8991002100011;Sembako;sak;65000;75000;30;FISIK
+                Gula Pasir 1kg;8991002100099;Sembako;pcs;15000;18000;40;FISIK
+                """.trimIndent()
             )
-            assertEquals(1, summary.productsImported)
-            assertEquals(1, summary.customersImported)
-            assertEquals(1, summary.salesImported)
-            assertEquals(1, summary.saleItemsImported)
-            assertEquals(1, summary.expensesImported)
-            assertEquals(1, summary.photosCopied)
-            assertTrue(summary.storeProfileUpdated)
+            val csvInspect = ExcelProductReportManager.inspectProductSpreadsheet(context, Uri.fromFile(csvFile))
+            assertEquals("CSV", csvInspect.fileFormat)
+            val csvSummary = ExcelProductReportManager.importProductsToRoom(db, csvInspect, updateExistingByBarcodeOrName = true)
+            assertEquals(1, csvSummary.insertedCount)
+            assertEquals(1, csvSummary.updatedCount)
 
-            val importedProducts = roomDb.productDao().getAllProductsList()
-            val importedProduct = importedProducts.first { it.name == "Kabel Data Type-C Fast" }
-            assertEquals("Aksesoris HP", importedProduct.category)
-            assertEquals(25000.0, importedProduct.sellingPrice, 0.01)
-            assertTrue(importedProduct.imageUri.isNotBlank())
-            assertTrue(File(importedProduct.imageUri).exists())
+            val allProducts = db.productDao().getAllProductsList()
+            assertEquals(3, allProducts.size)
+            val updatedBeras = allProducts.first { it.barcode == "8991002100011" }
+            assertEquals(75000.0, updatedBeras.sellingPrice, 0.01)
+            assertEquals(30.0, updatedBeras.stock, 0.01)
 
-            val store = roomDb.extendedPosDao().getStoreProfileSync()
-            assertEquals("UNA CELL BACKUP", store?.name)
-            assertEquals(99L, roomDb.extendedPosDao().getCounter("transaksi")?.value)
+            // 3. Populate sample sale & expense, then export 6-sheet Excel report
+            val now = System.currentTimeMillis()
+            val saleId = db.saleDao().insertSale(
+                SaleEntity(
+                    invoiceNumber = "TRX-XLSX-01",
+                    date = now,
+                    customerName = "Pelanggan Uji",
+                    cashierName = "Kasir",
+                    subtotal = 75000.0,
+                    finalAmount = 75000.0,
+                    amountPaid = 75000.0,
+                    status = "COMPLETED"
+                )
+            )
+            db.saleDao().insertSaleItems(
+                listOf(
+                    SaleItemEntity(
+                        saleId = saleId,
+                        productId = updatedBeras.id,
+                        productName = updatedBeras.name,
+                        quantity = 1.0,
+                        unit = "sak",
+                        unitPrice = 75000.0,
+                        subtotal = 75000.0,
+                        purchasePriceSnapshot = 65000.0
+                    )
+                )
+            )
+            db.financeDao().insertExpense(
+                ExpenseEntity(category = "Listrik", amount = 25000.0, date = now, notes = "Token")
+            )
 
-            val importedSales = roomDb.saleDao().getAllSales().first()
-            assertEquals(1, importedSales.size)
-            assertEquals("TRX-0099", importedSales.first().invoiceNumber)
-            assertEquals(50000.0, importedSales.first().finalAmount, 0.01)
+            val reportFile = File(tempDir, "Laporan_KASLITE_Test.xlsx")
+            val reportRes = ExcelProductReportManager.exportReportsXlsxToUri(
+                context = context,
+                db = db,
+                storeName = "Toko KASLITE",
+                targetUri = Uri.fromFile(reportFile)
+            )
+            assertTrue("Report XLSX export failed", reportRes.isSuccess)
+            val reportBytes = reportFile.readBytes()
+            assertTrue(reportBytes.size > 500)
+            assertEquals(0x50.toByte(), reportBytes[0]) // 'P'
+            assertEquals(0x4B.toByte(), reportBytes[1]) // 'K'
+
+            val zipEntries = mutableSetOf<String>()
+            ZipInputStream(reportFile.inputStream()).use { zis ->
+                while (true) {
+                    val e = zis.nextEntry ?: break
+                    zipEntries.add(e.name)
+                    zis.closeEntry()
+                }
+            }
+            assertTrue(zipEntries.contains("[Content_Types].xml"))
+            assertTrue(zipEntries.contains("xl/workbook.xml"))
+            for (i in 1..6) {
+                assertTrue("Missing sheet $i", zipEntries.contains("xl/worksheets/sheet$i.xml"))
+            }
         } finally {
-            roomDb.close()
-            tempBuildDir.deleteRecursively()
+            db.close()
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `test full kaslite backup export, inspect, and restore replace vs merge`(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val tempDir = File(context.cacheDir, "kaslite_backup_test").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val sourceDb = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val destDb = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sessionStore = FirebaseSessionStore(context)
+        val photoSrc = File(File(context.filesDir, "product_images").apply { mkdirs() }, "test_produk.jpg")
+
+        try {
+            photoSrc.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte()))
+
+            sourceDb.extendedPosDao().upsertStoreProfile(
+                StoreProfileEntity(id = 1L, name = "Toko KASLITE Jaya", phone = "08123456789")
+            )
+            sourceDb.cashAccountDao().insertCashAccount(
+                CashAccountEntity(accountName = "Kas Utama", balance = 500000.0, isDefault = true)
+            )
+            val prodId = sourceDb.productDao().insertProduct(
+                ProductEntity(
+                    name = "Minyak Goreng 2L",
+                    barcode = "899000999",
+                    sellingPrice = 36000.0,
+                    purchasePrice = 31000.0,
+                    stock = 12.0,
+                    imageUri = photoSrc.absolutePath
+                )
+            )
+            sourceDb.contactDao().insertCustomer(CustomerEntity(name = "Ibu Ani", phone = "081111222"))
+            val saleId = sourceDb.saleDao().insertSale(
+                SaleEntity(invoiceNumber = "TRX-BK-001", date = System.currentTimeMillis(), subtotal = 36000.0, finalAmount = 36000.0, status = "COMPLETED")
+            )
+            sourceDb.saleDao().insertSaleItems(
+                listOf(
+                    SaleItemEntity(
+                        saleId = saleId,
+                        productId = prodId,
+                        productName = "Minyak Goreng 2L",
+                        quantity = 1.0,
+                        unit = "pcs",
+                        unitPrice = 36000.0,
+                        subtotal = 36000.0,
+                        purchasePriceSnapshot = 31000.0
+                    )
+                )
+            )
+            sourceDb.extendedPosDao().insertUser(
+                UserAccountEntity(
+                    name = "Owner KASLITE",
+                    username = "owner",
+                    role = "owner",
+                    pinHash = GeraiUnaDatabase.hashPin("123456"),
+                    isActive = true
+                )
+            )
+
+            // 1. Export .kaslite archive
+            val backupFile = File(tempDir, "backup_toko.kaslite")
+            val exportRes = KasLiteBackupManager.exportBackupZipToUri(context, sourceDb, sessionStore, Uri.fromFile(backupFile))
+            assertTrue("Backup export failed", exportRes.isSuccess)
+            assertTrue((exportRes.getOrNull() ?: 0) >= 6)
+
+            // 2. Inspect .kaslite
+            val inspect = KasLiteBackupManager.inspectBackupZip(context, Uri.fromFile(backupFile))
+            assertEquals("Toko KASLITE Jaya", inspect.storeName)
+            assertEquals(1, inspect.productCount)
+            assertEquals(1, inspect.saleCount)
+            assertEquals(1, inspect.customerCount)
+            assertEquals(1, inspect.userAccountCount)
+            assertTrue(inspect.photoCount >= 1)
+
+            // 3. Full Replace restore into destDb
+            val replaceSummary = KasLiteBackupManager.restoreBackupZip(
+                context = context,
+                db = destDb,
+                sessionStore = sessionStore,
+                inspect = inspect,
+                replaceExisting = true
+            )
+            assertTrue(replaceSummary.replaceMode)
+            assertTrue(replaceSummary.restoredRecords >= 6)
+            assertEquals("Toko KASLITE Jaya", destDb.extendedPosDao().getStoreProfileSync()?.name)
+            val restoredProducts = destDb.productDao().getAllProductsList()
+            assertEquals(1, restoredProducts.size)
+            assertEquals("Minyak Goreng 2L", restoredProducts.first().name)
+            assertTrue(File(restoredProducts.first().imageUri).exists())
+            assertEquals(1, destDb.saleDao().getAllSales().first().size)
+            assertEquals(1, destDb.extendedPosDao().getAllUsersList().size)
+
+            // 4. Merge restore into destDb preserves existing and avoids duplicates
+            val mergeSummary = KasLiteBackupManager.restoreBackupZip(
+                context = context,
+                db = destDb,
+                sessionStore = sessionStore,
+                inspect = inspect,
+                replaceExisting = false
+            )
+            assertFalse(mergeSummary.replaceMode)
+            assertEquals(1, destDb.productDao().getAllProductsList().size)
+            assertEquals(1, destDb.saleDao().getAllSales().first().size)
+
+            KasLiteBackupManager.cleanupTemp(inspect)
+        } finally {
+            photoSrc.delete()
+            sourceDb.close()
+            destDb.close()
+            tempDir.deleteRecursively()
         }
     }
 

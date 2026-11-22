@@ -982,41 +982,329 @@ class FirebaseSyncRepository(
     }
 
     suspend fun getLicenseByKey(key: String): LicenseDoc? {
-        val docRef = db.collection("licenses").document(key)
+        val cleanKey = key.trim()
+        if (cleanKey.isBlank()) return null
+        val docRef = db.collection("licenses").document(cleanKey)
         return try {
             val snap = docRef.get().await()
             if (snap.exists()) {
                 snap.toObject(LicenseDoc::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
             } else null
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            null
+            handleFirestoreError(e, OperationType.GET, docRef.path)
+            throw e
         }
     }
 
-    suspend fun saveLicense(license: LicenseDoc) {
-        val key = license.licenseKey.ifBlank { license.id.ifBlank { "UNA-${System.currentTimeMillis()}" } }
-        val docRef = db.collection("licenses").document(key)
-        val payload = license.copy(id = key, licenseKey = key)
-        docRef.set(payload).await()
+    suspend fun fetchLicenseByOwnerUid(ownerUid: String): LicenseDoc? {
+        if (ownerUid.isBlank()) return null
+        val colRef = db.collection("licenses")
+        return try {
+            val snap = colRef.whereEqualTo("ownerUid", ownerUid).limit(1).get().await()
+            snap.documents.firstOrNull()?.toObject(
+                LicenseDoc::class.java,
+                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, colRef.path)
+            throw e
+        }
     }
 
     suspend fun getAllLicenses(): List<LicenseDoc> {
+        val colRef = db.collection("licenses")
         return try {
-            val snap = db.collection("licenses").get().await()
+            val snap = colRef.get().await()
             snap.toObjects(LicenseDoc::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                .sortedByDescending { maxOf(it.demoStartedAtMillis, it.activatedAtMillis) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            emptyList()
+            handleFirestoreError(e, OperationType.LIST, colRef.path)
+            throw e
+        }
+    }
+
+    suspend fun registerOrFetchCustomerLicense(
+        ownerUid: String,
+        ownerEmail: String,
+        ownerName: String,
+        storeName: String,
+        phone: String,
+        deviceId: String
+    ): LicenseDoc = withContext(Dispatchers.IO) {
+        val existing = fetchLicenseByOwnerUid(ownerUid)
+        if (existing != null) {
+            val targetDocId = existing.id.ifBlank { existing.licenseKey }
+            val docRef = db.collection("licenses").document(targetDocId)
+            val updates = mutableMapOf<String, Any>(
+                "storeName" to storeName.ifBlank { existing.storeName }.take(120),
+                "ownerName" to ownerName.ifBlank { existing.ownerName }.take(120),
+                "phone" to phone.ifBlank { existing.phone }.take(40),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (existing.deviceId.isBlank() && deviceId.isNotBlank()) {
+                updates["deviceId"] = deviceId.take(128)
+            }
+            try {
+                docRef.update(updates).await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
+            return@withContext getLicenseByKey(targetDocId) ?: existing.copy(
+                deviceId = existing.deviceId.ifBlank { deviceId },
+                storeName = storeName.ifBlank { existing.storeName },
+                ownerName = ownerName.ifBlank { existing.ownerName },
+                phone = phone.ifBlank { existing.phone }
+            )
+        }
+
+        val now = System.currentTimeMillis()
+        val demoExpires = now + DEMO_DURATION_MILLIS
+        val suffix = ownerUid.replace(Regex("[^a-zA-Z0-9]"), "").uppercase().take(6).ifBlank {
+            (100000..999999).random().toString()
+        }
+        val key = "KSL-$suffix-${(1000..9999).random()}"
+        val docRef = db.collection("licenses").document(key)
+        val payloadMap = hashMapOf<String, Any>(
+            "licenseKey" to key,
+            "storeName" to storeName.ifBlank { "Toko KASLITE" }.take(120),
+            "ownerName" to ownerName.ifBlank { ownerEmail.substringBefore("@") }.take(120),
+            "ownerEmail" to ownerEmail.trim().take(200),
+            "ownerUid" to ownerUid.take(128),
+            "phone" to phone.trim().take(40),
+            "deviceId" to deviceId.take(128),
+            "planType" to "DEMO",
+            "status" to "DEMO",
+            "demoStartedAtMillis" to now,
+            "demoExpiresAtMillis" to demoExpires,
+            "activatedAtMillis" to 0L,
+            "expiresAtMillis" to 0L,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        try {
+            docRef.set(payloadMap).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            throw e
+        }
+        getLicenseByKey(key) ?: LicenseDoc(
+            id = key,
+            licenseKey = key,
+            storeName = storeName.ifBlank { "Toko KASLITE" },
+            ownerName = ownerName.ifBlank { ownerEmail.substringBefore("@") },
+            ownerEmail = ownerEmail.trim(),
+            ownerUid = ownerUid,
+            phone = phone.trim(),
+            deviceId = deviceId,
+            planType = "DEMO",
+            status = "DEMO",
+            demoStartedAtMillis = now,
+            demoExpiresAtMillis = demoExpires,
+            activatedAtMillis = 0L,
+            expiresAtMillis = 0L
+        )
+    }
+
+    suspend fun activateLicenseKeyForCustomer(
+        licenseKey: String,
+        ownerUid: String,
+        ownerEmail: String,
+        ownerName: String,
+        storeName: String,
+        phone: String,
+        deviceId: String
+    ): LicenseDoc = withContext(Dispatchers.IO) {
+        val cleanKey = licenseKey.trim()
+        require(cleanKey.matches(VALID_ID_REGEX)) { "Format kunci lisensi tidak valid." }
+        val existing = getLicenseByKey(cleanKey)
+            ?: throw IllegalStateException("Kunci lisensi \"$cleanKey\" tidak ditemukan di server Admin Pusat.")
+
+        if (existing.status == "SUSPENDED") {
+            throw IllegalStateException("Lisensi ini sedang dinonaktifkan oleh Admin Pusat.")
+        }
+        if (existing.deviceId.isNotBlank() && existing.deviceId != deviceId) {
+            throw IllegalStateException("Lisensi sudah terikat di perangkat lain. Hubungi Admin Pusat (egisbahricha@gmail.com) untuk reset perangkat.")
+        }
+        if (existing.ownerUid.isNotBlank() && existing.ownerUid != ownerUid) {
+            throw IllegalStateException("Lisensi ini terdaftar atas akun Google lain (${existing.ownerEmail}).")
+        }
+
+        val docId = existing.id.ifBlank { cleanKey }
+        val docRef = db.collection("licenses").document(docId)
+        val updates = mutableMapOf<String, Any>(
+            "deviceId" to deviceId.take(128),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        if (existing.ownerUid.isBlank()) {
+            updates["ownerUid"] = ownerUid.take(128)
+            updates["ownerEmail"] = ownerEmail.trim().take(200)
+        }
+        if (storeName.isNotBlank()) updates["storeName"] = storeName.take(120)
+        if (ownerName.isNotBlank()) updates["ownerName"] = ownerName.take(120)
+        if (phone.isNotBlank()) updates["phone"] = phone.take(40)
+
+        try {
+            docRef.update(updates).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+        getLicenseByKey(docId) ?: existing.copy(deviceId = deviceId, ownerUid = ownerUid)
+    }
+
+    suspend fun createSuperAdminLicense(
+        storeName: String,
+        ownerName: String,
+        ownerEmail: String,
+        phone: String = "",
+        planType: String = "FULL"
+    ): LicenseDoc = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val key = "KSL-" + (1000..9999).random() + "-" + (1000..9999).random()
+        val isFull = planType.equals("FULL", ignoreCase = true)
+        val status = if (isFull) "ACTIVE" else "DEMO"
+        val demoStart = if (isFull) 0L else now
+        val demoExp = if (isFull) 0L else now + DEMO_DURATION_MILLIS
+        val activatedAt = if (isFull) now else 0L
+        val expiresAt = if (isFull) now + 3650L * 24 * 60 * 60 * 1000L else 0L
+
+        val docRef = db.collection("licenses").document(key)
+        val payloadMap = hashMapOf<String, Any>(
+            "licenseKey" to key,
+            "storeName" to storeName.trim().ifBlank { "Toko KASLITE" }.take(120),
+            "ownerName" to ownerName.trim().take(120),
+            "ownerEmail" to ownerEmail.trim().take(200),
+            "ownerUid" to "",
+            "phone" to phone.trim().take(40),
+            "deviceId" to "",
+            "planType" to if (isFull) "FULL" else "DEMO",
+            "status" to status,
+            "demoStartedAtMillis" to demoStart,
+            "demoExpiresAtMillis" to demoExp,
+            "activatedAtMillis" to activatedAt,
+            "expiresAtMillis" to expiresAt,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        try {
+            docRef.set(payloadMap).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            throw e
+        }
+        getLicenseByKey(key) ?: LicenseDoc(
+            id = key,
+            licenseKey = key,
+            storeName = storeName.trim(),
+            ownerName = ownerName.trim(),
+            ownerEmail = ownerEmail.trim(),
+            phone = phone.trim(),
+            planType = if (isFull) "FULL" else "DEMO",
+            status = status,
+            demoStartedAtMillis = demoStart,
+            demoExpiresAtMillis = demoExp,
+            activatedAtMillis = activatedAt,
+            expiresAtMillis = expiresAt
+        )
+    }
+
+    suspend fun superAdminActivateFull(licenseKey: String, durationDays: Int = 3650) {
+        val now = System.currentTimeMillis()
+        val exp = now + durationDays.toLong() * 24L * 60L * 60L * 1000L
+        val docRef = db.collection("licenses").document(licenseKey)
+        try {
+            docRef.update(
+                mapOf(
+                    "planType" to "FULL",
+                    "status" to "ACTIVE",
+                    "activatedAtMillis" to now,
+                    "expiresAtMillis" to exp,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun superAdminExtendDemo(licenseKey: String, days: Int = 3) {
+        val now = System.currentTimeMillis()
+        val docRef = db.collection("licenses").document(licenseKey)
+        try {
+            val snap = docRef.get().await()
+            val currentExp = snap.getLong("demoExpiresAtMillis") ?: 0L
+            val base = maxOf(now, currentExp)
+            val newExp = base + days.toLong() * 24L * 60L * 60L * 1000L
+            docRef.update(
+                mapOf(
+                    "planType" to "DEMO",
+                    "status" to "DEMO",
+                    "demoStartedAtMillis" to (snap.getLong("demoStartedAtMillis")?.takeIf { it > 0L } ?: now),
+                    "demoExpiresAtMillis" to newExp,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun superAdminSetSuspended(licenseKey: String, suspended: Boolean) {
+        val docRef = db.collection("licenses").document(licenseKey)
+        try {
+            val snap = docRef.get().await()
+            val planType = snap.getString("planType") ?: "DEMO"
+            val nextStatus = if (suspended) "SUSPENDED" else if (planType == "FULL") "ACTIVE" else "DEMO"
+            docRef.update(
+                mapOf(
+                    "status" to nextStatus,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
         }
     }
 
     suspend fun resetDeviceBinding(licenseKey: String) {
         val docRef = db.collection("licenses").document(licenseKey)
-        docRef.update(
-            mapOf(
-                "deviceId" to "",
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-        ).await()
+        try {
+            docRef.update(
+                mapOf(
+                    "deviceId" to "",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
     }
 
     fun observeAllLicenses(): Flow<List<LicenseDoc>> =
@@ -1031,5 +1319,6 @@ class FirebaseSyncRepository(
 
     private companion object {
         val VALID_ID_REGEX = Regex("^[a-zA-Z0-9_\\-]+$")
+        const val DEMO_DURATION_MILLIS = 3L * 24L * 60L * 60L * 1000L
     }
 }

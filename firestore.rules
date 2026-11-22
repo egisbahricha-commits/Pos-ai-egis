@@ -16,6 +16,12 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isSuperAdmin() {
+      return isSignedIn() &&
+             request.auth.token.email == 'egisbahricha@gmail.com' &&
+             request.auth.token.email_verified == true;
+    }
+
     function isValidId(id) {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -419,6 +425,82 @@ service cloud.firestore {
                          incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'localId', 'cashierName', 'startTimeMillis', 'endTimeMillis', 'startingCash', 'cashIn', 'cashOut', 'totalCashSales', 'expectedClosingCash', 'actualClosingCash', 'difference', 'status', 'notes', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(shiftId);
       }
+    }
+
+    function isValidLicenseDoc(data) {
+      return data.keys().hasAll(['licenseKey', 'storeName', 'ownerName', 'ownerEmail', 'ownerUid', 'phone', 'deviceId', 'planType', 'status', 'demoStartedAtMillis', 'demoExpiresAtMillis', 'activatedAtMillis', 'expiresAtMillis', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['licenseKey', 'storeName', 'ownerName', 'ownerEmail', 'ownerUid', 'phone', 'deviceId', 'planType', 'status', 'demoStartedAtMillis', 'demoExpiresAtMillis', 'activatedAtMillis', 'expiresAtMillis', 'createdAt', 'updatedAt']) &&
+             data.licenseKey is string && data.licenseKey.size() >= 3 && data.licenseKey.size() <= 128 &&
+             data.storeName is string && data.storeName.size() <= 120 &&
+             data.ownerName is string && data.ownerName.size() <= 120 &&
+             data.ownerEmail is string && data.ownerEmail.size() >= 3 && data.ownerEmail.size() <= 200 &&
+             data.ownerUid is string && data.ownerUid.size() <= 128 &&
+             data.phone is string && data.phone.size() <= 40 &&
+             data.deviceId is string && data.deviceId.size() <= 128 &&
+             data.planType in ['DEMO', 'FULL'] &&
+             data.status in ['DEMO', 'ACTIVE', 'EXPIRED', 'SUSPENDED'] &&
+             data.demoStartedAtMillis is int && data.demoStartedAtMillis >= 0 &&
+             data.demoExpiresAtMillis is int && data.demoExpiresAtMillis >= 0 &&
+             data.activatedAtMillis is int && data.activatedAtMillis >= 0 &&
+             data.expiresAtMillis is int && data.expiresAtMillis >= 0;
+    }
+
+    // Customer License & Super Admin Registry
+    match /licenses/{licenseId} {
+      allow get: if isSignedIn() && isValidId(licenseId) && (
+        isSuperAdmin() ||
+        existing().ownerUid == request.auth.uid ||
+        existing().ownerUid == ''
+      );
+      allow list: if isSuperAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(licenseId) &&
+                       isValidTimestampsCreate(incoming()) &&
+                       isValidLicenseDoc(incoming()) && (
+                         isSuperAdmin() ||
+                         (
+                           incoming().ownerUid == request.auth.uid &&
+                           incoming().ownerEmail == request.auth.token.email &&
+                           incoming().planType == 'DEMO' &&
+                           incoming().status == 'DEMO' &&
+                           incoming().demoStartedAtMillis > 0 &&
+                           incoming().demoExpiresAtMillis >= incoming().demoStartedAtMillis &&
+                           incoming().demoExpiresAtMillis <= incoming().demoStartedAtMillis + 259260000
+                         )
+                       );
+      allow update: if isSignedIn() && isValidId(licenseId) &&
+                       isValidTimestampsUpdate() &&
+                       isValidLicenseDoc(incoming()) && (
+                         isSuperAdmin() ||
+                         (
+                           existing().ownerUid == request.auth.uid &&
+                           incoming().ownerUid == existing().ownerUid &&
+                           incoming().ownerEmail == existing().ownerEmail &&
+                           incoming().licenseKey == existing().licenseKey &&
+                           incoming().planType == existing().planType &&
+                           incoming().status == existing().status &&
+                           incoming().demoStartedAtMillis == existing().demoStartedAtMillis &&
+                           incoming().demoExpiresAtMillis == existing().demoExpiresAtMillis &&
+                           incoming().activatedAtMillis == existing().activatedAtMillis &&
+                           incoming().expiresAtMillis == existing().expiresAtMillis &&
+                           (existing().deviceId == '' || incoming().deviceId == existing().deviceId) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['deviceId', 'storeName', 'ownerName', 'phone', 'updatedAt'])
+                         ) ||
+                         (
+                           existing().ownerUid == '' &&
+                           existing().deviceId == '' &&
+                           incoming().ownerUid == request.auth.uid &&
+                           incoming().ownerEmail == request.auth.token.email &&
+                           incoming().licenseKey == existing().licenseKey &&
+                           incoming().planType == existing().planType &&
+                           incoming().status == existing().status &&
+                           incoming().demoStartedAtMillis == existing().demoStartedAtMillis &&
+                           incoming().demoExpiresAtMillis == existing().demoExpiresAtMillis &&
+                           incoming().activatedAtMillis == existing().activatedAtMillis &&
+                           incoming().expiresAtMillis == existing().expiresAtMillis &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'ownerEmail', 'deviceId', 'storeName', 'ownerName', 'phone', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSuperAdmin() && isValidId(licenseId);
     }
   }
 }

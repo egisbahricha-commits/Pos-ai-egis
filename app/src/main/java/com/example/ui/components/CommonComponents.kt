@@ -393,7 +393,7 @@ fun DesignToastSnackbar(snackbarData: SnackbarData) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KasGoTopBar(
+fun KasLiteTopBar(
     title: String,
     activeRole: String,
     onMenuClick: () -> Unit,
@@ -496,7 +496,7 @@ fun KasGoTopBar(
 }
 
 @Composable
-fun KasGoListRowItem(
+fun KasLiteListRowItem(
     title: String,
     subtitle: String,
     icon: ImageVector,
@@ -580,7 +580,7 @@ fun KasGoListRowItem(
 }
 
 @Composable
-fun KasGoStatCard(
+fun KasLiteStatCard(
     title: String,
     value: String,
     subtitle: String,
@@ -658,7 +658,7 @@ fun KasGoStatCard(
 }
 
 @Composable
-fun KasGoSearchBar(
+fun KasLiteSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
     placeholder: String = "Cari...",
@@ -756,7 +756,7 @@ fun KasGoSearchBar(
 }
 
 @Composable
-fun KasGoSectionHeader(
+fun KasLiteSectionHeader(
     title: String,
     subtitle: String? = null,
     actionText: String? = null,
@@ -843,7 +843,7 @@ fun ReceiptDialog(
             append("Kembalian  : Rp ${formatRupiah(sale.changeAmount)}\n")
         }
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-        append("${storeProfile?.receiptFooter?.ifBlank { "Terima kasih telah berbelanja di Gerai Una!" } ?: "Terima kasih telah berbelanja di Gerai Una!"}\n")
+        append("${storeProfile?.receiptFooter?.ifBlank { "Terima kasih telah berbelanja di KASLITE!" } ?: "Terima kasih telah berbelanja di KASLITE!"}\n")
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -1252,7 +1252,7 @@ fun GeraiUnaTopBar(
     cartItemCount: Int = 0,
     onCartClick: (() -> Unit)? = null
 ) {
-    KasGoTopBar(title, activeRole, onMenuClick, cartItemCount, onCartClick)
+    KasLiteTopBar(title, activeRole, onMenuClick, cartItemCount, onCartClick)
 }
 
 @Composable
@@ -1266,7 +1266,7 @@ fun MetricCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null
 ) {
-    KasGoStatCard(title, value, subtitle, icon, accentColor, modifier, null, onClick)
+    KasLiteStatCard(title, value, subtitle, icon, accentColor, modifier, null, onClick)
 }
 
 @Composable
@@ -1278,7 +1278,7 @@ fun BarcodeSearchBar(
     modifier: Modifier = Modifier,
     onBarcodeSubmit: ((String) -> Unit)? = null
 ) {
-    KasGoSearchBar(query, onQueryChange, placeholder, onBarcodeScanClick, modifier, onBarcodeSubmit)
+    KasLiteSearchBar(query, onQueryChange, placeholder, onBarcodeScanClick, modifier, onBarcodeSubmit)
 }
 
 fun formatRupiah(amount: Double): String {

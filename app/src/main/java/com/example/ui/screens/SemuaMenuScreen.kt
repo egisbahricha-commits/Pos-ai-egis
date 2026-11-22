@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Edit
@@ -67,12 +66,12 @@ import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
 
-data class KasGoMenuCategory(
+data class KasLiteMenuCategory(
     val title: String,
-    val items: List<KasGoMenuItem>
+    val items: List<KasLiteMenuItem>
 )
 
-data class KasGoMenuItem(
+data class KasLiteMenuItem(
     val title: String,
     val subtitle: String,
     val icon: ImageVector,
@@ -86,71 +85,70 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
     val userAccounts by viewModel.userAccounts.collectAsStateWithLifecycle()
 
     val allMenuGroups = listOf(
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "PENJUALAN & TRANSAKSI",
             items = listOf(
-                KasGoMenuItem("Kasir POS", "Buka kasir & scan barang", Icons.Default.PointOfSale, Sapphire800, Screen.POS_KASIR),
-                KasGoMenuItem("Riwayat Transaksi", "Struk selesai & retur", Icons.AutoMirrored.Filled.ReceiptLong, Emerald700, Screen.RIWAYAT_TRANSAKSI),
-                KasGoMenuItem("Shift Kasir", "Buka/tutup shift & cek kas laci kasir", Icons.Default.AccountBalanceWallet, Sapphire600, Screen.POS_KASIR)
+                KasLiteMenuItem("Kasir POS", "Buka kasir & scan barang", Icons.Default.PointOfSale, Sapphire800, Screen.POS_KASIR),
+                KasLiteMenuItem("Riwayat Transaksi", "Struk selesai & retur", Icons.AutoMirrored.Filled.ReceiptLong, Emerald700, Screen.RIWAYAT_TRANSAKSI),
+                KasLiteMenuItem("Shift Kasir", "Buka/tutup shift & cek kas laci kasir", Icons.Default.AccountBalanceWallet, Sapphire600, Screen.POS_KASIR)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "PRODUK & KATALOG",
             items = listOf(
-                KasGoMenuItem("Kelola Produk Manual", "Tambah, ubah harga, stok & barcode item", Icons.Default.Edit, ModuleProduk, Screen.MANAJEMEN_PRODUK),
-                KasGoMenuItem("Daftar Produk", "Katalog lengkap, paket & promo", Icons.Default.Category, Sapphire800, Screen.PRODUK),
-                KasGoMenuItem("Kategori & Satuan", "Kelola satuan & konversi", Icons.Default.Store, Sapphire600, Screen.PRODUK),
-                KasGoMenuItem("Barcode Scanner", "Scan kamera langsung masuk keranjang", Icons.Default.QrCodeScanner, Amber500, Screen.SCAN_BARCODE)
+                KasLiteMenuItem("Kelola Produk Manual", "Tambah, ubah harga, stok & barcode item", Icons.Default.Edit, ModuleProduk, Screen.MANAJEMEN_PRODUK),
+                KasLiteMenuItem("Daftar Produk", "Katalog lengkap, paket & promo", Icons.Default.Category, Sapphire800, Screen.PRODUK),
+                KasLiteMenuItem("Kategori & Satuan", "Kelola satuan & konversi", Icons.Default.Store, Sapphire600, Screen.PRODUK),
+                KasLiteMenuItem("Barcode Scanner", "Scan kamera langsung masuk keranjang", Icons.Default.QrCodeScanner, Amber500, Screen.SCAN_BARCODE)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "PEMBELIAN & SUPLAI",
             items = listOf(
-                KasGoMenuItem("Pembelian Toko", "Faktur belanja ke grosir", Icons.Default.ShoppingBag, Sapphire800, Screen.PEMBELIAN),
-                KasGoMenuItem("Penerimaan Barang", "Catat kulakan (+stok otomatis)", Icons.Default.LocalShipping, Emerald700, Screen.PEMBELIAN),
-                KasGoMenuItem("Utang Pemasok", "Kelola utang belanja tempo", Icons.Default.CreditCard, Rose500, Screen.UTANG_PIUTANG)
+                KasLiteMenuItem("Pembelian Toko", "Faktur belanja ke grosir", Icons.Default.ShoppingBag, Sapphire800, Screen.PEMBELIAN),
+                KasLiteMenuItem("Penerimaan Barang", "Catat kulakan (+stok otomatis)", Icons.Default.LocalShipping, Emerald700, Screen.PEMBELIAN),
+                KasLiteMenuItem("Utang Pemasok", "Kelola utang belanja tempo", Icons.Default.CreditCard, Rose500, Screen.UTANG_PIUTANG)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "INVENTARIS & GUDANG",
             items = listOf(
-                KasGoMenuItem("Stok Barang", "Status & nilai persediaan fisik", Icons.Default.Inventory, Sapphire800, Screen.STOK_INVENTARIS),
-                KasGoMenuItem("Stok Opname", "Penyesuaian stok riil", Icons.Default.Edit, Amber500, Screen.STOK_INVENTARIS),
-                KasGoMenuItem("Kartu Stok", "Riwayat mutasi keluar/masuk", Icons.Default.History, Sapphire600, Screen.STOK_INVENTARIS)
+                KasLiteMenuItem("Stok Barang", "Status & nilai persediaan fisik", Icons.Default.Inventory, Sapphire800, Screen.STOK_INVENTARIS),
+                KasLiteMenuItem("Stok Opname", "Penyesuaian stok riil", Icons.Default.Edit, Amber500, Screen.STOK_INVENTARIS),
+                KasLiteMenuItem("Kartu Stok", "Riwayat mutasi keluar/masuk", Icons.Default.History, Sapphire600, Screen.STOK_INVENTARIS)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "KEUANGAN & MULTI KAS",
             items = listOf(
-                KasGoMenuItem("Pantau Cloud Firebase", "Sinkronisasi multi-perangkat & arus kas", Icons.Default.CloudQueue, AccentBlue, Screen.CLOUD_MONITOR),
-                KasGoMenuItem("Multi Kas & Saldo Bank", "Kas Toko, Pulsa, Saldo BRILink", Icons.Default.AccountBalanceWallet, Sapphire800, Screen.MULTI_KAS),
-                KasGoMenuItem("Tarif Admin Transfer & PPOB", "Tabel biaya admin & fee agen", Icons.Default.CreditCard, HeaderTeal, Screen.TARIF_ADMIN),
-                KasGoMenuItem("Arus Kas Toko", "Kas masuk vs kas keluar", Icons.Default.AccountBalance, Sapphire800, Screen.KEUANGAN),
-                KasGoMenuItem("Biaya Operasional", "Listrik, air & biaya usaha", Icons.Default.MoneyOff, Rose500, Screen.PENGELUARAN),
-                KasGoMenuItem("Pendapatan Jasa", "Pemasukan non-penjualan", Icons.Default.Paid, Emerald700, Screen.PENGELUARAN),
-                KasGoMenuItem("Piutang Pelanggan", "Daftar bon tempo pelanggan", Icons.Default.CreditCard, Amber500, Screen.UTANG_PIUTANG)
+                KasLiteMenuItem("Multi Kas & Saldo Bank", "Kas Toko, Pulsa, Saldo BRILink", Icons.Default.AccountBalanceWallet, Sapphire800, Screen.MULTI_KAS),
+                KasLiteMenuItem("Tarif Admin Transfer & PPOB", "Tabel biaya admin & fee agen", Icons.Default.CreditCard, HeaderTeal, Screen.TARIF_ADMIN),
+                KasLiteMenuItem("Arus Kas Toko", "Kas masuk vs kas keluar", Icons.Default.AccountBalance, Sapphire800, Screen.KEUANGAN),
+                KasLiteMenuItem("Biaya Operasional", "Listrik, air & biaya usaha", Icons.Default.MoneyOff, Rose500, Screen.PENGELUARAN),
+                KasLiteMenuItem("Pendapatan Jasa", "Pemasukan non-penjualan", Icons.Default.Paid, Emerald700, Screen.PENGELUARAN),
+                KasLiteMenuItem("Piutang Pelanggan", "Daftar bon tempo pelanggan", Icons.Default.CreditCard, Amber500, Screen.UTANG_PIUTANG)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "LAPORAN & ANALITIK",
             items = listOf(
-                KasGoMenuItem("Laporan Penjualan", "Ringkasan omzet & faktur", Icons.Default.BarChart, Sapphire800, Screen.LAPORAN),
-                KasGoMenuItem("Laporan Laba Rugi", "Margin & laba bersih riil", Icons.Default.TrendingUp, Emerald700, Screen.LAPORAN),
-                KasGoMenuItem("Kirim Laporan WA", "Bagikan rekap ke WhatsApp", Icons.Default.Sms, Emerald700, Screen.LAPORAN)
+                KasLiteMenuItem("Laporan Penjualan", "Ringkasan omzet & faktur", Icons.Default.BarChart, Sapphire800, Screen.LAPORAN),
+                KasLiteMenuItem("Laporan Laba Rugi", "Margin & laba bersih riil", Icons.Default.TrendingUp, Emerald700, Screen.LAPORAN),
+                KasLiteMenuItem("Kirim Laporan WA", "Bagikan rekap ke WhatsApp", Icons.Default.Sms, Emerald700, Screen.LAPORAN)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "AI ASSISTANT & WHATSAPP",
             items = listOf(
-                KasGoMenuItem("AI Chat Gerai Una", "Asisten toko cerdas", Icons.Default.AutoAwesome, Emerald700, Screen.AI_CHAT),
-                KasGoMenuItem("WhatsApp Integration", "Two-way command & webhook", Icons.Default.Chat, Sapphire800, Screen.WHATSAPP)
+                KasLiteMenuItem("AI Chat KASLITE", "Asisten toko cerdas", Icons.Default.AutoAwesome, Emerald700, Screen.AI_CHAT),
+                KasLiteMenuItem("WhatsApp Integration", "Two-way command & webhook", Icons.Default.Chat, Sapphire800, Screen.WHATSAPP)
             )
         ),
-        KasGoMenuCategory(
+        KasLiteMenuCategory(
             title = "SISTEM & PENGATURAN",
             items = listOf(
-                KasGoMenuItem("Kontak Pelanggan & Grosir", "Buku alamat pelanggan", Icons.Default.People, Sapphire800, Screen.KONTAK),
-                KasGoMenuItem("Pengaturan & Hak Akses", "Profil toko, backup & role kasir", Icons.Default.Settings, Slate700, Screen.PENGATURAN)
+                KasLiteMenuItem("Kontak Pelanggan & Grosir", "Buku alamat pelanggan", Icons.Default.People, Sapphire800, Screen.KONTAK),
+                KasLiteMenuItem("Pengaturan & Hak Akses", "Profil toko, backup & role kasir", Icons.Default.Settings, Slate700, Screen.PENGATURAN)
             )
         )
     )

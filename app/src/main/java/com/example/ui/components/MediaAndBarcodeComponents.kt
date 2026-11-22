@@ -646,7 +646,7 @@ object ReceiptPrintHelper {
     ): Boolean {
         return try {
             val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager ?: return false
-            val storeName = storeProfile?.name?.ifBlank { "GERAI UNA SMART POS" } ?: "GERAI UNA SMART POS"
+            val storeName = storeProfile?.name?.ifBlank { "KASLITE POS" } ?: "KASLITE POS"
             val storeAddress = storeProfile?.address.orEmpty()
             val storePhone = storeProfile?.phone.orEmpty()
             val footer = storeProfile?.receiptFooter?.ifBlank { "Terima kasih telah berbelanja!" }

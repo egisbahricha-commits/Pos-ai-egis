@@ -175,6 +175,9 @@ interface PurchaseDao {
     @Query("SELECT * FROM purchase_items WHERE purchaseId = :purchaseId")
     suspend fun getItemsForPurchase(purchaseId: Long): List<PurchaseItemEntity>
 
+    @Query("SELECT * FROM purchase_items")
+    fun getAllPurchaseItems(): Flow<List<PurchaseItemEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPurchase(purchase: PurchaseEntity): Long
 
@@ -417,6 +420,9 @@ interface ExtendedPosDao {
     @Query("SELECT * FROM document_counters WHERE counterName = :name LIMIT 1")
     suspend fun getCounter(name: String): DocumentCounterEntity?
 
+    @Query("SELECT * FROM document_counters")
+    suspend fun getAllCountersList(): List<DocumentCounterEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCounter(counter: DocumentCounterEntity)
 
@@ -577,6 +583,9 @@ interface ExtendedPosDao {
     suspend fun insertShiftCashMovement(movement: ShiftCashMovementEntity): Long
 
     // Cloud Sync Mappings
+    @Query("SELECT * FROM cloud_sync_mappings")
+    suspend fun getAllCloudMappingsList(): List<CloudSyncMappingEntity>
+
     @Query("SELECT * FROM cloud_sync_mappings WHERE entityType = :entityType AND remoteId = :remoteId LIMIT 1")
     suspend fun getMappingByRemote(entityType: String, remoteId: String): CloudSyncMappingEntity?
 

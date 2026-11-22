@@ -108,7 +108,7 @@ import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
-import com.example.ui.components.KasGoSearchBar
+import com.example.ui.components.KasLiteSearchBar
 import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
@@ -285,7 +285,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            KasGoSearchBar(
+                            KasLiteSearchBar(
                                 query = searchQuery,
                                 onQueryChange = { searchQuery = it },
                                 placeholder = "Cari produk atau scan barcode...",
@@ -356,7 +356,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         .background(SurfaceWhite)
                         .padding(16.dp)
                 ) {
-                    KasGoOrderCartPanel(
+                    KasLiteOrderCartPanel(
                         cart = cart,
                         productImages = productImageMap,
                         decimalProductIds = decimalProductIds,
@@ -400,7 +400,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        KasGoSearchBar(
+                        KasLiteSearchBar(
                             query = searchQuery,
                             onQueryChange = { searchQuery = it },
                             placeholder = "Cari produk atau scan barcode...",
@@ -575,7 +575,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                KasGoOrderCartPanel(
+                KasLiteOrderCartPanel(
                     cart = cart,
                     productImages = productImageMap,
                     decimalProductIds = decimalProductIds,
@@ -611,7 +611,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
 
     // Payment Dialog / Modal
     if (isPaymentModalOpen) {
-        KasGoPaymentDialog(
+        KasLitePaymentDialog(
             totalAmount = cartFinalTotal,
             selectedCustomer = selectedCustomer,
             cashAccounts = cashAccounts,
@@ -1047,7 +1047,7 @@ fun ProductCatalogGrid(
                 } else 0.0
                 val linkedAccountName = product.serviceCashAccountId?.let { cashAccountNameMap[it] }
 
-                KasGoProductCard(
+                KasLiteProductCard(
                     product = product,
                     cartCount = cartCount,
                     hasConversions = conversions.isNotEmpty(),
@@ -1062,7 +1062,7 @@ fun ProductCatalogGrid(
 }
 
 @Composable
-fun KasGoProductCard(
+fun KasLiteProductCard(
     product: ProductEntity,
     cartCount: Int,
     hasConversions: Boolean,
@@ -1237,7 +1237,7 @@ fun KasGoProductCard(
 }
 
 @Composable
-fun KasGoOrderCartPanel(
+fun KasLiteOrderCartPanel(
     cart: List<CartItem>,
     productImages: Map<Long, String> = emptyMap(),
     decimalProductIds: Set<Long> = emptySet(),
@@ -1608,7 +1608,7 @@ fun KasGoOrderCartPanel(
 }
 
 @Composable
-fun KasGoPaymentDialog(
+fun KasLitePaymentDialog(
     totalAmount: Double,
     selectedCustomer: CustomerEntity?,
     cashAccounts: List<CashAccountEntity> = emptyList(),

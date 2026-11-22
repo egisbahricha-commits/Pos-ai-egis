@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Gerai Una POS AI"
+rootProject.name = "KASLITE"
 
 include(":app")

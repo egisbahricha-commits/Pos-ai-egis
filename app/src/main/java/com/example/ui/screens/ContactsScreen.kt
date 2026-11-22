@@ -65,7 +65,7 @@ import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
-import com.example.ui.components.KasGoSearchBar
+import com.example.ui.components.KasLiteSearchBar
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -128,7 +128,7 @@ fun ContactsScreen(viewModel: PosViewModel) {
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                KasGoSearchBar(
+                KasLiteSearchBar(
                     query = searchQuery,
                     onQueryChange = { searchQuery = it },
                     placeholder = "Cari nama atau no. HP kontak...",

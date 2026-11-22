@@ -47,7 +47,7 @@ class FirestoreSyncRuleTest : FirestoreEmulatorTestBase() {
         val profile = UserStoreProfileDoc(
             id = uid,
             ownerId = uid,
-            name = "Gerai Una Test",
+            name = "KASLITE Test",
             address = "Jl. Merdeka 10",
             phone = "0812345678",
             businessType = "keduanya",
@@ -61,7 +61,7 @@ class FirestoreSyncRuleTest : FirestoreEmulatorTestBase() {
             repository.upsertStoreProfile(uid, profile)
             val fetched = repository.getStoreProfile(uid)
             assertNotNull(fetched)
-            assertEquals("Gerai Una Test", fetched?.name)
+            assertEquals("KASLITE Test", fetched?.name)
             assertEquals(uid, fetched?.ownerId)
             assertNotNull(fetched?.createdAt)
         }

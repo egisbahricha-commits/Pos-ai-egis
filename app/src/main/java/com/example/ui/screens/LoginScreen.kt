@@ -34,16 +34,17 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -89,8 +90,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.UserAccountEntity
 import com.example.firebase.GoogleAuthHelper
+import com.example.firebase.LicenseAccessStatus
+import com.example.firebase.LicenseUiState
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
 import kotlinx.coroutines.launch
 
 @Composable
@@ -98,23 +102,29 @@ fun LoginScreen(viewModel: PosViewModel) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val authState by viewModel.authUiState.collectAsStateWithLifecycle()
+    val licenseUiState by viewModel.licenseUiState.collectAsStateWithLifecycle()
     val userAccounts by viewModel.userAccounts.collectAsStateWithLifecycle()
     val storeProfile by viewModel.storeProfile.collectAsStateWithLifecycle()
 
     val isFirstTimeSetup = userAccounts.isEmpty()
 
-    // Setup Admin Utama state
+    // Setup Admin Utama / Registrasi Pelanggan state
     var setupStoreName by remember(storeProfile?.name) {
         mutableStateOf(
             storeProfile?.name?.takeIf { it.isNotBlank() && it != "Toko Saya" } ?: ""
         )
     }
-    var setupFullName by remember { mutableStateOf("") }
+    var setupFullName by remember(authState.verifiedGoogleName) {
+        mutableStateOf(authState.verifiedGoogleName.ifBlank { "" })
+    }
+    var setupPhone by remember(storeProfile?.phone) {
+        mutableStateOf(storeProfile?.phone ?: "")
+    }
     var setupUsername by remember { mutableStateOf("admin") }
     var setupPin by remember { mutableStateOf("") }
     var setupConfirmPin by remember { mutableStateOf("") }
 
-    // Login user state
+    // Login user state (harian offline)
     var loginUsername by remember(userAccounts) {
         mutableStateOf(
             userAccounts.firstOrNull { it.isActive }?.username ?: ""
@@ -122,25 +132,58 @@ fun LoginScreen(viewModel: PosViewModel) {
     }
     var loginPin by remember { mutableStateOf("") }
 
-    // Secret 7-tap trigger for Super Admin
+    // Secret 7-tap trigger for Super Admin (real Firebase Google Sign-In)
     var logoTapCount by remember { mutableStateOf(0) }
     var showSecretAdminDialog by remember { mutableStateOf(false) }
-    var secretEmailInput by remember { mutableStateOf("") }
-    var secretError by remember { mutableStateOf<String?>(null) }
+    var isSecretAdminBusy by remember { mutableStateOf(false) }
+    var secretAdminError by remember { mutableStateOf<String?>(null) }
 
-    val launchInteractiveGoogleSignIn: () -> Unit = {
+    val launchCustomerGoogleVerify: () -> Unit = {
         coroutineScope.launch {
             viewModel.setAuthLoading(true)
             val result = GoogleAuthHelper.signInWithGoogle(context)
             result.onSuccess { payload ->
-                viewModel.signInWithGooglePayload(payload, setupStoreName.ifBlank { storeProfile?.name ?: "" })
+                viewModel.verifyCustomerGoogleForRegistration(payload)
             }.onFailure { err ->
-                viewModel.setAuthError(err.localizedMessage ?: "Gagal masuk dengan akun Google.")
+                viewModel.setAuthError(err.localizedMessage ?: "Gagal verifikasi akun Google.")
             }
         }
     }
 
-    val displayBrandTitle = storeProfile?.name?.takeIf { it.isNotBlank() } ?: "Kasir POS"
+    val launchRefreshLicenseWithGoogle: () -> Unit = {
+        coroutineScope.launch {
+            val result = GoogleAuthHelper.signInWithGoogle(context)
+            result.onSuccess { payload ->
+                viewModel.refreshCustomerLicenseOnline(payload)
+            }.onFailure { err ->
+                viewModel.setAuthError(err.localizedMessage ?: "Gagal menghubungkan akun Google untuk cek lisensi.")
+            }
+        }
+    }
+
+    val launchSuperAdminGoogleSignIn: () -> Unit = {
+        coroutineScope.launch {
+            isSecretAdminBusy = true
+            secretAdminError = null
+            val result = GoogleAuthHelper.signInWithGoogle(context)
+            result.onSuccess { payload ->
+                if (!payload.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+                    GoogleAuthHelper.clearCredentialState(context)
+                    isSecretAdminBusy = false
+                    secretAdminError = "Email ${payload.email} bukan Admin Pusat resmi ($SUPER_ADMIN_EMAIL)."
+                } else {
+                    isSecretAdminBusy = false
+                    showSecretAdminDialog = false
+                    viewModel.signInSuperAdminWithGooglePayload(payload)
+                }
+            }.onFailure { err ->
+                isSecretAdminBusy = false
+                secretAdminError = err.localizedMessage ?: "Gagal login Google Admin Pusat."
+            }
+        }
+    }
+
+    val displayBrandTitle = storeProfile?.name?.takeIf { it.isNotBlank() && it != "Toko Saya" } ?: "KASLITE"
 
     BoxWithConstraints(
         modifier = Modifier
@@ -181,14 +224,16 @@ fun LoginScreen(viewModel: PosViewModel) {
                                         logoTapCount++
                                         if (logoTapCount >= 7) {
                                             logoTapCount = 0
+                                            secretAdminError = null
                                             showSecretAdminDialog = true
                                         }
                                     }
+                                    .testTag("kaslite_logo_tap_tablet")
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         Icons.Default.PointOfSale,
-                                        contentDescription = "Logo Aplikasi Kasir",
+                                        contentDescription = "Logo KASLITE",
                                         tint = Color.White,
                                         modifier = Modifier.size(30.dp)
                                     )
@@ -205,9 +250,9 @@ fun LoginScreen(viewModel: PosViewModel) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = if (isFirstTimeSetup)
-                                    "Siapkan akun Admin Utama terlebih dahulu sebelum mulai mencatat produk, stok, dan transaksi toko."
+                                    "Daftar wajib online dengan email Google untuk mengaktifkan Demo 3 Hari. Setelah aktif, seluruh data toko berjalan 100% lokal di perangkat."
                                 else
-                                    "Masuk menggunakan akun Admin Utama atau akun pengguna/kasir yang telah dibuat oleh Admin Utama.",
+                                    "Masuk menggunakan Username & PIN lokal Anda. Data transaksi, produk, dan kas tersimpan aman 100% lokal di perangkat.",
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = Color.White.copy(alpha = 0.88f),
                                     lineHeight = 22.sp
@@ -217,26 +262,26 @@ fun LoginScreen(viewModel: PosViewModel) {
 
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             BrandFeatureRow(
-                                icon = Icons.Default.AdminPanelSettings,
-                                title = "Kontrol Admin Utama & Staf",
-                                subtitle = "Admin Utama mengelola akun kasir, PIN akses, dan batasan tiap menu"
+                                icon = Icons.Default.VerifiedUser,
+                                title = "Daftar Online • Trial Demo 3 Hari",
+                                subtitle = "Registrasi email Google tercatat otomatis di pusat lisensi untuk keamanan toko Anda"
                             )
                             BrandFeatureRow(
                                 icon = Icons.Default.AccountBalanceWallet,
-                                title = "Bersih & Siap Pakai",
-                                subtitle = "Tanpa data contoh bawaan — semua produk, kas, dan laporan dimulai dari data toko Anda"
+                                title = "Data Toko 100% Lokal di HP",
+                                subtitle = "Transaksi kasir, stok, Excel & backup .kaslite tersimpan penuh di perangkat tanpa ketergantungan cloud"
                             )
                             BrandFeatureRow(
-                                icon = Icons.Default.Devices,
-                                title = "Dukungan Cloud Firebase Opsional",
-                                subtitle = "Hubungkan akun Google kapan saja untuk sinkronisasi multi-perangkat"
+                                icon = Icons.Default.AdminPanelSettings,
+                                title = "Kontrol Admin & Staf Kasir",
+                                subtitle = "Kelola akun kasir, PIN 6 digit, dan izin akses menu secara mandiri"
                             )
                         }
 
                         Text(
-                            text = "Sistem Point of Sale Terintegrasi",
+                            text = "KASLITE • Data Toko Tersimpan 100% Lokal di Perangkat",
                             style = MaterialTheme.typography.labelMedium.copy(
-                                color = Color.White.copy(alpha = 0.72f)
+                                color = Color.White.copy(alpha = 0.78f)
                             )
                         )
                     }
@@ -251,13 +296,16 @@ fun LoginScreen(viewModel: PosViewModel) {
                     contentAlignment = Alignment.Center
                 ) {
                     LazyColumn(
-                        modifier = Modifier.widthIn(max = 480.dp),
+                        modifier = Modifier.widthIn(max = 500.dp),
                         contentPadding = PaddingValues(vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         item {
                             AuthContentCard(
                                 isFirstTimeSetup = isFirstTimeSetup,
+                                verifiedGoogleEmail = authState.verifiedGoogleEmail,
+                                onVerifyGoogleClick = launchCustomerGoogleVerify,
+                                onChangeGoogleEmailClick = { viewModel.clearVerifiedRegistrationEmail() },
                                 setupStoreName = setupStoreName,
                                 onSetupStoreNameChange = {
                                     setupStoreName = it
@@ -266,6 +314,11 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 setupFullName = setupFullName,
                                 onSetupFullNameChange = {
                                     setupFullName = it
+                                    viewModel.clearAuthMessages()
+                                },
+                                setupPhone = setupPhone,
+                                onSetupPhoneChange = {
+                                    setupPhone = it
                                     viewModel.clearAuthMessages()
                                 },
                                 setupUsername = setupUsername,
@@ -283,10 +336,11 @@ fun LoginScreen(viewModel: PosViewModel) {
                                     setupConfirmPin = it.filter { ch -> ch.isDigit() }.take(6)
                                     viewModel.clearAuthMessages()
                                 },
-                                onSubmitAdminSetup = {
-                                    viewModel.setupMainAdmin(
+                                onSubmitCustomerRegistration = {
+                                    viewModel.completeOnlineCustomerRegistration(
                                         storeName = setupStoreName,
                                         fullName = setupFullName,
+                                        phone = setupPhone,
                                         username = setupUsername,
                                         pin = setupPin,
                                         confirmPin = setupConfirmPin
@@ -306,11 +360,12 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 onSubmitLogin = {
                                     viewModel.loginWithLocalCredentials(loginUsername, loginPin)
                                 },
+                                licenseUiState = licenseUiState,
+                                onRefreshLicenseClick = launchRefreshLicenseWithGoogle,
                                 isLoading = authState.isAuthLoading,
                                 lastEmail = authState.lastEmail,
                                 authError = authState.authError,
-                                authInfo = authState.authInfoMessage,
-                                onGoogleSignInClick = launchInteractiveGoogleSignIn
+                                authInfo = authState.authInfoMessage
                             )
                         }
                     }
@@ -329,7 +384,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                         shape = RoundedCornerShape(18.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .widthIn(max = 480.dp)
+                            .widthIn(max = 500.dp)
                     ) {
                         Box(
                             modifier = Modifier
@@ -344,21 +399,23 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(
                                         modifier = Modifier
-                                            .size(44.dp)
+                                            .size(46.dp)
                                             .clip(RoundedCornerShape(12.dp))
                                             .background(Color.White.copy(alpha = 0.16f))
                                             .clickable {
                                                 logoTapCount++
                                                 if (logoTapCount >= 7) {
                                                     logoTapCount = 0
+                                                    secretAdminError = null
                                                     showSecretAdminDialog = true
                                                 }
-                                            },
+                                            }
+                                            .testTag("kaslite_logo_tap_mobile"),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
                                             Icons.Default.PointOfSale,
-                                            contentDescription = "Logo Kasir",
+                                            contentDescription = "Logo KASLITE",
                                             tint = Color.White,
                                             modifier = Modifier.size(24.dp)
                                         )
@@ -374,11 +431,11 @@ fun LoginScreen(viewModel: PosViewModel) {
                                         )
                                         Text(
                                             text = if (isFirstTimeSetup)
-                                                "Aktivasi Awal Admin Utama"
+                                                "Pendaftaran Online • Demo 3 Hari"
                                             else
-                                                "Autentikasi Pengguna Wajib",
+                                                "Data Toko Tersimpan 100% Lokal",
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                color = Color.White.copy(alpha = 0.85f)
+                                                color = Color.White.copy(alpha = 0.88f)
                                             )
                                         )
                                     }
@@ -386,9 +443,9 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 Spacer(modifier = Modifier.height(10.dp))
                                 Text(
                                     text = if (isFirstTimeSetup)
-                                        "Buat akun Admin Utama untuk mulai menggunakan kasir. Anda juga dapat menambahkan akun kasir nanti di Pengaturan."
+                                        "Daftar online dengan email Google untuk mengaktifkan Demo 3 Hari KASLITE. Data produk & transaksi tersimpan 100% lokal di HP Anda."
                                     else
-                                        "Silakan login dengan Username & PIN akun yang dibuat oleh Admin Utama atau masuk via Google (Firebase).",
+                                        "Masuk dengan Username & PIN lokal Anda. Koneksi internet hanya dibutuhkan untuk cek atau aktivasi lisensi.",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = Color.White.copy(alpha = 0.92f),
                                         lineHeight = 18.sp
@@ -403,10 +460,13 @@ fun LoginScreen(viewModel: PosViewModel) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .widthIn(max = 480.dp)
+                            .widthIn(max = 500.dp)
                     ) {
                         AuthContentCard(
                             isFirstTimeSetup = isFirstTimeSetup,
+                            verifiedGoogleEmail = authState.verifiedGoogleEmail,
+                            onVerifyGoogleClick = launchCustomerGoogleVerify,
+                            onChangeGoogleEmailClick = { viewModel.clearVerifiedRegistrationEmail() },
                             setupStoreName = setupStoreName,
                             onSetupStoreNameChange = {
                                 setupStoreName = it
@@ -415,6 +475,11 @@ fun LoginScreen(viewModel: PosViewModel) {
                             setupFullName = setupFullName,
                             onSetupFullNameChange = {
                                 setupFullName = it
+                                viewModel.clearAuthMessages()
+                            },
+                            setupPhone = setupPhone,
+                            onSetupPhoneChange = {
+                                setupPhone = it
                                 viewModel.clearAuthMessages()
                             },
                             setupUsername = setupUsername,
@@ -432,10 +497,11 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 setupConfirmPin = it.filter { ch -> ch.isDigit() }.take(6)
                                 viewModel.clearAuthMessages()
                             },
-                            onSubmitAdminSetup = {
-                                viewModel.setupMainAdmin(
+                            onSubmitCustomerRegistration = {
+                                viewModel.completeOnlineCustomerRegistration(
                                     storeName = setupStoreName,
                                     fullName = setupFullName,
+                                    phone = setupPhone,
                                     username = setupUsername,
                                     pin = setupPin,
                                     confirmPin = setupConfirmPin
@@ -455,11 +521,12 @@ fun LoginScreen(viewModel: PosViewModel) {
                             onSubmitLogin = {
                                 viewModel.loginWithLocalCredentials(loginUsername, loginPin)
                             },
+                            licenseUiState = licenseUiState,
+                            onRefreshLicenseClick = launchRefreshLicenseWithGoogle,
                             isLoading = authState.isAuthLoading,
                             lastEmail = authState.lastEmail,
                             authError = authState.authError,
-                            authInfo = authState.authInfoMessage,
-                            onGoogleSignInClick = launchInteractiveGoogleSignIn
+                            authInfo = authState.authInfoMessage
                         )
                     }
                 }
@@ -469,46 +536,69 @@ fun LoginScreen(viewModel: PosViewModel) {
         if (showSecretAdminDialog) {
             AlertDialog(
                 onDismissRequest = {
-                    showSecretAdminDialog = false
-                    secretEmailInput = ""
-                    secretError = null
+                    if (!isSecretAdminBusy) {
+                        showSecretAdminDialog = false
+                        secretAdminError = null
+                    }
                 },
-                title = { Text("Login Rahasia Admin Pusat") },
+                icon = {
+                    Icon(
+                        Icons.Default.AdminPanelSettings,
+                        contentDescription = null,
+                        tint = AccentBlue,
+                        modifier = Modifier.size(28.dp)
+                    )
+                },
+                title = {
+                    Text("Mode Rahasia Admin Pusat", fontWeight = FontWeight.Bold)
+                },
                 text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Masukkan email resmi Admin Pusat (egisbahricha@gmail.com):", style = MaterialTheme.typography.bodySmall)
-                        OutlinedTextField(
-                            value = secretEmailInput,
-                            onValueChange = { secretEmailInput = it; secretError = null },
-                            label = { Text("Email Super Admin") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Akses khusus Admin Pusat KASLITE ($SUPER_ADMIN_EMAIL). Autentikasi dilakukan langsung melalui Google & Firebase agar database pelanggan terbaca live.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
                         )
-                        if (secretError != null) {
-                            Text(secretError ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        if (!secretAdminError.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Rose100,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = secretAdminError ?: "",
+                                    color = Rose500,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
                         }
                     }
                 },
                 confirmButton = {
-                    Button(onClick = {
-                        if (secretEmailInput.trim().equals("egisbahricha@gmail.com", ignoreCase = true)) {
-                            showSecretAdminDialog = false
-                            secretEmailInput = ""
-                            secretError = null
-                            viewModel.loginAsSuperAdmin()
+                    Button(
+                        onClick = launchSuperAdminGoogleSignIn,
+                        enabled = !isSecretAdminBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                        modifier = Modifier.testTag("super_admin_google_login_btn")
+                    ) {
+                        if (isSecretAdminBusy) {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Menghubungkan...")
                         } else {
-                            secretError = "Email Admin Pusat tidak valid."
+                            Text("Login Super Admin via Google")
                         }
-                    }) {
-                        Text("Masuk")
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = {
-                        showSecretAdminDialog = false
-                        secretEmailInput = ""
-                        secretError = null
-                    }) {
+                    TextButton(
+                        onClick = {
+                            if (!isSecretAdminBusy) {
+                                showSecretAdminDialog = false
+                                secretAdminError = null
+                            }
+                        }
+                    ) {
                         Text("Batal")
                     }
                 }
@@ -541,28 +631,34 @@ private fun BrandFeatureRow(icon: ImageVector, title: String, subtitle: String) 
 @Composable
 private fun AuthContentCard(
     isFirstTimeSetup: Boolean,
+    verifiedGoogleEmail: String,
+    onVerifyGoogleClick: () -> Unit,
+    onChangeGoogleEmailClick: () -> Unit,
     setupStoreName: String,
     onSetupStoreNameChange: (String) -> Unit,
     setupFullName: String,
     onSetupFullNameChange: (String) -> Unit,
+    setupPhone: String,
+    onSetupPhoneChange: (String) -> Unit,
     setupUsername: String,
     onSetupUsernameChange: (String) -> Unit,
     setupPin: String,
     onSetupPinChange: (String) -> Unit,
     setupConfirmPin: String,
     onSetupConfirmPinChange: (String) -> Unit,
-    onSubmitAdminSetup: () -> Unit,
+    onSubmitCustomerRegistration: () -> Unit,
     userAccounts: List<UserAccountEntity>,
     loginUsername: String,
     onLoginUsernameChange: (String) -> Unit,
     loginPin: String,
     onLoginPinChange: (String) -> Unit,
     onSubmitLogin: () -> Unit,
+    licenseUiState: LicenseUiState,
+    onRefreshLicenseClick: () -> Unit,
     isLoading: Boolean,
     lastEmail: String,
     authError: String?,
-    authInfo: String?,
-    onGoogleSignInClick: () -> Unit
+    authInfo: String?
 ) {
     var showPinText by remember { mutableStateOf(false) }
     var showConfirmPinText by remember { mutableStateOf(false) }
@@ -579,47 +675,95 @@ private fun AuthContentCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (isFirstTimeSetup) {
-                // First-time Admin Utama Setup Banner
+                // Step 1: Mandatory Online Google Verification Banner
+                val isEmailVerified = verifiedGoogleEmail.isNotBlank()
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Sapphire50,
-                    border = BorderStroke(1.dp, Sapphire200),
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isEmailVerified) Emerald50 else Sapphire50,
+                    border = BorderStroke(1.dp, if (isEmailVerified) Emerald200 else Sapphire200),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.AdminPanelSettings,
-                            contentDescription = null,
-                            tint = AccentBlue,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Setup Admin Utama (Penggunaan Pertama)",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = Sapphire800
-                                )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isEmailVerified) Icons.Default.CheckCircle else Icons.Default.VerifiedUser,
+                                contentDescription = null,
+                                tint = if (isEmailVerified) Emerald700 else AccentBlue,
+                                modifier = Modifier.size(22.dp)
                             )
-                            Text(
-                                text = "Belum ada pengguna terdaftar. Buat akun Admin Utama dengan PIN pribadi Anda.",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 11.sp,
-                                    color = Slate700
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isEmailVerified)
+                                        "Langkah 1 Selesai • Email Terverifikasi"
+                                    else
+                                        "Langkah 1 (Wajib Online) • Verifikasi Email Google",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isEmailVerified) Emerald800 else Sapphire800
+                                    )
                                 )
-                            )
+                                Text(
+                                    text = if (isEmailVerified)
+                                        verifiedGoogleEmail
+                                    else
+                                        "Wajib daftar online dengan email Google agar akun terdaftar di pusat lisensi dan Trial Demo 3 Hari aktif.",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 11.sp,
+                                        color = Slate700
+                                    )
+                                )
+                            }
+                        }
+
+                        if (!isEmailVerified) {
+                            Button(
+                                onClick = onVerifyGoogleClick,
+                                enabled = !isLoading,
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("customer_google_verify_button")
+                            ) {
+                                Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Verifikasi Email Google (Wajib Trial 3 Hari)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Siap aktifkan Demo 3 Hari",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = Emerald700, fontWeight = FontWeight.Bold)
+                                )
+                                TextButton(
+                                    onClick = onChangeGoogleEmailClick,
+                                    enabled = !isLoading
+                                ) {
+                                    Text("Ganti Email", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
 
+                Text(
+                    text = "Langkah 2 • Data Toko & Akun Pemilik Lokal",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate800)
+                )
+
                 OutlinedTextField(
                     value = setupStoreName,
                     onValueChange = onSetupStoreNameChange,
-                    label = { Text("Nama Toko") },
+                    label = { Text("Nama Toko *") },
                     placeholder = { Text("Contoh: Toko Berkah Jaya") },
                     leadingIcon = { Icon(Icons.Default.Store, contentDescription = null, tint = Slate500) },
                     singleLine = true,
@@ -634,7 +778,7 @@ private fun AuthContentCard(
                 OutlinedTextField(
                     value = setupFullName,
                     onValueChange = onSetupFullNameChange,
-                    label = { Text("Nama Lengkap Admin Utama") },
+                    label = { Text("Nama Lengkap Pemilik *") },
                     placeholder = { Text("Contoh: Budi Santoso") },
                     leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null, tint = Slate500) },
                     singleLine = true,
@@ -647,9 +791,24 @@ private fun AuthContentCard(
                 )
 
                 OutlinedTextField(
+                    value = setupPhone,
+                    onValueChange = onSetupPhoneChange,
+                    label = { Text("No. HP / WhatsApp") },
+                    placeholder = { Text("Contoh: 081234567890") },
+                    leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, tint = Slate500) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = loginFieldColors(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Next),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("admin_setup_phone_input")
+                )
+
+                OutlinedTextField(
                     value = setupUsername,
                     onValueChange = onSetupUsernameChange,
-                    label = { Text("Username Admin Utama") },
+                    label = { Text("Username Login Harian *") },
                     placeholder = { Text("Contoh: admin") },
                     leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = Slate500) },
                     singleLine = true,
@@ -664,7 +823,7 @@ private fun AuthContentCard(
                 OutlinedTextField(
                     value = setupPin,
                     onValueChange = onSetupPinChange,
-                    label = { Text("Buat PIN 6 Digit Angka") },
+                    label = { Text("Buat PIN 6 Digit Angka *") },
                     placeholder = { Text("6 digit angka") },
                     leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Slate500) },
                     trailingIcon = {
@@ -691,7 +850,7 @@ private fun AuthContentCard(
                 OutlinedTextField(
                     value = setupConfirmPin,
                     onValueChange = onSetupConfirmPinChange,
-                    label = { Text("Konfirmasi PIN 6 Digit") },
+                    label = { Text("Konfirmasi PIN 6 Digit *") },
                     placeholder = { Text("Ulangi 6 digit PIN") },
                     leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, tint = Slate500) },
                     trailingIcon = {
@@ -707,7 +866,7 @@ private fun AuthContentCard(
                     },
                     visualTransformation = if (showConfirmPinText) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { if (!isLoading) onSubmitAdminSetup() }),
+                    keyboardActions = KeyboardActions(onDone = { if (!isLoading) onSubmitCustomerRegistration() }),
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     colors = loginFieldColors(),
@@ -719,7 +878,7 @@ private fun AuthContentCard(
                 AuthMessageBanners(authError = authError, authInfo = authInfo)
 
                 Button(
-                    onClick = onSubmitAdminSetup,
+                    onClick = onSubmitCustomerRegistration,
                     enabled = !isLoading,
                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                     shape = RoundedCornerShape(12.dp),
@@ -731,56 +890,22 @@ private fun AuthContentCard(
                     if (isLoading) {
                         CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Menyiapkan Akun...", fontWeight = FontWeight.Bold)
+                        Text("Mendaftarkan Toko...", fontWeight = FontWeight.Bold)
                     } else {
                         Icon(Icons.Default.AdminPanelSettings, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Buat Admin Utama & Masuk", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("Daftar Trial 3 Hari & Masuk", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                 }
             } else {
-                // Existing Users: Mandatory Credential Login
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Emerald50,
-                    border = BorderStroke(1.dp, Emerald200),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = Emerald700,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Masuk dengan Akun Terdaftar",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = Emerald800
-                                )
-                            )
-                            Text(
-                                text = "Gunakan akun Admin Utama atau user yang telah dibuat oleh Admin Utama.",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 11.sp,
-                                    color = Slate700
-                                )
-                            )
-                        }
-                    }
-                }
+                // Returning Local Customer Login + License Status
+                LicenseStatusCard(licenseUiState = licenseUiState, lastEmail = lastEmail)
 
                 val activeUsers = remember(userAccounts) { userAccounts.filter { it.isActive } }
                 if (activeUsers.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Pilih cepat username (tetap wajib masukkan PIN):",
+                            text = "Pilih cepat username (wajib masukkan PIN):",
                             style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontWeight = FontWeight.Medium)
                         )
                         FlowRow(
@@ -882,57 +1007,106 @@ private fun AuthContentCard(
                         Text("Masuk ke Aplikasi", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                 }
-            }
 
-            HorizontalDivider(color = BorderDefault)
+                HorizontalDivider(color = BorderDefault)
 
-            if (lastEmail.isNotBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Sapphire50,
-                    border = BorderStroke(1.dp, Sapphire200),
-                    modifier = Modifier.fillMaxWidth()
+                OutlinedButton(
+                    onClick = onRefreshLicenseClick,
+                    enabled = !isLoading && !licenseUiState.isRefreshing,
+                    border = BorderStroke(1.dp, BorderInput),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("refresh_license_online_button")
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Akun Google terakhir: $lastEmail",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = Sapphire800,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp
-                            )
-                        )
+                    if (licenseUiState.isRefreshing) {
+                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp), color = AccentBlue)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(18.dp))
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Cek / Aktivasi Lisensi Online",
+                        color = Slate800,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
                 }
             }
+        }
+    }
+}
 
-            OutlinedButton(
-                onClick = onGoogleSignInClick,
-                enabled = !isLoading,
-                border = BorderStroke(1.dp, BorderInput),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("google_signin_button")
-            ) {
-                Icon(Icons.Default.CloudDone, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
+@Composable
+private fun LicenseStatusCard(licenseUiState: LicenseUiState, lastEmail: String) {
+    val (bg, border, iconTint, icon) = when (licenseUiState.accessStatus) {
+        LicenseAccessStatus.FULL_ACTIVE -> Quad(Emerald50, Emerald200, Emerald700, Icons.Default.CheckCircle)
+        LicenseAccessStatus.DEMO_ACTIVE -> Quad(Sapphire50, Sapphire200, AccentBlue, Icons.Default.VerifiedUser)
+        LicenseAccessStatus.DEMO_EXPIRED,
+        LicenseAccessStatus.SUSPENDED,
+        LicenseAccessStatus.DEVICE_MISMATCH -> Quad(Rose100, Rose500.copy(alpha = 0.35f), Rose500, Icons.Default.Warning)
+        LicenseAccessStatus.UNREGISTERED -> Quad(AmberWarningBg, AmberWarningBorder, Amber500, Icons.Default.Warning)
+    }
+
+    val daysRemaining = ((licenseUiState.remainingMillis.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L)
+    val title = when (licenseUiState.accessStatus) {
+        LicenseAccessStatus.FULL_ACTIVE -> "Lisensi KASLITE Penuh Aktif"
+        LicenseAccessStatus.DEMO_ACTIVE -> "Mode Demo 3 Hari • Sisa $daysRemaining hari"
+        LicenseAccessStatus.DEMO_EXPIRED -> "Masa Demo Berakhir (Hanya Menu Produk)"
+        LicenseAccessStatus.SUSPENDED -> "Lisensi Dinonaktifkan Admin Pusat"
+        LicenseAccessStatus.DEVICE_MISMATCH -> "Lisensi Terikat Perangkat Lain"
+        LicenseAccessStatus.UNREGISTERED -> "Mode Lokal • Belum Sinkron Lisensi"
+    }
+
+    val displayEmail = licenseUiState.ownerEmail.ifBlank { lastEmail }
+    val subtitle = when {
+        licenseUiState.isLockedToProductOnly ->
+            "Hubungi Admin Pusat ($SUPER_ADMIN_EMAIL) untuk aktivasi penuh. Menu Produk & Backup tetap terbuka."
+        displayEmail.isNotBlank() ->
+            "Terdaftar: $displayEmail • Data Toko 100% Lokal"
+        else ->
+            "Data transaksi & stok tersimpan 100% lokal di perangkat."
+    }
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = bg,
+        border = BorderStroke(1.dp, border),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Masuk dengan Google (Firebase Cloud)",
-                    color = Slate800,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = Slate900
+                    )
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 11.sp,
+                        color = Slate700
+                    )
                 )
             }
         }
     }
 }
+
+private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
 @Composable
 private fun AuthMessageBanners(authError: String?, authInfo: String?) {

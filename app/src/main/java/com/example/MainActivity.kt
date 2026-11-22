@@ -60,6 +60,8 @@ import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -75,6 +77,7 @@ import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -82,6 +85,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -99,18 +103,20 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.firebase.LicenseAccessStatus
+import com.example.firebase.LicenseUiState
 import com.example.ui.components.DesignToastSnackbar
-import com.example.ui.components.KasGoTopBar
+import com.example.ui.components.KasLiteTopBar
 import com.example.ui.components.ReceiptDialog
 import com.example.ui.components.formatRupiah
 import com.example.ui.screens.AIChatScreen
 import com.example.ui.screens.BarcodeScanCartScreen
-import com.example.ui.screens.CloudMonitorScreen
 import com.example.ui.screens.ContactsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DebtReceivableScreen
@@ -132,7 +138,9 @@ import com.example.ui.screens.WhatsAppScreen
 import com.example.ui.screens.SuperAdminScreen
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
 import com.example.ui.viewmodel.Screen
+import com.example.ui.viewmodel.isScreenAllowedWhenDemoLocked
 import kotlinx.coroutines.launch
 
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -174,6 +182,7 @@ private enum class TabletSidebarMode {
 fun MainAppContent(viewModel: PosViewModel) {
     val context = LocalContext.current
     val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
+    val licenseUiState by viewModel.licenseUiState.collectAsStateWithLifecycle()
     val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
     val activeRole by viewModel.activeRole.collectAsStateWithLifecycle()
     val activeUserName by viewModel.activeUserName.collectAsStateWithLifecycle()
@@ -189,6 +198,13 @@ fun MainAppContent(viewModel: PosViewModel) {
     if (!authUiState.hasEnteredApp) {
         LoginScreen(viewModel = viewModel)
         return
+    }
+
+    val isProductOnlyLocked = !authUiState.isSuperAdmin && licenseUiState.isLockedToProductOnly
+    LaunchedEffect(isProductOnlyLocked, authUiState.isSuperAdmin, currentScreen) {
+        if (isProductOnlyLocked && !isScreenAllowedWhenDemoLocked(currentScreen)) {
+            viewModel.navigateTo(Screen.PRODUK)
+        }
     }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -217,11 +233,12 @@ fun MainAppContent(viewModel: PosViewModel) {
         }
     }
 
-    BackHandler(enabled = drawerState.isOpen || currentScreen != Screen.DASHBOARD) {
+    val homeFallbackScreen = if (isProductOnlyLocked) Screen.PRODUK else Screen.DASHBOARD
+    BackHandler(enabled = drawerState.isOpen || currentScreen != homeFallbackScreen) {
         if (drawerState.isOpen) {
             coroutineScope.launch { drawerState.close() }
-        } else if (currentScreen != Screen.DASHBOARD) {
-            viewModel.navigateTo(Screen.DASHBOARD)
+        } else if (currentScreen != homeFallbackScreen) {
+            viewModel.navigateTo(homeFallbackScreen)
         }
     }
 
@@ -236,17 +253,16 @@ fun MainAppContent(viewModel: PosViewModel) {
             DrawerMenuItem(Screen.PEMBELIAN, "Pembelian Barang", Icons.Default.ShoppingBag),
             DrawerMenuItem(Screen.STOK_INVENTARIS, "Stok & Opname", Icons.Default.Inventory),
             DrawerMenuItem(Screen.MULTI_KAS, "Multi Kas (Bank & Pulsa)", Icons.Default.AccountBalanceWallet, "KEUANGAN"),
-            DrawerMenuItem(Screen.CLOUD_MONITOR, "Pantau Cloud & Arus Kas", Icons.Default.CloudQueue),
             DrawerMenuItem(Screen.TARIF_ADMIN, "Tarif Admin Konter PPOB", Icons.Default.CreditCard),
             DrawerMenuItem(Screen.KEUANGAN, "Buku Kas & Arus Kas", Icons.Default.AccountBalanceWallet),
             DrawerMenuItem(Screen.PENGELUARAN, "Pengeluaran & Jasa", Icons.Default.MoneyOff),
             DrawerMenuItem(Screen.UTANG_PIUTANG, "Utang & Piutang", Icons.Default.CreditCard),
             DrawerMenuItem(Screen.LAPORAN, "Laporan & Analitik (24 Lap)", Icons.Default.QueryStats, "LAPORAN"),
-            DrawerMenuItem(Screen.AI_CHAT, "AI Chat Gerai Una", Icons.Default.AutoAwesome, "AI & WHATSAPP"),
+            DrawerMenuItem(Screen.AI_CHAT, "AI Chat KASLITE", Icons.Default.AutoAwesome, "AI & WHATSAPP"),
             DrawerMenuItem(Screen.WHATSAPP, "WhatsApp Integration", Icons.Default.Sms),
             DrawerMenuItem(Screen.SEMUA_MENU, "Semua Menu", Icons.Default.MoreHoriz, "NAVIGASI"),
             DrawerMenuItem(Screen.KONTAK, "Pelanggan & Pemasok", Icons.Default.Contacts),
-            DrawerMenuItem(Screen.PENGATURAN, "Pengaturan & Role", Icons.Default.Settings)
+            DrawerMenuItem(Screen.PENGATURAN, "Pengaturan & Backup", Icons.Default.Settings)
         )
     }
 
@@ -260,13 +276,12 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG -> "Pembelian Barang"
         Screen.STOK_INVENTARIS -> "Stok & Inventaris"
         Screen.MULTI_KAS -> "Multi Kas"
-        Screen.CLOUD_MONITOR -> "Pantau Cloud Firebase"
         Screen.TARIF_ADMIN -> "Tarif Admin"
         Screen.PENGELUARAN, Screen.PENDAPATAN -> "Pengeluaran & Jasa"
         Screen.UTANG_PIUTANG -> "Utang & Piutang"
         Screen.KEUANGAN -> "Keuangan & Kas"
         Screen.LAPORAN -> "Laporan"
-        Screen.AI_CHAT -> "AI Chat Gerai Una"
+        Screen.AI_CHAT -> "AI Chat KASLITE"
         Screen.WHATSAPP -> "WhatsApp Command"
         Screen.KONTAK -> "Pelanggan & Pemasok"
         Screen.PENGATURAN -> "Pengaturan"
@@ -280,7 +295,7 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.SCAN_BARCODE -> ModuleKasir to Icons.Default.QrCodeScanner
         Screen.PRODUK, Screen.MANAJEMEN_PRODUK, Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG, Screen.STOK_INVENTARIS -> ModuleProduk to Icons.Default.Inventory2
         Screen.LAPORAN -> ModuleLaporan to Icons.Default.QueryStats
-        Screen.MULTI_KAS, Screen.CLOUD_MONITOR -> ModuleKas to Icons.Default.CloudDone
+        Screen.MULTI_KAS -> ModuleKas to Icons.Default.AccountBalanceWallet
         Screen.TARIF_ADMIN -> ModuleKasir to Icons.Default.CreditCard
         Screen.AI_CHAT, Screen.WHATSAPP -> ModuleKasir to Icons.Default.AutoAwesome
         Screen.KEUANGAN, Screen.PENGELUARAN, Screen.PENDAPATAN,
@@ -288,7 +303,7 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.SUPER_ADMIN -> ModulePengaturan to Icons.Default.AdminPanelSettings
     }
 
-    val storeDisplayName = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya"
+    val storeDisplayName = storeProfile?.name?.ifBlank { "KASLITE" } ?: "KASLITE"
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isTablet = maxWidth >= 720.dp
@@ -366,7 +381,10 @@ fun MainAppContent(viewModel: PosViewModel) {
                                     modifier = Modifier.weight(1f, fill = false)
                                 ) {
                                     Text(
-                                        text = if (authUiState.isCloudSignedIn) "Cloud: ${authUiState.userEmail}" else "Offline: $activeUserName",
+                                        text = if (authUiState.isSuperAdmin)
+                                            "Super Admin: ${authUiState.userEmail}"
+                                        else
+                                            "Kasir Lokal: $activeUserName (${licenseUiState.planType})",
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, color = Color.White),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -410,7 +428,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                             }
 
                             val isSelected = currentScreen == item.screen
-                            val isAllowed = remember(activeRole, activeUserName, menuPermissions, item.screen) {
+                            val isAllowed = remember(activeRole, activeUserName, menuPermissions, licenseUiState, authUiState.isSuperAdmin, item.screen) {
                                 viewModel.hasMenuPermission(item.screen)
                             }
                             NavigationDrawerItem(
@@ -532,7 +550,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                                                 )
                                             }
                                             val isSelected = currentScreen == item.screen
-                                            val isAllowed = remember(activeRole, activeUserName, menuPermissions, item.screen) {
+                                            val isAllowed = remember(activeRole, activeUserName, menuPermissions, licenseUiState, authUiState.isSuperAdmin, item.screen) {
                                                 viewModel.hasMenuPermission(item.screen)
                                             }
                                             Surface(
@@ -714,7 +732,7 @@ fun MainAppContent(viewModel: PosViewModel) {
                 // Main App Area
                 Scaffold(
                     topBar = {
-                        KasGoTopBar(
+                        KasLiteTopBar(
                             title = currentTitle,
                             activeRole = activeRole,
                             onMenuClick = {
@@ -832,33 +850,115 @@ fun MainAppContent(viewModel: PosViewModel) {
                     containerColor = BgCanvas,
                     modifier = Modifier.fillMaxSize()
                 ) { paddingValues ->
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
                     ) {
-                        when (currentScreen) {
-                            Screen.DASHBOARD -> DashboardScreen(viewModel)
-                            Screen.POS_KASIR -> PosCashierScreen(viewModel)
-                            Screen.SCAN_BARCODE -> BarcodeScanCartScreen(viewModel)
-                            Screen.RIWAYAT_TRANSAKSI -> SalesHistoryScreen(viewModel)
-                            Screen.SEMUA_MENU -> SemuaMenuScreen(viewModel)
-                            Screen.PRODUK -> ProductsScreen(viewModel)
-                            Screen.MANAJEMEN_PRODUK -> ManualProductManagementScreen(viewModel)
-                            Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG -> PurchaseScreen(viewModel)
-                            Screen.STOK_INVENTARIS -> StockInventoryScreen(viewModel)
-                            Screen.MULTI_KAS -> MultiKasScreen(viewModel)
-                            Screen.CLOUD_MONITOR -> CloudMonitorScreen(viewModel)
-                            Screen.TARIF_ADMIN -> TarifAdminScreen(viewModel)
-                            Screen.PENGELUARAN, Screen.PENDAPATAN -> ExpensesIncomesScreen(viewModel)
-                            Screen.UTANG_PIUTANG -> DebtReceivableScreen(viewModel)
-                            Screen.KEUANGAN -> FinanceScreen(viewModel)
-                            Screen.LAPORAN -> ReportsScreen(viewModel)
-                            Screen.AI_CHAT -> AIChatScreen(viewModel)
-                            Screen.WHATSAPP -> WhatsAppScreen(viewModel)
-                            Screen.KONTAK -> ContactsScreen(viewModel)
-                            Screen.PENGATURAN -> SettingsScreen(viewModel)
-                            Screen.SUPER_ADMIN -> SuperAdminScreen(viewModel) { viewModel.navigateTo(Screen.PENGATURAN) }
+                        if (!authUiState.isSuperAdmin && licenseUiState.isDemoActive) {
+                            val daysLeft = ((licenseUiState.remainingMillis.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L)
+                            Surface(
+                                color = Sapphire50,
+                                border = BorderStroke(1.dp, Sapphire200),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Mode Demo 3 Hari Aktif • Sisa $daysLeft hari",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = Sapphire800
+                                        ),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(
+                                        onClick = { viewModel.navigateTo(Screen.PENGATURAN) },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("Aktivasi", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        } else if (isProductOnlyLocked) {
+                            Surface(
+                                color = Rose100,
+                                border = BorderStroke(1.dp, Rose500.copy(alpha = 0.35f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Icon(Icons.Default.Lock, contentDescription = null, tint = Rose500, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (licenseUiState.accessStatus == LicenseAccessStatus.DEMO_EXPIRED)
+                                                "Demo 3 Hari Berakhir • Hanya Menu Produk & Pengaturan Aktif"
+                                            else
+                                                "Akun Terkunci • Hanya Menu Produk & Pengaturan Aktif",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = Rose500
+                                            ),
+                                            maxLines = 2
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = { viewModel.navigateTo(Screen.PENGATURAN) },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("Aktivasi / Backup", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Rose500)
+                                    }
+                                }
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                        ) {
+                            if (isProductOnlyLocked && !isScreenAllowedWhenDemoLocked(currentScreen)) {
+                                DemoExpiredLockView(
+                                    licenseUiState = licenseUiState,
+                                    onOpenProducts = { viewModel.navigateTo(Screen.PRODUK) },
+                                    onOpenManualProducts = { viewModel.navigateTo(Screen.MANAJEMEN_PRODUK) },
+                                    onOpenSettings = { viewModel.navigateTo(Screen.PENGATURAN) }
+                                )
+                            } else {
+                                when (currentScreen) {
+                                    Screen.DASHBOARD -> DashboardScreen(viewModel)
+                                    Screen.POS_KASIR -> PosCashierScreen(viewModel)
+                                    Screen.SCAN_BARCODE -> BarcodeScanCartScreen(viewModel)
+                                    Screen.RIWAYAT_TRANSAKSI -> SalesHistoryScreen(viewModel)
+                                    Screen.SEMUA_MENU -> SemuaMenuScreen(viewModel)
+                                    Screen.PRODUK -> ProductsScreen(viewModel)
+                                    Screen.MANAJEMEN_PRODUK -> ManualProductManagementScreen(viewModel)
+                                    Screen.PEMBELIAN, Screen.PENERIMAAN_BARANG -> PurchaseScreen(viewModel)
+                                    Screen.STOK_INVENTARIS -> StockInventoryScreen(viewModel)
+                                    Screen.MULTI_KAS -> MultiKasScreen(viewModel)
+                                    Screen.TARIF_ADMIN -> TarifAdminScreen(viewModel)
+                                    Screen.PENGELUARAN, Screen.PENDAPATAN -> ExpensesIncomesScreen(viewModel)
+                                    Screen.UTANG_PIUTANG -> DebtReceivableScreen(viewModel)
+                                    Screen.KEUANGAN -> FinanceScreen(viewModel)
+                                    Screen.LAPORAN -> ReportsScreen(viewModel)
+                                    Screen.AI_CHAT -> AIChatScreen(viewModel)
+                                    Screen.WHATSAPP -> WhatsAppScreen(viewModel)
+                                    Screen.KONTAK -> ContactsScreen(viewModel)
+                                    Screen.PENGATURAN -> SettingsScreen(viewModel)
+                                    Screen.SUPER_ADMIN -> SuperAdminScreen(viewModel) { viewModel.navigateTo(Screen.PENGATURAN) }
+                                }
+                            }
                         }
                     }
                 }
@@ -965,3 +1065,88 @@ fun MainAppContent(viewModel: PosViewModel) {
         )
     }
 }
+
+@Composable
+private fun DemoExpiredLockView(
+    licenseUiState: LicenseUiState,
+    onOpenProducts: () -> Unit,
+    onOpenManualProducts: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val reasonTitle = when (licenseUiState.accessStatus) {
+        LicenseAccessStatus.SUSPENDED -> "Akun Dinonaktifkan Admin Pusat"
+        LicenseAccessStatus.DEVICE_MISMATCH -> "Lisensi Terikat Perangkat Lain"
+        else -> "Masa Demo 3 Hari Telah Berakhir"
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BgCanvas)
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = SurfaceWhite,
+            border = BorderStroke(1.dp, BorderDefault),
+            modifier = Modifier.widthIn(max = 460.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Rose100),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = "Fitur Terkunci",
+                        tint = Rose500,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Text(
+                    text = reasonTitle,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = Slate900
+                    ),
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "Selama masa demo habis, menu Kasir, Laporan, Keuangan, dan lainnya dikunci. Anda tetap dapat menambah/mengelola produk serta melakukan backup data atau aktivasi lisensi penuh melalui Pengaturan.\n\nHubungi Admin Pusat: $SUPER_ADMIN_EMAIL",
+                    style = MaterialTheme.typography.bodySmall.copy(color = Slate600, lineHeight = 19.sp),
+                    textAlign = TextAlign.Center
+                )
+                Button(
+                    onClick = onOpenProducts,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Buka Daftar Produk", fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = onOpenManualProducts,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Kelola Produk Manual")
+                }
+                OutlinedButton(
+                    onClick = onOpenSettings,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Aktivasi Lisensi & Backup (.kaslite)")
+                }
+            }
+        }
+    }
+}
+

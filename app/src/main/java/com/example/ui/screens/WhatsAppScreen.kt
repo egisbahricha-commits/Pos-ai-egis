@@ -129,7 +129,7 @@ fun WhatsAppScreen(viewModel: PosViewModel) {
 
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        "Alur: HP Pemilik Toko ➔ WhatsApp Webhook ➔ Gerai Una NLU ➔ Validasi Database ➔ Balasan Otomatis.",
+                        "Alur: HP Pemilik Toko ➔ WhatsApp Webhook ➔ KASLITE NLU ➔ Validasi Database ➔ Balasan Otomatis.",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
                     )
                 }

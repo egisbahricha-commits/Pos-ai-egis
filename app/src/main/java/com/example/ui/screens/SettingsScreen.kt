@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -30,20 +31,22 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Store
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -55,6 +58,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -66,12 +70,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -79,14 +85,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.data.backup.KasGoImportOptions
-import com.example.data.backup.KasGoInspectResult
+import com.example.data.backup.KasLiteBackupInspectResult
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.CashierDeviceEntity
 import com.example.data.entity.PrinterEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.entity.UserAccountEntity
-import com.example.firebase.SyncMode
+import com.example.firebase.GoogleAuthHelper
+import com.example.firebase.LicenseAccessStatus
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
@@ -95,11 +101,21 @@ import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.PinPadDialog
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
 import com.example.ui.viewmodel.Screen
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(viewModel: PosViewModel) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
+    val licenseUiState by viewModel.licenseUiState.collectAsStateWithLifecycle()
     val activeRole by viewModel.activeRole.collectAsStateWithLifecycle()
     val activeUserName by viewModel.activeUserName.collectAsStateWithLifecycle()
     val storeProfile by viewModel.storeProfile.collectAsStateWithLifecycle()
@@ -108,13 +124,21 @@ fun SettingsScreen(viewModel: PosViewModel) {
     val printers by viewModel.printers.collectAsStateWithLifecycle()
     val cashierDevices by viewModel.cashierDevices.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
-    val kasGoImportState by viewModel.kasGoImportState.collectAsStateWithLifecycle()
+    val kasLiteBackupState by viewModel.kasLiteBackupState.collectAsStateWithLifecycle()
 
-    val kasGoPickerLauncher = rememberLauncherForActivityResult(
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportKasLiteBackup(uri)
+        }
+    }
+
+    val restoreBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            viewModel.inspectKasGoBackupUri(uri)
+            viewModel.inspectKasLiteBackupUri(uri)
         }
     }
 
@@ -126,7 +150,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
     var showDevicesDialog by remember { mutableStateOf(false) }
     var userToEdit by remember { mutableStateOf<UserAccountEntity?>(null) }
     var showAddUserDialog by remember { mutableStateOf(false) }
-    var showBackupInfoDialog by remember { mutableStateOf(false) }
+    var showLicenseKeyDialog by remember { mutableStateOf(false) }
 
     val isOwner = activeRole.equals("Owner", ignoreCase = true) || activeRole.equals("Admin", ignoreCase = true)
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
@@ -184,14 +208,111 @@ fun SettingsScreen(viewModel: PosViewModel) {
             }
         }
 
-        // Section: Firebase Cloud & Multi-Perangkat
+        // Section: Lisensi & Masa Aktif KASLITE
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-                Icon(Icons.Default.CloudQueue, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    "Firebase Cloud & Login Multi-Perangkat",
+                    "Lisensi & Masa Aktif KASLITE",
                     style = MaterialTheme.typography.labelMedium.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold)
+                )
+            }
+        }
+
+        item {
+            val daysLeft = ((licenseUiState.remainingMillis.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L)
+            val (badgeLabel, badgeType) = when (licenseUiState.accessStatus) {
+                LicenseAccessStatus.FULL_ACTIVE -> "FULL AKTIF" to BadgeType.SUCCESS
+                LicenseAccessStatus.DEMO_ACTIVE -> "DEMO ($daysLeft hr)" to BadgeType.INFO
+                LicenseAccessStatus.DEMO_EXPIRED -> "DEMO HABIS" to BadgeType.DANGER
+                LicenseAccessStatus.SUSPENDED -> "SUSPEND" to BadgeType.DANGER
+                LicenseAccessStatus.DEVICE_MISMATCH -> "BEDA HP" to BadgeType.DANGER
+                LicenseAccessStatus.UNREGISTERED -> "BELUM AKTIF" to BadgeType.WARNING
+            }
+            val registeredEmail = licenseUiState.ownerEmail.ifBlank { authUiState.lastEmail }.ifBlank { "-" }
+
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                border = BorderStroke(1.dp, BorderDefault),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
+                    SettingsMenuRow(
+                        icon = Icons.Default.VerifiedUser,
+                        title = when (licenseUiState.accessStatus) {
+                            LicenseAccessStatus.FULL_ACTIVE -> "Lisensi Penuh Aktif"
+                            LicenseAccessStatus.DEMO_ACTIVE -> "Mode Demo 3 Hari (Sisa $daysLeft hari)"
+                            LicenseAccessStatus.DEMO_EXPIRED -> "Masa Demo Berakhir (Hanya Produk)"
+                            LicenseAccessStatus.SUSPENDED -> "Lisensi Dinonaktifkan"
+                            LicenseAccessStatus.DEVICE_MISMATCH -> "Terikat Perangkat Lain"
+                            LicenseAccessStatus.UNREGISTERED -> "Status Lokal"
+                        },
+                        subtitle = "Email: $registeredEmail • Key: ${licenseUiState.licenseKey.ifBlank { "-" }}\nAktivasi / bantuan hubungi: $SUPER_ADMIN_EMAIL",
+                        badgeText = badgeLabel,
+                        badgeType = badgeType,
+                        onClick = { showLicenseKeyDialog = true }
+                    )
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.Default.Refresh,
+                        title = if (licenseUiState.isRefreshing) "Memeriksa ke server..." else "Cek Status Lisensi Online",
+                        subtitle = "Segarkan status Demo/Full dari pusat lisensi KASLITE",
+                        badgeText = if (licenseUiState.isRefreshing) "Cek..." else "Online",
+                        badgeType = BadgeType.INFO,
+                        onClick = {
+                            val currentFbUser = runCatching { Firebase.auth.currentUser }.getOrNull()
+                            if (currentFbUser != null) {
+                                viewModel.refreshCustomerLicenseOnline(null)
+                            } else {
+                                coroutineScope.launch {
+                                    GoogleAuthHelper.signInWithGoogle(context).onSuccess { payload ->
+                                        viewModel.refreshCustomerLicenseOnline(payload)
+                                    }
+                                }
+                            }
+                        }
+                    )
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.Default.Key,
+                        title = "Aktivasi Kunci Lisensi",
+                        subtitle = "Masukkan kode lisensi penuh yang diberikan oleh Admin Pusat",
+                        badgeText = "Masukkan Kode",
+                        badgeType = BadgeType.NORMAL,
+                        onClick = { showLicenseKeyDialog = true }
+                    )
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.AutoMirrored.Filled.Logout,
+                        title = "Keluar / Ganti Pengguna Login",
+                        subtitle = "Kembali ke halaman login Username & PIN lokal KASLITE",
+                        onClick = { viewModel.logoutToLoginScreen() }
+                    )
+                    if (isSuperAdmin) {
+                        HorizontalDivider(color = BorderDefault)
+                        SettingsMenuRow(
+                            icon = Icons.Default.AdminPanelSettings,
+                            title = "Dashboard Admin Pusat (Super Admin)",
+                            subtitle = "Kelola lisensi pelanggan, demo, & reset device binding",
+                            badgeText = "ADMIN",
+                            badgeType = BadgeType.WARNING,
+                            onClick = { viewModel.navigateTo(Screen.SUPER_ADMIN) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Section: Backup & Restore Lengkap (.kaslite)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                Icon(Icons.Default.Backup, contentDescription = null, tint = Emerald700, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    "Backup & Restore Data Lengkap (.kaslite)",
+                    style = MaterialTheme.typography.labelMedium.copy(color = Emerald700, fontWeight = FontWeight.SemiBold)
                 )
             }
         }
@@ -205,43 +326,51 @@ fun SettingsScreen(viewModel: PosViewModel) {
             ) {
                 Column {
                     SettingsMenuRow(
-                        icon = Icons.Default.CloudDone,
-                        title = if (authUiState.isCloudSignedIn) authUiState.userEmail else "Belum Login Cloud (Mode Offline)",
-                        subtitle = if (authUiState.isCloudSignedIn)
-                            "Perangkat: ${authUiState.deviceName} • Ketuk untuk pantau arus kas Firestore"
-                        else
-                            "Masuk dengan Google (Firebase) untuk sync & pantau dari perangkat lain",
-                        badgeText = if (authUiState.isCloudSignedIn) "Terhubung" else "Login",
-                        badgeType = if (authUiState.isCloudSignedIn) BadgeType.SUCCESS else BadgeType.WARNING,
-                        onClick = { viewModel.navigateTo(Screen.CLOUD_MONITOR) }
+                        icon = Icons.Default.Download,
+                        title = "Export Backup Lengkap (.kaslite)",
+                        subtitle = "Simpan seluruh database lokal (produk, transaksi, stok, kas, pelanggan, user, foto) ke file .kaslite",
+                        badgeText = if (kasLiteBackupState.isWorking) "Proses..." else "Export",
+                        badgeType = BadgeType.SUCCESS,
+                        onClick = {
+                            if (!kasLiteBackupState.isWorking && !kasLiteBackupState.isRestoring) {
+                                exportBackupLauncher.launch("Backup_KASLITE.kaslite")
+                            }
+                        }
                     )
-                    if (authUiState.isCloudSignedIn) {
-                        HorizontalDivider(color = BorderDefault)
-                        SettingsMenuRow(
-                            icon = Icons.Default.Sync,
-                            title = "Sinkronkan Data Sekarang",
-                            subtitle = authUiState.lastSyncMessage.ifBlank { "Kirim & tarik saldo kas, mutasi, dan penjualan" },
-                            onClick = { viewModel.syncNowWithFirebase(SyncMode.TWO_WAY) }
-                        )
-                    }
                     HorizontalDivider(color = BorderDefault)
                     SettingsMenuRow(
-                        icon = Icons.AutoMirrored.Filled.Logout,
-                        title = if (authUiState.isCloudSignedIn) "Keluar / Ganti Akun Google" else "Buka Halaman Login Firebase",
-                        subtitle = "Kembali ke halaman login untuk masuk akun Google atau ganti kasir",
-                        onClick = { viewModel.logoutToLoginScreen() }
+                        icon = Icons.Default.Share,
+                        title = "Bagikan Backup (.kaslite)",
+                        subtitle = "Kirim arsip backup lengkap ke WhatsApp, Drive, atau Telegram agar data aman",
+                        onClick = {
+                            if (!kasLiteBackupState.isWorking && !kasLiteBackupState.isRestoring) {
+                                viewModel.shareKasLiteBackup { uri ->
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/zip"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        putExtra(Intent.EXTRA_SUBJECT, "Backup Lengkap KASLITE (.kaslite)")
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(shareIntent, "Bagikan Backup KASLITE"))
+                                }
+                            }
+                        }
                     )
-                    if (isSuperAdmin) {
-                        HorizontalDivider(color = BorderDefault)
-                        SettingsMenuRow(
-                            icon = Icons.Default.AdminPanelSettings,
-                            title = "Dashboard Admin Pusat (Super Admin)",
-                            subtitle = "Kelola lisensi pelanggan & reset device binding",
-                            badgeText = "RAHASIA",
-                            badgeType = BadgeType.WARNING,
-                            onClick = { viewModel.navigateTo(Screen.SUPER_ADMIN) }
-                        )
-                    }
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.Default.UploadFile,
+                        title = if (kasLiteBackupState.isInspecting) "Membaca file .kaslite..." else "Import / Restore Backup (.kaslite)",
+                        subtitle = kasLiteBackupState.lastRestoreSummary?.let { s ->
+                            "Terakhir dipulihkan: ${s.restoredRecords} rekaman data & ${s.restoredPhotos} foto"
+                        } ?: "Pulihkan seluruh data toko dan foto produk dari arsip .kaslite",
+                        badgeText = if (kasLiteBackupState.isInspecting) "Proses..." else "Restore",
+                        badgeType = BadgeType.INFO,
+                        onClick = {
+                            if (!kasLiteBackupState.isInspecting && !kasLiteBackupState.isRestoring) {
+                                restoreBackupLauncher.launch(arrayOf("*/*"))
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -268,7 +397,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                 Column {
                     SettingsMenuRow(
                         icon = Icons.Default.Store,
-                        title = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya",
+                        title = storeProfile?.name?.ifBlank { "KASLITE" } ?: "KASLITE",
                         subtitle = "Tipe: ${storeProfile?.businessType ?: "keduanya"} • PPN ${String.format("%.1f", ppnPercent)}%",
                         badgeText = "Edit Profil",
                         badgeType = BadgeType.INFO,
@@ -287,30 +416,6 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         title = "Perangkat kasir (${cashierDevices.size})",
                         subtitle = cashierDevices.firstOrNull()?.let { "${it.name} (${it.role})" } ?: "Kelola terminal utama / kasir",
                         onClick = { showDevicesDialog = true }
-                    )
-                    HorizontalDivider(color = BorderDefault)
-                    SettingsMenuRow(
-                        icon = Icons.Default.Backup,
-                        title = "Cadangan data SQLite",
-                        subtitle = "Database lokal aktif • Ketuk untuk info & impor .kasgo",
-                        badgeText = "Aktif",
-                        badgeType = BadgeType.SUCCESS,
-                        onClick = { showBackupInfoDialog = true }
-                    )
-                    HorizontalDivider(color = BorderDefault)
-                    SettingsMenuRow(
-                        icon = Icons.Default.UploadFile,
-                        title = if (kasGoImportState.isInspecting) "Membaca file .kasgo..." else "Import Backup KasGo (.kasgo)",
-                        subtitle = kasGoImportState.lastImportSummary?.let { s ->
-                            "Terakhir impor: ${s.productsImported} produk, ${s.salesImported} transaksi, ${s.photosCopied} foto"
-                        } ?: "Pulihkan produk, stok, pelanggan, foto & transaksi dari file .kasgo",
-                        badgeText = if (kasGoImportState.isInspecting) "Proses..." else "Pilih File",
-                        badgeType = BadgeType.INFO,
-                        onClick = {
-                            if (!kasGoImportState.isInspecting && !kasGoImportState.isImporting) {
-                                kasGoPickerLauncher.launch(arrayOf("*/*"))
-                            }
-                        }
                     )
                     HorizontalDivider(color = BorderDefault)
                     SettingsMenuRow(
@@ -447,11 +552,11 @@ fun SettingsScreen(viewModel: PosViewModel) {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = storeProfile?.name?.ifBlank { "Sistem Kasir POS" } ?: "Sistem Kasir POS",
+                        text = storeProfile?.name?.ifBlank { "KASLITE POS" } ?: "KASLITE POS",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
                     )
                     Text(
-                        text = "Mode Produksi • Penyimpanan Lokal SQLite & Firebase Opsional",
+                        text = "Mode Produksi • Penyimpanan Data Toko 100% Lokal di Perangkat",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
                     )
                     if (isOwner) {
@@ -847,38 +952,76 @@ fun SettingsScreen(viewModel: PosViewModel) {
         }
     }
 
-    if (showBackupInfoDialog) {
-        Dialog(onDismissRequest = { showBackupInfoDialog = false }) {
+    if (showLicenseKeyDialog) {
+        var keyInput by remember { mutableStateOf(licenseUiState.licenseKey) }
+        var localDialogError by remember { mutableStateOf<String?>(null) }
+        var isSubmittingKey by remember { mutableStateOf(false) }
+
+        Dialog(onDismissRequest = { if (!isSubmittingKey) showLicenseKeyDialog = false }) {
             Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Aktivasi Kunci Lisensi KASLITE", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
                     Text(
-                        "Penyimpanan SQLite & Backup",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
-                    )
-                    Text(
-                        "Seluruh data produk, stok, pelanggan, transaksi, dan multi-kas tersimpan lokal di SQLite perangkat (gerai_una_database) serta dapat disinkronkan ke Firebase Cloud.",
+                        "Masukkan kunci lisensi dari Admin Pusat ($SUPER_ADMIN_EMAIL) untuk membuka seluruh menu secara penuh.",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
                     )
+                    OutlinedTextField(
+                        value = keyInput,
+                        onValueChange = { keyInput = it; localDialogError = null },
+                        label = { Text("Kunci Lisensi") },
+                        placeholder = { Text("Contoh: KL-XXXX-XXXX") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (!localDialogError.isNullOrBlank()) {
+                        Text(localDialogError ?: "", color = Rose500, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                    }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
-                            onClick = { showBackupInfoDialog = false },
+                            onClick = { showLicenseKeyDialog = false },
+                            enabled = !isSubmittingKey,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Tutup", color = Slate700)
+                            Text("Batal", color = Slate700)
                         }
                         Button(
                             onClick = {
-                                showBackupInfoDialog = false
-                                if (!kasGoImportState.isInspecting && !kasGoImportState.isImporting) {
-                                    kasGoPickerLauncher.launch(arrayOf("*/*"))
+                                if (keyInput.isBlank()) {
+                                    localDialogError = "Kunci lisensi tidak boleh kosong."
+                                    return@Button
+                                }
+                                coroutineScope.launch {
+                                    isSubmittingKey = true
+                                    val fbUser = runCatching { Firebase.auth.currentUser }.getOrNull()
+                                    if (fbUser != null) {
+                                        viewModel.activateCustomerLicenseKey(keyInput, null) { ok, msg ->
+                                            isSubmittingKey = false
+                                            if (ok) showLicenseKeyDialog = false else localDialogError = msg
+                                        }
+                                    } else {
+                                        GoogleAuthHelper.signInWithGoogle(context).onSuccess { payload ->
+                                            viewModel.activateCustomerLicenseKey(keyInput, payload) { ok, msg ->
+                                                isSubmittingKey = false
+                                                if (ok) showLicenseKeyDialog = false else localDialogError = msg
+                                            }
+                                        }.onFailure { err ->
+                                            isSubmittingKey = false
+                                            localDialogError = err.localizedMessage ?: "Verifikasi akun Google gagal."
+                                        }
+                                    }
                                 }
                             },
+                            enabled = !isSubmittingKey,
                             colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Import .kasgo", fontWeight = FontWeight.Bold)
+                            if (isSubmittingKey) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            } else {
+                                Text("Aktifkan", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -927,7 +1070,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
         }
     }
 
-    if (kasGoImportState.isInspecting) {
+    if (kasLiteBackupState.isInspecting) {
         Dialog(onDismissRequest = {}) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
@@ -942,11 +1085,11 @@ fun SettingsScreen(viewModel: PosViewModel) {
                     CircularProgressIndicator(modifier = Modifier.size(28.dp), color = AccentBlue)
                     Column {
                         Text(
-                            "Menganalisis Backup .kasgo",
+                            "Menganalisis Backup .kaslite",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
                         )
                         Text(
-                            "Membaca database.db, prefs, & folder photos...",
+                            "Membaca manifest, seluruh data tabel, & foto...",
                             style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
                         )
                     }
@@ -955,18 +1098,18 @@ fun SettingsScreen(viewModel: PosViewModel) {
         }
     }
 
-    kasGoImportState.inspectResult?.let { inspect ->
-        KasGoImportPreviewDialog(
+    kasLiteBackupState.inspectResult?.let { inspect ->
+        KasLiteRestorePreviewDialog(
             inspect = inspect,
-            isImporting = kasGoImportState.isImporting,
-            errorMessage = kasGoImportState.errorMessage,
-            onConfirm = { options -> viewModel.confirmKasGoImport(options) },
-            onDismiss = { if (!kasGoImportState.isImporting) viewModel.dismissKasGoImportPreview() }
+            isRestoring = kasLiteBackupState.isRestoring,
+            errorMessage = kasLiteBackupState.errorMessage,
+            onConfirm = { replaceExisting -> viewModel.confirmKasLiteRestore(replaceExisting) },
+            onDismiss = { if (!kasLiteBackupState.isRestoring) viewModel.dismissKasLiteRestorePreview() }
         )
     }
 
-    if (kasGoImportState.inspectResult == null && kasGoImportState.errorMessage != null) {
-        Dialog(onDismissRequest = { viewModel.dismissKasGoImportPreview() }) {
+    if (kasLiteBackupState.inspectResult == null && kasLiteBackupState.errorMessage != null) {
+        Dialog(onDismissRequest = { viewModel.dismissKasLiteRestorePreview() }) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = SurfaceWhite,
@@ -978,11 +1121,11 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Rose500)
                     )
                     Text(
-                        kasGoImportState.errorMessage ?: "",
+                        kasLiteBackupState.errorMessage ?: "",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
                     )
                     Button(
-                        onClick = { viewModel.dismissKasGoImportPreview() },
+                        onClick = { viewModel.dismissKasLiteRestorePreview() },
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -995,16 +1138,19 @@ fun SettingsScreen(viewModel: PosViewModel) {
 }
 
 @Composable
-private fun KasGoImportPreviewDialog(
-    inspect: KasGoInspectResult,
-    isImporting: Boolean,
+private fun KasLiteRestorePreviewDialog(
+    inspect: KasLiteBackupInspectResult,
+    isRestoring: Boolean,
     errorMessage: String?,
-    onConfirm: (KasGoImportOptions) -> Unit,
+    onConfirm: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var replaceExisting by remember { mutableStateOf(false) }
-    var importStoreProfile by remember { mutableStateOf(true) }
-    var showTables by remember { mutableStateOf(false) }
+    var replaceExisting by remember { mutableStateOf(true) }
+    val dateLabel = remember(inspect.createdAtMillis) {
+        if (inspect.createdAtMillis > 0L) {
+            SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(Date(inspect.createdAtMillis))
+        } else "-"
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -1027,11 +1173,11 @@ private fun KasGoImportPreviewDialog(
                             .background(AccentBlueSoft),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.UploadFile, contentDescription = null, tint = AccentBlue)
+                        Icon(Icons.Default.Backup, contentDescription = null, tint = AccentBlue)
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "Pratinjau Backup KasGo",
+                            "Pratinjau Backup KASLITE",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
                         )
                         Text(
@@ -1041,85 +1187,60 @@ private fun KasGoImportPreviewDialog(
                     }
                 }
 
-                if (inspect.storePreview.storeName.isNotBlank() || inspect.manifestSummary.isNotBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = Sapphire50,
-                        border = BorderStroke(1.dp, Sapphire200),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            if (inspect.storePreview.storeName.isNotBlank()) {
-                                Text(
-                                    "Toko: ${inspect.storePreview.storeName}",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800)
-                                )
-                            }
-                            if (inspect.manifestSummary.isNotBlank()) {
-                                Text(
-                                    inspect.manifestSummary,
-                                    style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontSize = 10.sp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KasGoCountPill("Produk", "${inspect.productCount}", Modifier.weight(1f))
-                    KasGoCountPill("Transaksi", "${inspect.saleCount}", Modifier.weight(1f))
-                    KasGoCountPill("Pelanggan", "${inspect.customerCount}", Modifier.weight(1f))
-                }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KasGoCountPill("Akun Kas", "${inspect.cashAccountCount}", Modifier.weight(1f))
-                    KasGoCountPill("Pengeluaran", "${inspect.expenseCount}", Modifier.weight(1f))
-                    KasGoCountPill("Foto", "${inspect.photoCount}", Modifier.weight(1f))
-                }
-
-                TextButton(
-                    onClick = { showTables = !showTables },
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Sapphire50,
+                    border = BorderStroke(1.dp, Sapphire200),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = if (showTables) "Sembunyikan daftar tabel (${inspect.discoveredTables.size})" else "Lihat semua tabel di database.db (${inspect.discoveredTables.size})",
-                        style = MaterialTheme.typography.labelSmall.copy(color = AccentBlue, fontWeight = FontWeight.Bold)
-                    )
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Toko: ${inspect.storeName.ifBlank { "KASLITE" }}",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800)
+                        )
+                        Text(
+                            "Dibuat: $dateLabel • Versi ${inspect.appVersion} • ${inspect.totalRecords} total rekaman",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Slate600, fontSize = 10.sp)
+                        )
+                    }
                 }
 
-                if (showTables) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = Slate50,
-                        border = BorderStroke(1.dp, BorderDefault),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            inspect.discoveredTables.forEach { tbl ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        "${tbl.tableName} (${tbl.mappedRole})",
-                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate800, fontSize = 11.sp),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        "${tbl.rowCount} baris",
-                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp).tabular()
-                                    )
-                                }
-                            }
-                        }
-                    }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KasLiteCountPill("Produk", "${inspect.productCount}", Modifier.weight(1f))
+                    KasLiteCountPill("Penjualan", "${inspect.saleCount}", Modifier.weight(1f))
+                    KasLiteCountPill("Pembelian", "${inspect.purchaseCount}", Modifier.weight(1f))
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KasLiteCountPill("Pelanggan", "${inspect.customerCount}", Modifier.weight(1f))
+                    KasLiteCountPill("Akun Kas", "${inspect.cashAccountCount}", Modifier.weight(1f))
+                    KasLiteCountPill("User/Foto", "${inspect.userAccountCount}/${inspect.photoCount}", Modifier.weight(1f))
                 }
 
                 HorizontalDivider(color = BorderDefault)
 
                 Text(
-                    "Metode Pengisian Data",
+                    "Metode Pemulihan Data",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate800)
                 )
+
+                Surface(
+                    onClick = { replaceExisting = true },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (replaceExisting) AccentBlueSoft.copy(alpha = 0.45f) else Slate50,
+                    border = BorderStroke(1.dp, if (replaceExisting) AccentBlue else BorderDefault),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = replaceExisting, onClick = { replaceExisting = true })
+                        Column {
+                            Text("Pulihkan Penuh (Timpa Data Saat Ini)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
+                            Text("Kembalikan 100% data persis seperti arsip backup beserta seluruh foto & profil toko", fontSize = 10.sp, color = Slate600)
+                        }
+                    }
+                }
 
                 Surface(
                     onClick = { replaceExisting = false },
@@ -1134,42 +1255,10 @@ private fun KasGoImportPreviewDialog(
                     ) {
                         RadioButton(selected = !replaceExisting, onClick = { replaceExisting = false })
                         Column {
-                            Text("Gabungkan (Merge) • Disarankan", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
-                            Text("Tambah data baru dari .kasgo tanpa menghapus data yang sudah ada", fontSize = 10.sp, color = Slate600)
+                            Text("Gabung ke Data Saat Ini (Merge)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Slate900)
+                            Text("Tambahkan data dari backup tanpa menghapus data yang sedang aktif di HP", fontSize = 10.sp, color = Slate600)
                         }
                     }
-                }
-
-                Surface(
-                    onClick = { replaceExisting = true },
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (replaceExisting) Rose100.copy(alpha = 0.55f) else Slate50,
-                    border = BorderStroke(1.dp, if (replaceExisting) Rose500 else BorderDefault),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = replaceExisting, onClick = { replaceExisting = true })
-                        Column {
-                            Text("Ganti Data Lama (Replace)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Rose500)
-                            Text("Hapus data bisnis saat ini lalu isi penuh dari backup .kasgo", fontSize = 10.sp, color = Slate600)
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { importStoreProfile = !importStoreProfile },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(checked = importStoreProfile, onCheckedChange = { importStoreProfile = it })
-                    Text(
-                        "Terapkan profil toko dari kasgo_settings.json",
-                        style = MaterialTheme.typography.bodySmall.copy(color = Slate800)
-                    )
                 }
 
                 if (!errorMessage.isNullOrBlank()) {
@@ -1182,7 +1271,7 @@ private fun KasGoImportPreviewDialog(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = onDismiss,
-                        enabled = !isImporting,
+                        enabled = !isRestoring,
                         border = BorderStroke(1.dp, BorderInput),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.weight(1f)
@@ -1190,27 +1279,20 @@ private fun KasGoImportPreviewDialog(
                         Text("Batal", color = Slate700)
                     }
                     Button(
-                        onClick = {
-                            onConfirm(
-                                KasGoImportOptions(
-                                    replaceExisting = replaceExisting,
-                                    importStoreProfile = importStoreProfile
-                                )
-                            )
-                        },
-                        enabled = !isImporting,
+                        onClick = { onConfirm(replaceExisting) },
+                        enabled = !isRestoring,
                         colors = ButtonDefaults.buttonColors(containerColor = Emerald800, contentColor = Color.White),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .testTag("kasgo_confirm_import_btn")
+                            .testTag("kaslite_confirm_restore_btn")
                     ) {
-                        if (isImporting) {
+                        if (isRestoring) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Mengimpor...", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Memulihkan...", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         } else {
-                            Text("Mulai Import", fontWeight = FontWeight.Bold)
+                            Text("Mulai Restore", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1220,7 +1302,7 @@ private fun KasGoImportPreviewDialog(
 }
 
 @Composable
-private fun KasGoCountPill(label: String, value: String, modifier: Modifier = Modifier) {
+private fun KasLiteCountPill(label: String, value: String, modifier: Modifier = Modifier) {
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = Slate50,

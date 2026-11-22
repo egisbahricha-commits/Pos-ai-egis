@@ -7,31 +7,32 @@ import androidx.lifecycle.viewModelScope
 import com.example.ai.AIIntent
 import com.example.ai.AIParseResult
 import com.example.ai.GeraiUnaAIEngine
-import com.example.data.backup.KasGoBackupImporter
-import com.example.data.backup.KasGoImportOptions
-import com.example.data.backup.KasGoImportSummary
-import com.example.data.backup.KasGoInspectResult
+import com.example.data.backup.KasLiteBackupInspectResult
+import com.example.data.backup.KasLiteBackupManager
+import com.example.data.backup.KasLiteRestoreSummary
 import com.example.data.database.GeraiUnaDatabase
 import com.example.data.entity.*
+import com.example.data.excel.ExcelProductImportSummary
+import com.example.data.excel.ExcelProductInspectResult
+import com.example.data.excel.ExcelProductReportManager
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
 import com.example.data.repository.PosRepository
 import com.example.data.repository.PurchaseItemDraft
-import com.example.firebase.CashAccountDoc
-import com.example.firebase.CashMutationDoc
 import com.example.firebase.FirebaseAuthUiState
 import com.example.firebase.FirebaseSessionStore
 import com.example.firebase.FirebaseSyncRepository
 import com.example.firebase.GoogleAuthHelper
 import com.example.firebase.GoogleSignInPayload
+import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseDoc
-import com.example.firebase.SyncMode
+import com.example.firebase.LicenseUiState
+import com.example.firebase.LocalLicenseSnapshot
 import com.example.whatsapp.WhatsAppCommandCenter
 import com.example.whatsapp.WhatsAppMessageResponse
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
@@ -42,7 +43,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -52,6 +52,9 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.util.Locale
+
+const val SUPER_ADMIN_EMAIL = "egisbahricha@gmail.com"
+const val DEMO_DURATION_MILLIS = 3L * 24L * 60L * 60L * 1000L
 
 enum class Screen {
     DASHBOARD,
@@ -73,10 +76,140 @@ enum class Screen {
     SEMUA_MENU,
     MULTI_KAS,
     TARIF_ADMIN,
-    CLOUD_MONITOR,
     SCAN_BARCODE,
     MANAJEMEN_PRODUK,
     SUPER_ADMIN
+}
+
+fun isScreenAllowedWhenDemoLocked(screen: Screen): Boolean =
+    screen == Screen.PRODUK ||
+        screen == Screen.MANAJEMEN_PRODUK ||
+        screen == Screen.SCAN_BARCODE ||
+        screen == Screen.PENGATURAN
+
+fun evaluateLocalLicenseState(
+    snapshot: LocalLicenseSnapshot?,
+    nowMillis: Long,
+    currentDeviceId: String
+): LicenseUiState {
+    if (snapshot == null) {
+        return LicenseUiState(
+            accessStatus = LicenseAccessStatus.UNREGISTERED,
+            message = "Daftar online dengan email Google untuk memulai Demo 3 hari."
+        )
+    }
+    val effectiveNow = maxOf(nowMillis, snapshot.maxSeenClockMillis)
+    if (snapshot.status.equals("SUSPENDED", ignoreCase = true)) {
+        return LicenseUiState(
+            accessStatus = LicenseAccessStatus.SUSPENDED,
+            licenseKey = snapshot.licenseKey,
+            ownerEmail = snapshot.ownerEmail,
+            storeName = snapshot.storeName,
+            planType = snapshot.planType,
+            statusRaw = snapshot.status,
+            demoStartedAtMillis = snapshot.demoStartedAtMillis,
+            demoExpiresAtMillis = snapshot.demoExpiresAtMillis,
+            expiresAtMillis = snapshot.expiresAtMillis,
+            remainingMillis = 0L,
+            lastVerifiedAtMillis = snapshot.lastVerifiedAtMillis,
+            message = "Akun/lisensi dinonaktifkan Admin Pusat. Hubungi $SUPER_ADMIN_EMAIL."
+        )
+    }
+    if (snapshot.deviceId.isNotBlank() &&
+        currentDeviceId.isNotBlank() &&
+        snapshot.deviceId != currentDeviceId
+    ) {
+        return LicenseUiState(
+            accessStatus = LicenseAccessStatus.DEVICE_MISMATCH,
+            licenseKey = snapshot.licenseKey,
+            ownerEmail = snapshot.ownerEmail,
+            storeName = snapshot.storeName,
+            planType = snapshot.planType,
+            statusRaw = snapshot.status,
+            demoStartedAtMillis = snapshot.demoStartedAtMillis,
+            demoExpiresAtMillis = snapshot.demoExpiresAtMillis,
+            expiresAtMillis = snapshot.expiresAtMillis,
+            remainingMillis = 0L,
+            lastVerifiedAtMillis = snapshot.lastVerifiedAtMillis,
+            message = "Lisensi terikat di perangkat lain. Minta Admin Pusat ($SUPER_ADMIN_EMAIL) untuk Reset Device."
+        )
+    }
+    val isFullPlan = snapshot.planType.equals("FULL", ignoreCase = true) ||
+        snapshot.status.equals("ACTIVE", ignoreCase = true)
+    if (isFullPlan) {
+        val exp = snapshot.expiresAtMillis
+        if (exp > 0L && effectiveNow >= exp) {
+            return LicenseUiState(
+                accessStatus = LicenseAccessStatus.DEMO_EXPIRED,
+                licenseKey = snapshot.licenseKey,
+                ownerEmail = snapshot.ownerEmail,
+                storeName = snapshot.storeName,
+                planType = "FULL",
+                statusRaw = "EXPIRED",
+                demoStartedAtMillis = snapshot.demoStartedAtMillis,
+                demoExpiresAtMillis = snapshot.demoExpiresAtMillis,
+                expiresAtMillis = exp,
+                remainingMillis = 0L,
+                lastVerifiedAtMillis = snapshot.lastVerifiedAtMillis,
+                message = "Masa aktif lisensi telah berakhir. Hanya menu Produk & Pengaturan yang dapat diakses."
+            )
+        }
+        val rem = if (exp > 0L) (exp - effectiveNow).coerceAtLeast(0L) else Long.MAX_VALUE
+        return LicenseUiState(
+            accessStatus = LicenseAccessStatus.FULL_ACTIVE,
+            licenseKey = snapshot.licenseKey,
+            ownerEmail = snapshot.ownerEmail,
+            storeName = snapshot.storeName,
+            planType = "FULL",
+            statusRaw = "ACTIVE",
+            demoStartedAtMillis = snapshot.demoStartedAtMillis,
+            demoExpiresAtMillis = snapshot.demoExpiresAtMillis,
+            expiresAtMillis = exp,
+            remainingMillis = rem,
+            lastVerifiedAtMillis = snapshot.lastVerifiedAtMillis,
+            message = "Lisensi Penuh Aktif"
+        )
+    }
+
+    val demoEnd = when {
+        snapshot.demoExpiresAtMillis > 0L -> snapshot.demoExpiresAtMillis
+        snapshot.demoStartedAtMillis > 0L -> snapshot.demoStartedAtMillis + DEMO_DURATION_MILLIS
+        else -> 0L
+    }
+    val isExpired = snapshot.status.equals("EXPIRED", ignoreCase = true) ||
+        (demoEnd > 0L && effectiveNow >= demoEnd)
+    return if (isExpired) {
+        LicenseUiState(
+            accessStatus = LicenseAccessStatus.DEMO_EXPIRED,
+            licenseKey = snapshot.licenseKey,
+            ownerEmail = snapshot.ownerEmail,
+            storeName = snapshot.storeName,
+            planType = "DEMO",
+            statusRaw = "EXPIRED",
+            demoStartedAtMillis = snapshot.demoStartedAtMillis,
+            demoExpiresAtMillis = demoEnd,
+            expiresAtMillis = snapshot.expiresAtMillis,
+            remainingMillis = 0L,
+            lastVerifiedAtMillis = snapshot.lastVerifiedAtMillis,
+            message = "Masa Demo 3 hari telah berakhir. Hubungi $SUPER_ADMIN_EMAIL untuk aktivasi penuh."
+        )
+    } else {
+        val rem = if (demoEnd > 0L) (demoEnd - effectiveNow).coerceAtLeast(0L) else DEMO_DURATION_MILLIS
+        LicenseUiState(
+            accessStatus = LicenseAccessStatus.DEMO_ACTIVE,
+            licenseKey = snapshot.licenseKey,
+            ownerEmail = snapshot.ownerEmail,
+            storeName = snapshot.storeName,
+            planType = "DEMO",
+            statusRaw = "DEMO",
+            demoStartedAtMillis = snapshot.demoStartedAtMillis,
+            demoExpiresAtMillis = demoEnd,
+            expiresAtMillis = snapshot.expiresAtMillis,
+            remainingMillis = rem,
+            lastVerifiedAtMillis = snapshot.lastVerifiedAtMillis,
+            message = "Mode Demo 3 Hari Aktif"
+        )
+    }
 }
 
 data class ManualProductValidation(
@@ -296,11 +429,20 @@ data class ChatMessage(
     val isActionResolved: Boolean = false
 )
 
-data class KasGoImportUiState(
+data class ExcelImportUiState(
     val isInspecting: Boolean = false,
     val isImporting: Boolean = false,
-    val inspectResult: KasGoInspectResult? = null,
-    val lastImportSummary: KasGoImportSummary? = null,
+    val inspectResult: ExcelProductInspectResult? = null,
+    val lastSummary: ExcelProductImportSummary? = null,
+    val errorMessage: String? = null
+)
+
+data class KasLiteBackupUiState(
+    val isWorking: Boolean = false,
+    val isInspecting: Boolean = false,
+    val isRestoring: Boolean = false,
+    val inspectResult: KasLiteBackupInspectResult? = null,
+    val lastRestoreSummary: KasLiteRestoreSummary? = null,
     val errorMessage: String? = null
 )
 
@@ -335,27 +477,50 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val authUiState: StateFlow<FirebaseAuthUiState> = _authUiState.asStateFlow()
 
     val isSuperAdmin: StateFlow<Boolean> = _authUiState.map {
-        it.userEmail.equals("egisbahricha@gmail.com", ignoreCase = true)
+        it.isSuperAdmin && it.userEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    private val _licenseUiState = MutableStateFlow(LicenseUiState())
+    val licenseUiState: StateFlow<LicenseUiState> = _licenseUiState.asStateFlow()
 
     private val _allLicenses = MutableStateFlow<List<LicenseDoc>>(emptyList())
     val allLicenses: StateFlow<List<LicenseDoc>> = _allLicenses.asStateFlow()
 
+    private val _superAdminError = MutableStateFlow<String?>(null)
+    val superAdminError: StateFlow<String?> = _superAdminError.asStateFlow()
+
+    private val _isSuperAdminLoading = MutableStateFlow(false)
+    val isSuperAdminLoading: StateFlow<Boolean> = _isSuperAdminLoading.asStateFlow()
+
     private var licensesJob: Job? = null
+
+    private fun refreshLicenseStateFromStore() {
+        val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+        val now = firebaseSessionStore.updateMaxSeenClockMillis()
+        val snap = firebaseSessionStore.getLicenseSnapshot()
+        _licenseUiState.value = evaluateLocalLicenseState(snap, now, deviceId)
+    }
 
     fun loadSuperAdminLicenses() {
         val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            _userMessage.value = "Firebase tidak terhubung."
+        val activeUser = auth?.currentUser
+        if (syncRepo == null || activeUser == null || !activeUser.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+            _superAdminError.value = "Harap masuk menggunakan akun Google Super Admin ($SUPER_ADMIN_EMAIL) via Firebase."
             return
         }
         licensesJob?.cancel()
         licensesJob = viewModelScope.launch(Dispatchers.IO) {
+            _isSuperAdminLoading.value = true
+            _superAdminError.value = null
             try {
                 val list = syncRepo.getAllLicenses()
                 _allLicenses.value = list
             } catch (e: Exception) {
-                _userMessage.value = "Gagal memuat daftar lisensi: ${e.localizedMessage}"
+                val msg = "Gagal memuat database pelanggan Firestore: ${e.localizedMessage ?: e.message}"
+                _superAdminError.value = msg
+                _userMessage.value = msg
+            } finally {
+                _isSuperAdminLoading.value = false
             }
         }
     }
@@ -372,6 +537,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 val list = syncRepo.getAllLicenses()
                 _allLicenses.value = list
                 withContext(Dispatchers.Main) {
+                    _userMessage.value = "Perangkat di-reset untuk lisensi $licenseKey"
                     onResult(true, "Perangkat berhasil di-reset untuk lisensi $licenseKey")
                 }
             } catch (e: Exception) {
@@ -382,7 +548,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun generateNewLicense(storeName: String, ownerName: String, ownerEmail: String, onResult: (String?) -> Unit) {
+    fun generateNewLicense(
+        storeName: String,
+        ownerName: String,
+        ownerEmail: String,
+        phone: String = "",
+        planType: String = "FULL",
+        onResult: (String?) -> Unit
+    ) {
         val syncRepo = firebaseSyncRepository
         if (syncRepo == null) {
             onResult(null)
@@ -390,149 +563,175 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val randomKey = "UNA-" + (1000..9999).random() + "-" + (1000..9999).random()
-                val doc = LicenseDoc(
-                    id = randomKey,
-                    licenseKey = randomKey,
+                val created = syncRepo.createSuperAdminLicense(
                     storeName = storeName,
                     ownerName = ownerName,
                     ownerEmail = ownerEmail,
-                    deviceId = "",
-                    status = "ACTIVE",
-                    activatedAtMillis = System.currentTimeMillis(),
-                    expiresAtMillis = System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000
+                    phone = phone,
+                    planType = planType
                 )
-                syncRepo.saveLicense(doc)
-                val list = syncRepo.getAllLicenses()
-                _allLicenses.value = list
+                _allLicenses.value = syncRepo.getAllLicenses()
                 withContext(Dispatchers.Main) {
-                    onResult(randomKey)
+                    _userMessage.value = "Lisensi ${created.licenseKey} berhasil dibuat!"
+                    onResult(created.licenseKey)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
+                    _userMessage.value = "Gagal membuat lisensi: ${e.localizedMessage}"
                     onResult(null)
                 }
             }
         }
     }
 
-    fun activateLicenseKey(key: String, storeName: String, ownerName: String, email: String, onResult: (Boolean, String) -> Unit) {
+    fun superAdminActivateFull(
+        licenseKey: String,
+        durationDays: Int = 3650,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
         val syncRepo = firebaseSyncRepository
-        val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+        if (syncRepo == null) {
+            onResult(false, "Firebase tidak terhubung.")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                var license = syncRepo?.getLicenseByKey(key.trim())
-                if (license == null) {
-                    if (syncRepo != null) {
-                        license = LicenseDoc(
-                            id = key.trim(),
-                            licenseKey = key.trim(),
-                            storeName = storeName,
-                            ownerName = ownerName,
-                            ownerEmail = email,
-                            deviceId = deviceId,
-                            status = "ACTIVE",
-                            activatedAtMillis = System.currentTimeMillis(),
-                            expiresAtMillis = System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000
-                        )
-                        syncRepo.saveLicense(license)
-                    } else {
-                        if (key.trim().length >= 6) {
-                            withContext(Dispatchers.Main) {
-                                repository.setSetting("license_activated", "true")
-                                repository.setSetting("license_key", key.trim())
-                                onResult(true, "Lisensi diaktifkan secara offline.")
-                            }
-                            return@launch
-                        } else {
-                            withContext(Dispatchers.Main) {
-                                onResult(false, "Kunci lisensi tidak valid.")
-                            }
-                            return@launch
-                        }
-                    }
-                }
-
-                if (license.deviceId.isNotBlank() && license.deviceId != deviceId) {
-                    withContext(Dispatchers.Main) {
-                        onResult(false, "Lisensi ini sudah terikat di perangkat lain. Hubungi Admin Pusat (egisbahricha@gmail.com) untuk reset perangkat.")
-                    }
-                    return@launch
-                }
-
-                if (license.deviceId.isBlank() && syncRepo != null) {
-                    val updated = license.copy(deviceId = deviceId)
-                    syncRepo.saveLicense(updated)
-                }
-
-                repository.setSetting("license_activated", "true")
-                repository.setSetting("license_key", key.trim())
-
+                syncRepo.superAdminActivateFull(licenseKey, durationDays)
+                _allLicenses.value = syncRepo.getAllLicenses()
                 withContext(Dispatchers.Main) {
-                    onResult(true, "Lisensi berhasil diaktifkan!")
+                    _userMessage.value = "Lisensi $licenseKey diaktifkan FULL!"
+                    onResult(true, "Lisensi $licenseKey berhasil diaktifkan FULL.")
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    if (key.trim().length >= 6) {
-                        repository.setSetting("license_activated", "true")
-                        repository.setSetting("license_key", key.trim())
-                        onResult(true, "Lisensi diaktifkan (Mode Offline).")
-                    } else {
-                        onResult(false, "Gagal aktivasi lisensi: ${e.localizedMessage}")
-                    }
+                    onResult(false, "Gagal aktivasi FULL: ${e.localizedMessage}")
                 }
             }
         }
     }
 
-    private val _cloudCashAccounts = MutableStateFlow<List<CashAccountDoc>>(emptyList())
-    val cloudCashAccounts: StateFlow<List<CashAccountDoc>> = _cloudCashAccounts.asStateFlow()
+    fun superAdminExtendDemo(
+        licenseKey: String,
+        days: Int = 3,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            onResult(false, "Firebase tidak terhubung.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                syncRepo.superAdminExtendDemo(licenseKey, days)
+                _allLicenses.value = syncRepo.getAllLicenses()
+                withContext(Dispatchers.Main) {
+                    _userMessage.value = "Demo diperpanjang +$days hari untuk $licenseKey"
+                    onResult(true, "Demo berhasil diperpanjang +$days hari.")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal perpanjang demo: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
 
-    private val _cloudCashMutations = MutableStateFlow<List<CashMutationDoc>>(emptyList())
-    val cloudCashMutations: StateFlow<List<CashMutationDoc>> = _cloudCashMutations.asStateFlow()
-
-    private var cloudAccountsJob: Job? = null
-    private var cloudMutationsJob: Job? = null
-    private var listeningUid: String? = null
-
-    private val authStateListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-        val user = firebaseAuth.currentUser
-        if (user != null) {
-            applyAuthenticatedUser(user)
-            startCloudListeners(user.uid)
-        } else {
-            stopCloudListeners()
+    fun superAdminSetSuspended(
+        licenseKey: String,
+        suspended: Boolean,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            onResult(false, "Firebase tidak terhubung.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                syncRepo.superAdminSetSuspended(licenseKey, suspended)
+                _allLicenses.value = syncRepo.getAllLicenses()
+                val label = if (suspended) "dinonaktifkan (SUSPENDED)" else "diaktifkan kembali"
+                withContext(Dispatchers.Main) {
+                    _userMessage.value = "Lisensi $licenseKey $label"
+                    onResult(true, "Lisensi $licenseKey $label")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal ubah status lisensi: ${e.localizedMessage}")
+                }
+            }
         }
     }
 
     private val _currentScreen = MutableStateFlow(Screen.DASHBOARD)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
-    fun loginAsSuperAdmin() {
-        val email = "egisbahricha@gmail.com"
-        val displayName = "Egis Bahricha (Super Admin)"
-        firebaseSessionStore.setLastLoginEmail(email)
-        firebaseSessionStore.setOfflineBypass(false)
-        _activeUserName.value = displayName
-        _activeRole.value = "Owner"
-        _currentScreen.value = Screen.SUPER_ADMIN
-        _authUiState.update {
-            it.copy(
-                hasEnteredApp = true,
-                isCloudSignedIn = false,
-                isOfflineMode = true,
-                userId = "super_admin_egis",
-                userEmail = email,
-                fullName = displayName,
-                storeName = firebaseSessionStore.getStoreNameHint().ifBlank { "Gerai Una POS (Pusat)" },
-                authError = null,
-                authInfoMessage = "Masuk sebagai Admin Pusat (Super Admin)."
-            )
+    fun signInSuperAdminWithGooglePayload(payload: GoogleSignInPayload) {
+        viewModelScope.launch {
+            _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
+            try {
+                val activeAuth = auth
+                    ?: throw IllegalStateException("Firebase Auth belum tersedia pada build ini.")
+                val credential = GoogleAuthProvider.getCredential(payload.idToken, null)
+                val authResult = activeAuth.signInWithCredential(credential).await()
+                val firebaseUser = authResult.user
+                    ?: throw IllegalStateException("Akun Firebase tidak ditemukan setelah login Google.")
+                val email = firebaseUser.email.orEmpty()
+                if (!email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+                    activeAuth.signOut()
+                    GoogleAuthHelper.clearCredentialState(getApplication())
+                    _authUiState.update {
+                        it.copy(
+                            isAuthLoading = false,
+                            isSuperAdmin = false,
+                            authError = "Email \"$email\" bukan Admin Pusat resmi ($SUPER_ADMIN_EMAIL)."
+                        )
+                    }
+                    return@launch
+                }
+
+                val displayName = firebaseUser.displayName?.takeIf { it.isNotBlank() } ?: "Admin Pusat (Egis)"
+                firebaseSessionStore.setLastLoginEmail(email)
+                _activeUserName.value = displayName
+                _activeRole.value = "Owner"
+                _currentScreen.value = Screen.SUPER_ADMIN
+                _authUiState.update {
+                    it.copy(
+                        hasEnteredApp = true,
+                        isCloudSignedIn = true,
+                        isOfflineMode = false,
+                        isSuperAdmin = true,
+                        userId = firebaseUser.uid,
+                        userEmail = email,
+                        fullName = displayName,
+                        storeName = "KASLITE Admin Pusat",
+                        lastEmail = email,
+                        isAuthLoading = false,
+                        authError = null,
+                        authInfoMessage = "Masuk sebagai Admin Pusat ($email)."
+                    )
+                }
+                _userMessage.value = "Berhasil masuk sebagai Super Admin."
+                loadSuperAdminLicenses()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _authUiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        authError = e.localizedMessage ?: "Gagal masuk Super Admin via Firebase."
+                    )
+                }
+            }
         }
-        _userMessage.value = "Berhasil masuk sebagai Admin Pusat."
     }
 
     fun navigateTo(screen: Screen) {
+        val isSuper = _authUiState.value.isSuperAdmin
+        if (!isSuper && _licenseUiState.value.isLockedToProductOnly && !isScreenAllowedWhenDemoLocked(screen)) {
+            _userMessage.value = "Masa Demo 3 hari telah berakhir / akun terkunci. Hanya menu Produk & Pengaturan yang dapat diakses. Hubungi Admin Pusat ($SUPER_ADMIN_EMAIL)."
+            return
+        }
         if (!hasMenuPermission(screen)) {
             _userMessage.value = "Akses menu ${screen.name} dibatasi untuk peran $_activeRole"
             return
@@ -612,6 +811,12 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun hasMenuPermission(screen: Screen): Boolean {
+        if (screen == Screen.SUPER_ADMIN) {
+            return _authUiState.value.isSuperAdmin && _authUiState.value.userEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
+        }
+        if (!_authUiState.value.isSuperAdmin && _licenseUiState.value.isLockedToProductOnly) {
+            return isScreenAllowedWhenDemoLocked(screen)
+        }
         if (_activeRole.value.equals("Owner", ignoreCase = true) || _activeRole.value.equals("Admin", ignoreCase = true)) {
             return true
         }
@@ -625,8 +830,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Ensure offline bypass flag never auto-enters app without login
+                // Local-only business data in Room; customer never auto-bypasses login
                 firebaseSessionStore.setOfflineBypass(false)
+                firebaseSessionStore.setAutoSyncEnabled(false)
 
                 val initializedFlag = repository.getSetting("db_initialized")
                 val extDao = database.extendedPosDao()
@@ -672,87 +878,27 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     _authUiState.update { it.copy(storeName = profile.name) }
                 }
 
-                val activeAuth = auth
-                if (activeAuth != null) {
-                    activeAuth.addAuthStateListener(authStateListener)
-                    val currentUser = activeAuth.currentUser
-                    if (currentUser != null) {
-                        applyAuthenticatedUser(currentUser)
-                        startCloudListeners(currentUser.uid)
-                        syncNowWithFirebase(SyncMode.TWO_WAY, silent = true)
+                // Restore any previously verified Firebase user for online registration step if still signed in
+                val existingFirebaseUser = auth?.currentUser
+                if (existingFirebaseUser != null && !existingFirebaseUser.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+                    _authUiState.update {
+                        it.copy(
+                            verifiedGoogleUid = existingFirebaseUser.uid,
+                            verifiedGoogleEmail = existingFirebaseUser.email.orEmpty(),
+                            verifiedGoogleName = existingFirebaseUser.displayName.orEmpty(),
+                            lastEmail = existingFirebaseUser.email.orEmpty().ifBlank { it.lastEmail }
+                        )
                     }
                 }
+                refreshLicenseStateFromStore()
             } catch (_: Exception) {
             }
         }
     }
 
-    private fun applyAuthenticatedUser(user: FirebaseUser) {
-        val email = user.email.orEmpty()
-        val displayName = user.displayName?.takeIf { it.isNotBlank() }
-            ?: email.substringBefore("@").ifBlank { "Pemilik Toko" }
-        if (email.isNotBlank()) {
-            firebaseSessionStore.setLastLoginEmail(email)
-        }
-        firebaseSessionStore.setOfflineBypass(false)
-        _activeUserName.value = displayName
-        _activeRole.value = "Owner"
-        if (email.equals("egisbahricha@gmail.com", ignoreCase = true)) {
-            _currentScreen.value = Screen.SUPER_ADMIN
-        }
-        _authUiState.update {
-            it.copy(
-                hasEnteredApp = true,
-                isCloudSignedIn = true,
-                isOfflineMode = false,
-                userId = user.uid,
-                userEmail = email,
-                fullName = displayName,
-                storeName = firebaseSessionStore.getStoreNameHint(),
-                lastEmail = email.ifBlank { it.lastEmail },
-                isAuthLoading = false,
-                authError = null
-            )
-        }
-    }
-
-    private fun startCloudListeners(userId: String) {
-        val syncRepo = firebaseSyncRepository ?: return
-        if (listeningUid == userId && cloudAccountsJob != null) return
-        stopCloudListeners()
-        listeningUid = userId
-
-        cloudAccountsJob = viewModelScope.launch {
-            syncRepo.observeCashAccounts(userId)
-                .catch { /* logged by handler or ignored on tear-down */ }
-                .collect { accounts ->
-                    _cloudCashAccounts.value = accounts
-                }
-        }
-
-        cloudMutationsJob = viewModelScope.launch {
-            syncRepo.observeCashMutations(userId)
-                .catch { /* logged by handler or ignored on tear-down */ }
-                .collect { mutations ->
-                    _cloudCashMutations.value = mutations
-                }
-        }
-    }
-
-    private fun stopCloudListeners() {
-        cloudAccountsJob?.cancel()
-        cloudMutationsJob?.cancel()
-        cloudAccountsJob = null
-        cloudMutationsJob = null
-        listeningUid = null
-        _cloudCashAccounts.value = emptyList()
-        _cloudCashMutations.value = emptyList()
-    }
-
     override fun onCleared() {
         super.onCleared()
-        auth?.removeAuthStateListener(authStateListener)
-        stopCloudListeners()
+        licensesJob?.cancel()
     }
 
     fun clearAuthMessages() {
@@ -767,47 +913,88 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         _authUiState.update { it.copy(isAuthLoading = false, authError = message) }
     }
 
-    fun signInWithGooglePayload(payload: GoogleSignInPayload, storeNameInput: String = "") {
+    fun clearVerifiedRegistrationEmail() {
+        auth?.signOut()
+        _authUiState.update {
+            it.copy(
+                verifiedGoogleUid = "",
+                verifiedGoogleEmail = "",
+                verifiedGoogleName = "",
+                authInfoMessage = null
+            )
+        }
+    }
+
+    fun verifyCustomerGoogleForRegistration(payload: GoogleSignInPayload) {
         viewModelScope.launch {
             _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
             try {
-                val trimmedStore = storeNameInput.trim()
-                if (trimmedStore.isNotBlank()) {
-                    firebaseSessionStore.setStoreNameHint(trimmedStore)
-                    val currentProfile = database.extendedPosDao().getStoreProfileSync() ?: StoreProfileEntity()
-                    if (currentProfile.name != trimmedStore) {
-                        repository.saveStoreProfile(currentProfile.copy(name = trimmedStore))
-                    }
-                }
                 val activeAuth = auth
-                    ?: throw IllegalStateException("Firebase belum terkonfigurasi di build APK ini. Gunakan Mode Offline.")
+                    ?: throw IllegalStateException("Firebase belum terkonfigurasi pada build ini.")
                 val credential = GoogleAuthProvider.getCredential(payload.idToken, null)
                 val authResult = activeAuth.signInWithCredential(credential).await()
                 val firebaseUser = authResult.user
-                    ?: throw IllegalStateException("Akun Firebase tidak ditemukan setelah login Google.")
-                applyAuthenticatedUser(firebaseUser)
-                startCloudListeners(firebaseUser.uid)
-                syncNowWithFirebase(SyncMode.TWO_WAY, isInitialLoginPull = true, silent = false)
+                    ?: throw IllegalStateException("Akun Google tidak terbaca di Firebase.")
+                val email = firebaseUser.email.orEmpty()
+                val name = firebaseUser.displayName.orEmpty()
+                if (email.isNotBlank()) {
+                    firebaseSessionStore.setLastLoginEmail(email)
+                }
+
+                // Check whether this Google UID already has an existing license on Firestore
+                val existingLicense = runCatching {
+                    firebaseSyncRepository?.fetchLicenseByOwnerUid(firebaseUser.uid)
+                }.getOrNull()
+
+                val currentDeviceId = firebaseSessionStore.getOrCreateDeviceId()
+                val infoMsg = when {
+                    existingLicense == null ->
+                        "Email $email terverifikasi! Lengkapi data toko & PIN untuk aktivasi Trial Demo 3 hari."
+                    existingLicense.deviceId.isNotBlank() && existingLicense.deviceId != currentDeviceId ->
+                        "Email $email sudah terdaftar di perangkat lain. Hubungi Admin Pusat ($SUPER_ADMIN_EMAIL) untuk Reset Device."
+                    else ->
+                        "Email $email terverifikasi (Lisensi ditemukan: ${existingLicense.licenseKey}, status ${existingLicense.status})."
+                }
+
+                _authUiState.update {
+                    it.copy(
+                        isAuthLoading = false,
+                        verifiedGoogleUid = firebaseUser.uid,
+                        verifiedGoogleEmail = email,
+                        verifiedGoogleName = name,
+                        lastEmail = email.ifBlank { it.lastEmail },
+                        authError = null,
+                        authInfoMessage = infoMsg
+                    )
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _authUiState.update {
                     it.copy(
                         isAuthLoading = false,
-                        authError = e.localizedMessage ?: "Gagal masuk dengan akun Google / Firebase."
+                        authError = e.localizedMessage ?: "Gagal memverifikasi email Google di Firebase."
                     )
                 }
             }
         }
     }
 
-    fun setupMainAdmin(
+    fun completeOnlineCustomerRegistration(
         storeName: String,
         fullName: String,
+        phone: String,
         username: String,
         pin: String,
         confirmPin: String
     ) {
+        val state = _authUiState.value
+        if (state.verifiedGoogleUid.isBlank() || state.verifiedGoogleEmail.isBlank()) {
+            _authUiState.update {
+                it.copy(authError = "Pendaftaran awal wajib verifikasi email Google secara online terlebih dahulu.")
+            }
+            return
+        }
         val validation = validateAdminSetupInput(storeName, fullName, username, pin, confirmPin)
         if (!validation.isValid) {
             val firstError = listOfNotNull(
@@ -816,8 +1003,15 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 validation.usernameError,
                 validation.pinError,
                 validation.confirmPinError
-            ).firstOrNull() ?: "Data Admin Utama belum lengkap"
+            ).firstOrNull() ?: "Data pendaftaran belum lengkap."
             _authUiState.update { it.copy(authError = firstError) }
+            return
+        }
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            _authUiState.update {
+                it.copy(authError = "Layanan Firebase pendaftaran pelanggan belum tersedia.")
+            }
             return
         }
 
@@ -826,8 +1020,10 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val cleanStore = storeName.trim()
                 val cleanFull = fullName.trim()
+                val cleanPhone = phone.trim()
                 val cleanUsername = username.trim().lowercase()
                 val pinHash = GeraiUnaDatabase.hashPin(pin.trim())
+                val deviceId = firebaseSessionStore.getOrCreateDeviceId()
 
                 val existingUsers = withContext(Dispatchers.IO) {
                     database.extendedPosDao().getAllUsersList()
@@ -836,16 +1032,35 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     _authUiState.update {
                         it.copy(
                             isAuthLoading = false,
-                            authError = "Admin Utama sudah terdaftar. Silakan login menggunakan username & PIN."
+                            authError = "Admin Utama sudah terdaftar di perangkat ini. Silakan masuk dengan username & PIN."
                         )
                     }
                     return@launch
                 }
 
+                // Online mandatory license registration into Super Admin Firestore DB (/licenses)
+                val licenseDoc = syncRepo.registerOrFetchCustomerLicense(
+                    ownerUid = state.verifiedGoogleUid,
+                    ownerEmail = state.verifiedGoogleEmail,
+                    ownerName = cleanFull,
+                    storeName = cleanStore,
+                    phone = cleanPhone,
+                    deviceId = deviceId
+                )
+                firebaseSessionStore.saveFromLicenseDoc(licenseDoc)
+                refreshLicenseStateFromStore()
+
+                // Local-only Room storage for all store/customer data
                 val currentProfile = withContext(Dispatchers.IO) {
                     database.extendedPosDao().getStoreProfileSync() ?: StoreProfileEntity()
                 }
-                repository.saveStoreProfile(currentProfile.copy(name = cleanStore))
+                repository.saveStoreProfile(
+                    currentProfile.copy(
+                        name = cleanStore,
+                        phone = cleanPhone,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
                 firebaseSessionStore.setStoreNameHint(cleanStore)
                 repository.setSetting("db_initialized", "true")
 
@@ -863,7 +1078,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 _activeUserId.value = newUserId
                 _activeRole.value = "Owner"
                 _activeUserName.value = cleanFull
-                _currentScreen.value = Screen.DASHBOARD
+                _currentScreen.value = if (_licenseUiState.value.isLockedToProductOnly) Screen.PRODUK else Screen.DASHBOARD
                 repository.setSetting("active_role", "Owner")
                 repository.setSetting("active_user_name", cleanFull)
 
@@ -872,6 +1087,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         hasEnteredApp = true,
                         isOfflineMode = true,
                         isCloudSignedIn = false,
+                        isSuperAdmin = false,
+                        userId = state.verifiedGoogleUid,
+                        userEmail = state.verifiedGoogleEmail,
                         fullName = cleanFull,
                         storeName = cleanStore,
                         isAuthLoading = false,
@@ -879,12 +1097,18 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         authInfoMessage = null
                     )
                 }
-                _userMessage.value = "Admin Utama \"$cleanFull\" berhasil dibuat!"
+                _userMessage.value = if (_licenseUiState.value.isLockedToProductOnly) {
+                    "Akun lokal dibuat. Status lisensi: ${_licenseUiState.value.accessStatus.name}."
+                } else {
+                    "Pendaftaran sukses! Mode Demo 3 Hari aktif untuk $cleanStore."
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _authUiState.update {
                     it.copy(
                         isAuthLoading = false,
-                        authError = "Gagal membuat Admin Utama: ${e.message}"
+                        authError = "Pendaftaran online gagal (pastikan internet aktif): ${e.localizedMessage ?: e.message}"
                     )
                 }
             }
@@ -905,28 +1129,36 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     is LocalAuthResult.Success -> {
+                        refreshLicenseStateFromStore()
                         val user = result.user
                         val roleDisplay = if (user.role.equals("owner", ignoreCase = true)) "Owner" else "Kasir"
                         firebaseSessionStore.setOfflineBypass(false)
                         _activeUserId.value = user.id
                         _activeRole.value = roleDisplay
                         _activeUserName.value = user.name
-                        _currentScreen.value = Screen.DASHBOARD
+                        _currentScreen.value = if (_licenseUiState.value.isLockedToProductOnly) Screen.PRODUK else Screen.DASHBOARD
                         repository.setSetting("active_role", roleDisplay)
                         repository.setSetting("active_user_name", user.name)
 
+                        val snap = firebaseSessionStore.getLicenseSnapshot()
                         _authUiState.update {
                             it.copy(
                                 hasEnteredApp = true,
                                 isOfflineMode = true,
                                 isCloudSignedIn = false,
+                                isSuperAdmin = false,
+                                userEmail = snap?.ownerEmail ?: it.userEmail,
                                 fullName = user.name,
                                 isAuthLoading = false,
                                 authError = null,
                                 authInfoMessage = null
                             )
                         }
-                        _userMessage.value = "Selamat datang, ${user.name} ($roleDisplay)"
+                        _userMessage.value = if (_licenseUiState.value.isLockedToProductOnly) {
+                            "Selamat datang, ${user.name}. Masa Demo 3 hari telah berakhir (akses terbatas Produk & Pengaturan)."
+                        } else {
+                            "Selamat datang, ${user.name} ($roleDisplay)"
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -940,11 +1172,127 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshCustomerLicenseOnline(googlePayload: GoogleSignInPayload? = null) {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            _userMessage.value = "Firebase belum tersedia untuk memeriksa lisensi."
+            return
+        }
+        viewModelScope.launch {
+            _licenseUiState.update { it.copy(isRefreshing = true) }
+            try {
+                val activeAuth = auth ?: throw IllegalStateException("Firebase Auth tidak tersedia.")
+                var firebaseUser = activeAuth.currentUser
+                if (googlePayload != null) {
+                    val cred = GoogleAuthProvider.getCredential(googlePayload.idToken, null)
+                    firebaseUser = activeAuth.signInWithCredential(cred).await().user
+                }
+                if (firebaseUser == null) {
+                    _licenseUiState.update { it.copy(isRefreshing = false) }
+                    _userMessage.value = "Silakan verifikasi akun Google Anda untuk menyegarkan status lisensi."
+                    return@launch
+                }
+
+                val snap = firebaseSessionStore.getLicenseSnapshot()
+                val fetched = syncRepo.fetchLicenseByOwnerUid(firebaseUser.uid)
+                    ?: snap?.licenseKey?.takeIf { it.isNotBlank() }?.let { syncRepo.getLicenseByKey(it) }
+
+                if (fetched == null) {
+                    _licenseUiState.update { it.copy(isRefreshing = false) }
+                    _userMessage.value = "Belum ada data lisensi untuk email ${firebaseUser.email}."
+                    return@launch
+                }
+
+                firebaseSessionStore.saveFromLicenseDoc(fetched)
+                refreshLicenseStateFromStore()
+                val statusLabel = when (_licenseUiState.value.accessStatus) {
+                    LicenseAccessStatus.FULL_ACTIVE -> "Lisensi FULL Aktif! Semua menu terbuka."
+                    LicenseAccessStatus.DEMO_ACTIVE -> "Mode Demo aktif."
+                    LicenseAccessStatus.DEMO_EXPIRED -> "Masa Demo berakhir. Hubungi $SUPER_ADMIN_EMAIL."
+                    LicenseAccessStatus.SUSPENDED -> "Lisensi dinonaktifkan Admin Pusat."
+                    LicenseAccessStatus.DEVICE_MISMATCH -> "Lisensi terikat perangkat lain. Minta Reset Device ke Admin Pusat."
+                    LicenseAccessStatus.UNREGISTERED -> "Lisensi belum terdaftar."
+                }
+                _userMessage.value = statusLabel
+                _authUiState.update { it.copy(authInfoMessage = statusLabel, authError = null) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _licenseUiState.update { it.copy(isRefreshing = false) }
+                _userMessage.value = "Gagal cek lisensi online: ${e.localizedMessage ?: e.message}"
+            }
+        }
+    }
+
+    fun activateCustomerLicenseKey(
+        licenseKey: String,
+        googlePayload: GoogleSignInPayload? = null,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val syncRepo = firebaseSyncRepository
+        if (syncRepo == null) {
+            val msg = "Firebase tidak terhubung. Aktivasi kunci membutuhkan internet."
+            _userMessage.value = msg
+            onResult(false, msg)
+            return
+        }
+        val cleanKey = licenseKey.trim()
+        if (cleanKey.isBlank()) {
+            onResult(false, "Masukkan kunci lisensi terlebih dahulu.")
+            return
+        }
+
+        viewModelScope.launch {
+            _licenseUiState.update { it.copy(isRefreshing = true) }
+            try {
+                val activeAuth = auth ?: throw IllegalStateException("Firebase Auth tidak tersedia.")
+                var firebaseUser = activeAuth.currentUser
+                if (googlePayload != null) {
+                    val cred = GoogleAuthProvider.getCredential(googlePayload.idToken, null)
+                    firebaseUser = activeAuth.signInWithCredential(cred).await().user
+                }
+                if (firebaseUser == null) {
+                    _licenseUiState.update { it.copy(isRefreshing = false) }
+                    val msg = "Harap login/verifikasi email Google dahulu untuk mengklaim kunci lisensi."
+                    _userMessage.value = msg
+                    onResult(false, msg)
+                    return@launch
+                }
+
+                val profile = withContext(Dispatchers.IO) { database.extendedPosDao().getStoreProfileSync() }
+                val updated = syncRepo.activateLicenseKeyForCustomer(
+                    licenseKey = cleanKey,
+                    ownerUid = firebaseUser.uid,
+                    ownerEmail = firebaseUser.email.orEmpty(),
+                    ownerName = _activeUserName.value.ifBlank { firebaseUser.displayName.orEmpty() },
+                    storeName = profile?.name.orEmpty(),
+                    phone = profile?.phone.orEmpty(),
+                    deviceId = firebaseSessionStore.getOrCreateDeviceId()
+                )
+                firebaseSessionStore.saveFromLicenseDoc(updated)
+                refreshLicenseStateFromStore()
+                val msg = "Lisensi ${updated.licenseKey} diperbarui (${_licenseUiState.value.accessStatus.name})!"
+                _userMessage.value = msg
+                onResult(true, msg)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _licenseUiState.update { it.copy(isRefreshing = false) }
+                val msg = e.localizedMessage ?: "Gagal mengaktivasi kunci lisensi."
+                _userMessage.value = msg
+                onResult(false, msg)
+            }
+        }
+    }
+
     fun logoutToLoginScreen() {
         viewModelScope.launch {
+            val wasSuperAdmin = _authUiState.value.isSuperAdmin
             withContext(NonCancellable) {
-                stopCloudListeners()
-                auth?.signOut()
+                licensesJob?.cancel()
+                if (wasSuperAdmin) {
+                    auth?.signOut()
+                }
                 firebaseSessionStore.setOfflineBypass(false)
                 GoogleAuthHelper.clearCredentialState(getApplication())
             }
@@ -957,80 +1305,13 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     hasEnteredApp = false,
                     isCloudSignedIn = false,
                     isOfflineMode = false,
-                    userId = "",
-                    userEmail = "",
+                    isSuperAdmin = false,
+                    userId = if (wasSuperAdmin) "" else it.userId,
+                    userEmail = if (wasSuperAdmin) "" else it.userEmail,
                     authError = null,
                     authInfoMessage = "Anda telah keluar. Silakan login kembali."
                 )
             }
-        }
-    }
-
-    fun toggleAutoSync(enabled: Boolean) {
-        firebaseSessionStore.setAutoSyncEnabled(enabled)
-        _authUiState.update { it.copy(autoSyncEnabled = enabled) }
-    }
-
-    fun syncNowWithFirebase(
-        mode: SyncMode = SyncMode.TWO_WAY,
-        isInitialLoginPull: Boolean = false,
-        silent: Boolean = false
-    ) {
-        val currentUser = auth?.currentUser
-        val syncRepo = firebaseSyncRepository
-        if (currentUser == null || syncRepo == null) {
-            if (!silent) {
-                _userMessage.value = if (syncRepo == null) {
-                    "Sinkronisasi cloud belum aktif karena google-services.json belum terpasang di build APK ini."
-                } else {
-                    "Silakan login dengan akun Google (Firebase) untuk menyinkronkan data."
-                }
-            }
-            return
-        }
-        if (_authUiState.value.isSyncing) return
-        viewModelScope.launch {
-            _authUiState.update { it.copy(isSyncing = true) }
-            val ownerName = currentUser.displayName?.takeIf { it.isNotBlank() }
-                ?: _authUiState.value.fullName.ifBlank { "Pemilik Toko" }
-            val ownerEmail = currentUser.email ?: _authUiState.value.userEmail
-            val result = syncRepo.sync(
-                userId = currentUser.uid,
-                ownerName = ownerName,
-                ownerEmail = ownerEmail,
-                mode = mode,
-                isInitialLoginPull = isInitialLoginPull
-            )
-            result.onSuccess { summary ->
-                _authUiState.update {
-                    it.copy(
-                        isSyncing = false,
-                        lastSyncAt = summary.timestamp,
-                        lastSyncMessage = summary.message
-                    )
-                }
-                if (!silent) {
-                    _userMessage.value = summary.message
-                }
-            }.onFailure { err ->
-                val msg = err.localizedMessage ?: "Gagal sinkronisasi dengan Firebase Firestore"
-                _authUiState.update {
-                    it.copy(
-                        isSyncing = false,
-                        lastSyncMessage = "Gagal: $msg"
-                    )
-                }
-                if (!silent) {
-                    _userMessage.value = msg
-                }
-            }
-        }
-    }
-
-    private fun scheduleAutoSync() {
-        val state = _authUiState.value
-        if (state.isCloudSignedIn && state.autoSyncEnabled && auth?.currentUser != null && !state.isSyncing) {
-            syncNowWithFirebase(SyncMode.TWO_WAY, silent = true)
         }
     }
 
@@ -1526,7 +1807,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 _lastCompletedSaleItems.value = currentItems
                 clearCart()
                 _userMessage.value = if (isPreOrder) "Pre-Order ${sale.invoiceNumber} disimpan!" else "Transaksi ${sale.invoiceNumber} Berhasil Disimpan!"
-                scheduleAutoSync()
             } catch (e: Exception) {
                 _userMessage.value = "Gagal checkout: ${e.message}"
             }
@@ -1718,7 +1998,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.adjustCashAccountBalance(accountId, newBalance, reason)
             _userMessage.value = "Saldo akun kas dikoreksi & dicatat di mutasi kas"
-            scheduleAutoSync()
         }
     }
 
@@ -1727,7 +2006,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 repository.transferCash(fromId, toId, amount, notes, _activeUserName.value)
                 _userMessage.value = "Transfer kas sebesar Rp ${formatRupiah(amount)} berhasil!"
-                scheduleAutoSync()
             } catch (e: Exception) {
                 _userMessage.value = "Gagal transfer kas: ${e.message}"
             }
@@ -2280,7 +2558,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.recordExpense(category, amount, notes, source, _activeUserName.value, cashAccountId)
             _userMessage.value = "Pengeluaran Rp ${formatRupiah(amount)} berhasil dicatat"
-            scheduleAutoSync()
         }
     }
 
@@ -2293,7 +2570,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.recordIncome(source, amount, notes, _activeUserName.value, cashAccountId)
             _userMessage.value = "Pemasukan Rp ${formatRupiah(amount)} berhasil dicatat"
-            scheduleAutoSync()
         }
     }
 
@@ -2301,7 +2577,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteExpense(expense)
             _userMessage.value = "Pengeluaran dihapus & saldo kas dikembalikan"
-            scheduleAutoSync()
         }
     }
 
@@ -2309,7 +2584,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteIncome(income)
             _userMessage.value = "Pemasukan dihapus & saldo kas disesuaikan"
-            scheduleAutoSync()
         }
     }
 
@@ -2334,7 +2608,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 cashAccountId = cashAccountId
             )
             _userMessage.value = "Pembayaran utang Rp ${formatRupiah(amount)} ke ${supplier.name} berhasil"
-            scheduleAutoSync()
         }
     }
 
@@ -2359,7 +2632,6 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 cashAccountId = cashAccountId
             )
             _userMessage.value = "Penerimaan piutang Rp ${formatRupiah(amount)} dari ${customer.name} berhasil"
-            scheduleAutoSync()
         }
     }
 
@@ -2416,7 +2688,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 val parseResult = aiEngine.processCommand(text)
                 val aiMsg = ChatMessage(
                     isUser = false,
-                    senderName = "Gerai Una AI",
+                    senderName = "KASLITE AI",
                     text = parseResult.summary,
                     draftResult = parseResult,
                     isActionPending = parseResult.confirmationRequired && parseResult.isExecutable,
@@ -2440,7 +2712,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 val errorMsg = ChatMessage(
                     isUser = false,
-                    senderName = "Gerai Una AI",
+                    senderName = "KASLITE AI",
                     text = "Terjadi kendala saat memproses perintah: ${e.message}"
                 )
                 val updated = _chatMessages.value.toMutableList()
@@ -2547,8 +2819,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 current.add(
                     ChatMessage(
                         isUser = false,
-                        senderName = "Gerai Una AI",
-                        text = "✅ Tindakan berhasil dieksekusi dan disimpan ke database Gerai Una."
+                        senderName = "KASLITE AI",
+                        text = "✅ Tindakan berhasil dieksekusi dan disimpan ke database KASLITE."
                     )
                 )
                 _chatMessages.value = current
@@ -2567,7 +2839,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             current.add(
                 ChatMessage(
                     isUser = false,
-                    senderName = "Gerai Una AI",
+                    senderName = "KASLITE AI",
                     text = "❌ Tindakan dibatalkan oleh pengguna. Database tidak diubah."
                 )
             )
@@ -2611,7 +2883,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 withContext(NonCancellable) {
-                    stopCloudListeners()
+                    licensesJob?.cancel()
                     auth?.signOut()
                     firebaseSessionStore.setOfflineBypass(false)
                     firebaseSessionStore.setStoreNameHint("Toko Saya")
@@ -2627,12 +2899,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         hasEnteredApp = false,
                         isCloudSignedIn = false,
                         isOfflineMode = false,
+                        isSuperAdmin = false,
+                        verifiedGoogleUid = "",
+                        verifiedGoogleEmail = "",
+                        verifiedGoogleName = "",
                         userId = "",
                         userEmail = "",
                         fullName = "",
                         storeName = "Toko Saya",
                         authError = null,
-                        authInfoMessage = "Database bersih tanpa data dummy. Silakan buat akun Admin Utama."
+                        authInfoMessage = "Database bersih tanpa data dummy. Silakan daftar atau buat akun Admin Utama."
                     )
                 }
                 _userMessage.value = "Database berhasil dibersihkan!"
@@ -2642,54 +2918,189 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Import Backup KasGo (.kasgo) ---
-    private val _kasGoImportState = MutableStateFlow(KasGoImportUiState())
-    val kasGoImportState: StateFlow<KasGoImportUiState> = _kasGoImportState.asStateFlow()
+    // --- Excel Product Import & Report Export (.xlsx / .csv) ---
+    private val _excelImportState = MutableStateFlow(ExcelImportUiState())
+    val excelImportState: StateFlow<ExcelImportUiState> = _excelImportState.asStateFlow()
 
-    fun inspectKasGoBackupUri(uri: Uri) {
+    fun inspectExcelProductsUri(uri: Uri) {
         viewModelScope.launch {
-            _kasGoImportState.update {
+            _excelImportState.update {
                 it.copy(isInspecting = true, inspectResult = null, errorMessage = null)
             }
-            val res = KasGoBackupImporter.inspectBackup(getApplication(), uri)
-            if (res.isValid) {
-                _kasGoImportState.update {
+            try {
+                val res = ExcelProductReportManager.inspectProductSpreadsheet(getApplication(), uri)
+                _excelImportState.update {
                     it.copy(isInspecting = false, inspectResult = res, errorMessage = null)
                 }
-            } else {
-                _kasGoImportState.update {
-                    it.copy(isInspecting = false, inspectResult = null, errorMessage = res.errorMessage ?: "Gagal membaca file .kasgo")
+            } catch (e: Exception) {
+                _excelImportState.update {
+                    it.copy(isInspecting = false, inspectResult = null, errorMessage = e.localizedMessage ?: "Gagal membaca file Excel/CSV.")
                 }
             }
         }
     }
 
-    fun confirmKasGoImport(options: KasGoImportOptions) {
-        val currentInspect = _kasGoImportState.value.inspectResult ?: return
+    fun confirmExcelProductImport(updateExisting: Boolean) {
+        val inspect = _excelImportState.value.inspectResult ?: return
         viewModelScope.launch {
-            _kasGoImportState.update { it.copy(isImporting = true, errorMessage = null) }
+            _excelImportState.update { it.copy(isImporting = true, errorMessage = null) }
             try {
-                val summary = KasGoBackupImporter.importBackup(
+                val summary = ExcelProductReportManager.importProductsToRoom(
+                    db = database,
+                    inspect = inspect,
+                    updateExistingByBarcodeOrName = updateExisting
+                )
+                _excelImportState.value = ExcelImportUiState(lastSummary = summary)
+                _userMessage.value = summary.message
+            } catch (e: Exception) {
+                _excelImportState.update {
+                    it.copy(isImporting = false, errorMessage = "Gagal import produk Excel: ${e.localizedMessage ?: e.message}")
+                }
+            }
+        }
+    }
+
+    fun dismissExcelImportPreview() {
+        _excelImportState.update {
+            it.copy(isInspecting = false, isImporting = false, inspectResult = null, errorMessage = null)
+        }
+    }
+
+    fun exportExcelProductTemplate(targetUri: Uri) {
+        viewModelScope.launch {
+            val res = ExcelProductReportManager.exportProductTemplateXlsx(getApplication(), targetUri)
+            res.onSuccess {
+                _userMessage.value = "Template Excel Produk (.xlsx) berhasil disimpan!"
+            }.onFailure { err ->
+                _userMessage.value = "Gagal menyimpan template Excel: ${err.localizedMessage}"
+            }
+        }
+    }
+
+    fun exportReportsToExcel(targetUri: Uri) {
+        viewModelScope.launch {
+            val currentStoreName = storeProfile.value?.name?.ifBlank { "KASLITE" } ?: "KASLITE"
+            val res = ExcelProductReportManager.exportReportsXlsxToUri(
+                context = getApplication(),
+                db = database,
+                storeName = currentStoreName,
+                targetUri = targetUri
+            )
+            res.onSuccess {
+                _userMessage.value = "Laporan Excel (.xlsx) berhasil diekspor (6 sheet lengkap)!"
+            }.onFailure { err ->
+                _userMessage.value = "Gagal ekspor laporan Excel: ${err.localizedMessage}"
+            }
+        }
+    }
+
+    fun shareReportsAsExcel(onUriReady: (Uri) -> Unit) {
+        viewModelScope.launch {
+            val currentStoreName = storeProfile.value?.name?.ifBlank { "KASLITE" } ?: "KASLITE"
+            val res = ExcelProductReportManager.createShareableReportXlsxUri(
+                context = getApplication(),
+                db = database,
+                storeName = currentStoreName
+            )
+            res.onSuccess { uri ->
+                onUriReady(uri)
+            }.onFailure { err ->
+                _userMessage.value = "Gagal menyiapkan file Excel untuk dibagikan: ${err.localizedMessage}"
+            }
+        }
+    }
+
+    // --- Backup & Restore Lengkap (.kaslite) ---
+    private val _kasLiteBackupState = MutableStateFlow(KasLiteBackupUiState())
+    val kasLiteBackupState: StateFlow<KasLiteBackupUiState> = _kasLiteBackupState.asStateFlow()
+
+    fun exportKasLiteBackup(targetUri: Uri) {
+        viewModelScope.launch {
+            _kasLiteBackupState.update { it.copy(isWorking = true, errorMessage = null) }
+            val res = KasLiteBackupManager.exportBackupZipToUri(
+                context = getApplication(),
+                db = database,
+                sessionStore = firebaseSessionStore,
+                targetUri = targetUri
+            )
+            res.onSuccess { total ->
+                _kasLiteBackupState.update { it.copy(isWorking = false) }
+                _userMessage.value = "Backup lengkap .kaslite berhasil disimpan ($total rekaman data + foto)!"
+            }.onFailure { err ->
+                _kasLiteBackupState.update {
+                    it.copy(isWorking = false, errorMessage = err.localizedMessage ?: "Gagal menyimpan backup .kaslite.")
+                }
+                _userMessage.value = "Gagal menyimpan backup: ${err.localizedMessage}"
+            }
+        }
+    }
+
+    fun shareKasLiteBackup(onUriReady: (Uri) -> Unit) {
+        viewModelScope.launch {
+            _kasLiteBackupState.update { it.copy(isWorking = true, errorMessage = null) }
+            val res = KasLiteBackupManager.createShareableBackupZip(
+                context = getApplication(),
+                db = database,
+                sessionStore = firebaseSessionStore
+            )
+            res.onSuccess { (uri, total) ->
+                _kasLiteBackupState.update { it.copy(isWorking = false) }
+                _userMessage.value = "File backup .kaslite siap dibagikan ($total rekaman)."
+                onUriReady(uri)
+            }.onFailure { err ->
+                _kasLiteBackupState.update {
+                    it.copy(isWorking = false, errorMessage = err.localizedMessage ?: "Gagal menyiapkan backup .kaslite.")
+                }
+                _userMessage.value = "Gagal membuat file bagikan: ${err.localizedMessage}"
+            }
+        }
+    }
+
+    fun inspectKasLiteBackupUri(uri: Uri) {
+        viewModelScope.launch {
+            _kasLiteBackupState.update {
+                it.copy(isInspecting = true, inspectResult = null, errorMessage = null)
+            }
+            try {
+                val res = KasLiteBackupManager.inspectBackupZip(getApplication(), uri)
+                _kasLiteBackupState.update {
+                    it.copy(isInspecting = false, inspectResult = res, errorMessage = null)
+                }
+            } catch (e: Exception) {
+                _kasLiteBackupState.update {
+                    it.copy(isInspecting = false, inspectResult = null, errorMessage = e.localizedMessage ?: "Gagal membaca file .kaslite.")
+                }
+            }
+        }
+    }
+
+    fun confirmKasLiteRestore(replaceExisting: Boolean) {
+        val currentInspect = _kasLiteBackupState.value.inspectResult ?: return
+        viewModelScope.launch {
+            _kasLiteBackupState.update { it.copy(isRestoring = true, errorMessage = null) }
+            try {
+                val summary = KasLiteBackupManager.restoreBackupZip(
                     context = getApplication(),
                     db = database,
-                    inspectResult = currentInspect,
-                    options = options
+                    sessionStore = firebaseSessionStore,
+                    inspect = currentInspect,
+                    replaceExisting = replaceExisting
                 )
-                _kasGoImportState.value = KasGoImportUiState(lastImportSummary = summary)
-                _userMessage.value = "Import .kasgo berhasil: ${summary.productsImported} produk, ${summary.salesImported} transaksi, ${summary.photosCopied} foto!"
-                scheduleAutoSync()
+                KasLiteBackupManager.cleanupTemp(currentInspect)
+                _kasLiteBackupState.value = KasLiteBackupUiState(lastRestoreSummary = summary)
+                _userMessage.value = summary.message
             } catch (e: Exception) {
-                _kasGoImportState.update {
-                    it.copy(isImporting = false, errorMessage = "Gagal mengimpor backup: ${e.message}")
+                _kasLiteBackupState.update {
+                    it.copy(isRestoring = false, errorMessage = "Gagal memulihkan backup: ${e.localizedMessage ?: e.message}")
                 }
             }
         }
     }
 
-    fun dismissKasGoImportPreview() {
-        _kasGoImportState.value.inspectResult?.let { KasGoBackupImporter.cleanupTemp(it) }
-        _kasGoImportState.update {
-            it.copy(isInspecting = false, isImporting = false, inspectResult = null, errorMessage = null)
+    fun dismissKasLiteRestorePreview() {
+        KasLiteBackupManager.cleanupTemp(_kasLiteBackupState.value.inspectResult)
+        _kasLiteBackupState.update {
+            it.copy(isInspecting = false, isRestoring = false, inspectResult = null, errorMessage = null)
         }
     }
 

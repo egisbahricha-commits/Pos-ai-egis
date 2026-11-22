@@ -25,14 +25,13 @@ import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoneyOff
 import androidx.compose.material.icons.filled.Percent
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Warehouse
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
@@ -59,10 +58,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.pricing.ProfitLossCalculator
 import com.example.data.pricing.ProfitLossPeriod
+import com.example.firebase.LicenseAccessStatus
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignStatusBadge
-import com.example.ui.components.KasGoSectionHeader
+import com.example.ui.components.KasLiteSectionHeader
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -83,7 +83,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
     val cashAccounts by viewModel.cashAccounts.collectAsStateWithLifecycle()
     val allSaleItems by viewModel.allSaleItems.collectAsStateWithLifecycle()
     val activeUserName by viewModel.activeUserName.collectAsStateWithLifecycle()
-    val authUiState by viewModel.authUiState.collectAsStateWithLifecycle()
+    val licenseUiState by viewModel.licenseUiState.collectAsStateWithLifecycle()
     val storeProfile by viewModel.storeProfile.collectAsStateWithLifecycle()
 
     val currentDateStr = remember {
@@ -147,13 +147,27 @@ fun DashboardScreen(viewModel: PosViewModel) {
             }
         }
 
-        // Firebase Cloud Status & Multi-Device Cash Flow Banner
+        // KASLITE Local Mode & License Status Banner
         item {
+            val isFull = licenseUiState.accessStatus == LicenseAccessStatus.FULL_ACTIVE
+            val isDemo = licenseUiState.accessStatus == LicenseAccessStatus.DEMO_ACTIVE
+            val remainingDays = ((licenseUiState.remainingMillis + 86_399_999L) / 86_400_000L).toInt().coerceAtLeast(0)
             Surface(
-                onClick = { viewModel.navigateTo(Screen.CLOUD_MONITOR) },
+                onClick = { viewModel.navigateTo(Screen.PENGATURAN) },
                 shape = RoundedCornerShape(12.dp),
-                color = if (authUiState.isCloudSignedIn) Sapphire50 else SurfaceWhite,
-                border = BorderStroke(1.dp, if (authUiState.isCloudSignedIn) Sapphire200 else BorderDefault),
+                color = when {
+                    isFull -> Emerald50
+                    isDemo -> Sapphire50
+                    else -> Rose100
+                },
+                border = BorderStroke(
+                    1.dp,
+                    when {
+                        isFull -> Emerald700.copy(alpha = 0.35f)
+                        isDemo -> Sapphire200
+                        else -> Rose500.copy(alpha = 0.45f)
+                    }
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -163,19 +177,31 @@ fun DashboardScreen(viewModel: PosViewModel) {
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         Icon(
-                            imageVector = if (authUiState.isCloudSignedIn) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                            imageVector = if (isFull || isDemo) Icons.Default.VerifiedUser else Icons.Default.Lock,
                             contentDescription = null,
-                            tint = if (authUiState.isCloudSignedIn) AccentBlue else Slate500,
+                            tint = when {
+                                isFull -> Emerald700
+                                isDemo -> AccentBlue
+                                else -> Rose500
+                            },
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (authUiState.isCloudSignedIn)
-                                "Firebase Aktif (${authUiState.userEmail}) • Ketuk untuk pantau arus kas"
-                            else
-                                "Mode Lokal • Ketuk untuk login Firebase & pantau dari HP lain",
+                            text = when (licenseUiState.accessStatus) {
+                                LicenseAccessStatus.FULL_ACTIVE ->
+                                    "KASLITE Lisensi Penuh • Data 100% Lokal & Backup Siap"
+                                LicenseAccessStatus.DEMO_ACTIVE ->
+                                    "Mode Demo KASLITE (Sisa $remainingDays hari) • Ketuk untuk Aktivasi / Backup"
+                                else ->
+                                    "Demo Habis / Terkunci • Hubungi Super Admin atau Ketuk Pengaturan"
+                            },
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = if (authUiState.isCloudSignedIn) Sapphire800 else Slate700,
+                                color = when {
+                                    isFull -> Emerald800
+                                    isDemo -> Sapphire800
+                                    else -> Rose500
+                                },
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 12.sp
                             ),
@@ -185,8 +211,12 @@ fun DashboardScreen(viewModel: PosViewModel) {
                     }
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Pantau Cloud",
-                        tint = if (authUiState.isCloudSignedIn) AccentBlue else Slate500,
+                        contentDescription = "Pengaturan & Backup",
+                        tint = when {
+                            isFull -> Emerald700
+                            isDemo -> AccentBlue
+                            else -> Rose500
+                        },
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -382,7 +412,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
         if (activeCashAccounts.isNotEmpty()) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KasGoSectionHeader(
+                    KasLiteSectionHeader(
                         title = "Saldo Multi-Kas",
                         actionText = "Kelola",
                         onActionClick = { viewModel.navigateTo(Screen.MULTI_KAS) }
@@ -554,7 +584,7 @@ fun DashboardScreen(viewModel: PosViewModel) {
 
         // Transaksi Terakhir (Matches Design System List Pattern)
         item {
-            KasGoSectionHeader(
+            KasLiteSectionHeader(
                 title = "Transaksi terakhir",
                 actionText = "Lihat semua",
                 onActionClick = { viewModel.navigateTo(Screen.RIWAYAT_TRANSAKSI) }

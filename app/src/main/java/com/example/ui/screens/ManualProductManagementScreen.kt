@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -95,6 +97,22 @@ import kotlin.math.roundToInt
 @Composable
 fun ManualProductManagementScreen(viewModel: PosViewModel) {
     val products by viewModel.products.collectAsStateWithLifecycle()
+    val excelImportState by viewModel.excelImportState.collectAsStateWithLifecycle()
+
+    val excelImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.inspectExcelProductsUri(uri)
+        }
+    }
+    val excelTemplateLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportExcelProductTemplate(uri)
+        }
+    }
 
     var searchQuery by remember { mutableStateOf("") }
     var activeFilter by remember { mutableStateOf("ALL") } // ALL, LOW, OUT, BARCODE
@@ -195,6 +213,19 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                         onSelectFilter = { activeFilter = it },
                         onOpenBarcodeCart = { viewModel.navigateTo(Screen.SCAN_BARCODE) },
                         onNewProductClick = { selectedProduct = null },
+                        onImportExcelClick = {
+                            excelImportLauncher.launch(
+                                arrayOf(
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    "text/csv",
+                                    "text/comma-separated-values",
+                                    "*/*"
+                                )
+                            )
+                        },
+                        onDownloadTemplateClick = {
+                            excelTemplateLauncher.launch("Template_Produk_KASLITE.xlsx")
+                        },
                         onSelectProductForEdit = { selectedProduct = it },
                         onStepStock = { product, delta -> viewModel.stepProductStock(product, delta) },
                         onRequestDelete = { productToDelete = it },
@@ -255,6 +286,19 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                     onNewProductClick = {
                         selectedProduct = null
                         showFormDialog = true
+                    },
+                    onImportExcelClick = {
+                        excelImportLauncher.launch(
+                            arrayOf(
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "text/csv",
+                                "text/comma-separated-values",
+                                "*/*"
+                            )
+                        )
+                    },
+                    onDownloadTemplateClick = {
+                        excelTemplateLauncher.launch("Template_Produk_KASLITE.xlsx")
                     },
                     onSelectProductForEdit = {
                         selectedProduct = it
@@ -333,6 +377,12 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
             onDismiss = { showSearchScanner = false }
         )
     }
+
+    ExcelProductImportHost(
+        excelImportState = excelImportState,
+        onConfirm = { updateExisting -> viewModel.confirmExcelProductImport(updateExisting) },
+        onDismiss = { viewModel.dismissExcelImportPreview() }
+    )
 }
 
 @Composable
@@ -359,6 +409,8 @@ private fun ManualCatalogPane(
     onSelectFilter: (String) -> Unit,
     onOpenBarcodeCart: () -> Unit,
     onNewProductClick: () -> Unit,
+    onImportExcelClick: () -> Unit,
+    onDownloadTemplateClick: () -> Unit,
     onSelectProductForEdit: (ProductEntity) -> Unit,
     onStepStock: (ProductEntity, Double) -> Unit,
     onRequestDelete: (ProductEntity) -> Unit,
@@ -508,6 +560,22 @@ private fun ManualCatalogPane(
                         label = "Ada Barcode",
                         selected = activeFilter == "BARCODE",
                         onClick = { onSelectFilter(if (activeFilter == "BARCODE") "ALL" else "BARCODE") }
+                    )
+                }
+                item {
+                    DesignFilterChip(
+                        label = "Import Excel",
+                        selected = false,
+                        onClick = onImportExcelClick,
+                        modifier = Modifier.testTag("manual_import_excel_chip")
+                    )
+                }
+                item {
+                    DesignFilterChip(
+                        label = "Template Excel",
+                        selected = false,
+                        onClick = onDownloadTemplateClick,
+                        modifier = Modifier.testTag("manual_template_excel_chip")
                     )
                 }
             }

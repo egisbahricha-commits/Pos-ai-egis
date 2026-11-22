@@ -261,6 +261,29 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ownerId", "deviceId", "localId", "cashierName", "startTimeMillis", "startingCash", "cashIn", "cashOut", "totalCashSales", "expectedClosingCash", "status", "notes", "createdAt", "updatedAt"]
+    },
+    "LicenseDoc": {
+      "title": "LicenseDoc",
+      "description": "KASLITE customer registration and Super Admin managed 3-day demo / full license registry record.",
+      "type": "object",
+      "properties": {
+        "licenseKey": { "type": "string" },
+        "storeName": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "phone": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "planType": { "type": "string", "enum": ["DEMO", "FULL"] },
+        "status": { "type": "string", "enum": ["DEMO", "ACTIVE", "EXPIRED", "SUSPENDED"] },
+        "demoStartedAtMillis": { "type": "integer" },
+        "demoExpiresAtMillis": { "type": "integer" },
+        "activatedAtMillis": { "type": "integer" },
+        "expiresAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["licenseKey", "storeName", "ownerName", "ownerEmail", "ownerUid", "phone", "deviceId", "planType", "status", "demoStartedAtMillis", "demoExpiresAtMillis", "activatedAtMillis", "expiresAtMillis", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -311,6 +334,10 @@
     "/users/{userId}/shifts/{shiftId}": {
       "schema": { "$ref": "CashierShiftDoc" },
       "description": "Cashier shift open/close records owned by the authenticated store owner."
+    },
+    "/licenses/{licenseId}": {
+      "schema": { "$ref": "LicenseDoc" },
+      "description": "Customer email & device license registry managed by Super Admin (egisbahricha@gmail.com)."
     }
   }
 }

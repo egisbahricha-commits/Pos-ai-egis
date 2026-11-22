@@ -61,7 +61,7 @@ import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
-import com.example.ui.components.KasGoSearchBar
+import com.example.ui.components.KasLiteSearchBar
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -128,7 +128,7 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            KasGoSearchBar(
+            KasLiteSearchBar(
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
                 placeholder = "Cari no. faktur, pelanggan, atau barcode...",
@@ -357,7 +357,7 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                         Button(
                             onClick = {
                                 val receiptText = buildString {
-                                    append("🧾 *STRUK PEMBELIAN GERAI UNA*\n")
+                                    append("🧾 *STRUK PEMBELIAN KASLITE*\n")
                                     append("Faktur: ${sale.invoiceNumber}\n")
                                     append("Tanggal: ${SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(Date(sale.date))}\n")
                                     append("Pelanggan: ${sale.customerName}\n")

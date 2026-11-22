@@ -247,7 +247,7 @@ class GeraiUnaAIEngine(private val repository: PosRepository) {
         val totalExpenses = expenses.sumOf { it.amount }
 
         val summary = """
-            📈 Ringkasan Laporan Toko Gerai Una:
+            📈 Ringkasan Laporan Toko KASLITE:
             • Total Penjualan: *Rp ${formatRupiah(totalSales)}* (${activeSales.size} transaksi)
             • Total Pembelian Diterima: *Rp ${formatRupiah(totalPurchases)}*
             • Total Pengeluaran Operasional: *Rp ${formatRupiah(totalExpenses)}*

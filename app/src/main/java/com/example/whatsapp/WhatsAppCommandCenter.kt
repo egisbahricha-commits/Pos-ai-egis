@@ -100,7 +100,7 @@ class WhatsAppCommandCenter(
 
     private fun buildWhatsAppReply(result: AIParseResult): String {
         val sb = StringBuilder()
-        sb.append("🤖 *GERAI UNA SMART POS AI*\n")
+        sb.append("🤖 *KASLITE POS AI*\n")
         sb.append("━━━━━━━━━━━━━━━━━━━━\n")
 
         when (result.intent) {
@@ -112,7 +112,7 @@ class WhatsAppCommandCenter(
                 }
                 sb.append("\n*Total Belanja: Rp ${formatRupiah(result.amount)}*\n")
                 sb.append("Status: ⏳ *Menunggu Konfirmasi*\n\n")
-                sb.append("⚠️ *Catatan Keamanan*: Stok barang *BELUM* bertambah. Stok baru akan bertambah otomatis setelah barang diterima secara fisik dan diverifikasi di aplikasi Gerai Una.")
+                sb.append("⚠️ *Catatan Keamanan*: Stok barang *BELUM* bertambah. Stok baru akan bertambah otomatis setelah barang diterima secara fisik dan diverifikasi di aplikasi KASLITE.")
             }
             AIIntent.CREATE_PRODUCT -> {
                 sb.append("✨ *DRAFT PRODUK BARU*\n\n")

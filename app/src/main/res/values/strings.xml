@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Gerai Una POS AI</string>
+    <string name="app_name">KASLITE</string>
     <string name="scanner_screen_title">Scan Barcode ke Keranjang</string>
     <string name="scanner_permission_title">Izin Kamera Diperlukan</string>
     <string name="scanner_permission_desc">Izinkan akses kamera untuk memindai barcode produk secara langsung ke keranjang kasir, atau gunakan input manual &amp; foto galeri.</string>

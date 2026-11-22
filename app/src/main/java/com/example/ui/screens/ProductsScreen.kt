@@ -70,12 +70,16 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PriceCheck
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -104,6 +108,7 @@ import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.copyUriToInternalProductImage
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
+import com.example.ui.viewmodel.ExcelImportUiState
 import com.example.ui.viewmodel.PosViewModel
 
 @Composable
@@ -119,6 +124,22 @@ fun ProductsScreen(viewModel: PosViewModel) {
     val tierServices by viewModel.tierServices.collectAsStateWithLifecycle()
     val adminTiers by viewModel.adminTiers.collectAsStateWithLifecycle()
     val cashAccounts by viewModel.cashAccounts.collectAsStateWithLifecycle()
+    val excelImportState by viewModel.excelImportState.collectAsStateWithLifecycle()
+
+    val excelImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.inspectExcelProductsUri(uri)
+        }
+    }
+    val excelTemplateLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportExcelProductTemplate(uri)
+        }
+    }
 
     var activeModuleTab by remember { mutableStateOf("PRODUK") } // PRODUK, PAKET, PROMO
     var searchQuery by remember { mutableStateOf("") }
@@ -253,6 +274,33 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                 selected = false,
                                 onClick = { viewModel.navigateTo(com.example.ui.viewmodel.Screen.MANAJEMEN_PRODUK) },
                                 modifier = Modifier.testTag("products_open_manual_mgr_chip")
+                            )
+                        }
+                        item {
+                            DesignFilterChip(
+                                label = "Import Excel",
+                                selected = false,
+                                onClick = {
+                                    excelImportLauncher.launch(
+                                        arrayOf(
+                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                            "text/csv",
+                                            "text/comma-separated-values",
+                                            "*/*"
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.testTag("products_import_excel_chip")
+                            )
+                        }
+                        item {
+                            DesignFilterChip(
+                                label = "Template Excel",
+                                selected = false,
+                                onClick = {
+                                    excelTemplateLauncher.launch("Template_Produk_KASLITE.xlsx")
+                                },
+                                modifier = Modifier.testTag("products_template_excel_chip")
                             )
                         }
                     }
@@ -841,6 +889,202 @@ fun ProductsScreen(viewModel: PosViewModel) {
             },
             onDismiss = { showSearchScanner = false }
         )
+    }
+
+    ExcelProductImportHost(
+        excelImportState = excelImportState,
+        onConfirm = { updateExisting -> viewModel.confirmExcelProductImport(updateExisting) },
+        onDismiss = { viewModel.dismissExcelImportPreview() }
+    )
+}
+
+@Composable
+internal fun ExcelProductImportHost(
+    excelImportState: ExcelImportUiState,
+    onConfirm: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (excelImportState.isInspecting) {
+        Dialog(onDismissRequest = {}) {
+            Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(26.dp), color = AccentBlue)
+                    Column {
+                        Text("Membaca File Excel/CSV...", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                        Text("Mendeteksi kolom produk & harga", style = MaterialTheme.typography.bodySmall.copy(color = Slate500))
+                    }
+                }
+            }
+        }
+    }
+
+    excelImportState.inspectResult?.let { inspect ->
+        var updateExisting by remember(inspect.fileName) { mutableStateOf(true) }
+        Dialog(onDismissRequest = { if (!excelImportState.isImporting) onDismiss() }) {
+            Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
+                LazyColumn(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Icon(Icons.Default.UploadFile, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(26.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Pratinjau Import Produk", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                                Text("${inspect.fileName} • Format ${inspect.fileFormat}", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp))
+                            }
+                        }
+                    }
+
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Sapphire50,
+                            border = BorderStroke(1.dp, Sapphire200),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "Siap diimpor: ${inspect.rows.size} produk (dari ${inspect.totalRawRows} baris)",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800)
+                                )
+                                if (inspect.detectedColumns.isNotEmpty()) {
+                                    Text(
+                                        "Kolom terdeteksi: ${inspect.detectedColumns.joinToString(", ")}",
+                                        style = MaterialTheme.typography.labelSmall.copy(color = Slate700, fontSize = 11.sp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (inspect.skippedRows.isNotEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = AmberWarningBg,
+                                border = BorderStroke(1.dp, AmberWarningBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        "${inspect.skippedRows.size} baris dilewati:",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                    )
+                                    inspect.skippedRows.take(5).forEach { warn ->
+                                        Text("• $warn", style = MaterialTheme.typography.labelSmall.copy(color = Slate700, fontSize = 11.sp))
+                                    }
+                                    if (inspect.skippedRows.size > 5) {
+                                        Text("...dan ${inspect.skippedRows.size - 5} lainnya", style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 11.sp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (inspect.rows.isNotEmpty()) {
+                        item {
+                            Text("Contoh Produk (${minOf(5, inspect.rows.size)} pertama):", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate800))
+                        }
+                        items(inspect.rows.take(5)) { row ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = BgCanvas,
+                                border = BorderStroke(1.dp, BorderDefault),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(row.name, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                                        Text("${row.category} • Stok ${row.stock} ${row.baseUnit}", style = MaterialTheme.typography.labelSmall.copy(color = Slate500, fontSize = 10.sp))
+                                    }
+                                    Text("Rp ${formatRupiah(row.sellingPrice)}", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Emerald700))
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { updateExisting = !updateExisting },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(checked = updateExisting, onCheckedChange = { updateExisting = it })
+                            Text(
+                                "Perbarui produk yang sudah ada (cocokkan barcode/nama)",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate800)
+                            )
+                        }
+                    }
+
+                    if (!excelImportState.errorMessage.isNullOrBlank()) {
+                        item {
+                            Text(
+                                text = excelImportState.errorMessage,
+                                color = Rose500,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                    }
+
+                    item {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = onDismiss,
+                                enabled = !excelImportState.isImporting,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Batal")
+                            }
+                            Button(
+                                onClick = { onConfirm(updateExisting) },
+                                enabled = !excelImportState.isImporting && inspect.rows.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                if (excelImportState.isImporting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Mengimpor...", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                } else {
+                                    Text("Import Sekarang", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (excelImportState.inspectResult == null && !excelImportState.errorMessage.isNullOrBlank()) {
+        Dialog(onDismissRequest = onDismiss) {
+            Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Gagal Membaca Excel/CSV", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Rose500))
+                    Text(excelImportState.errorMessage, style = MaterialTheme.typography.bodySmall.copy(color = Slate700))
+                    Button(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Tutup", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }
 

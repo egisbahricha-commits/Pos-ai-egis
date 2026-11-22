@@ -133,7 +133,7 @@ fun AIChatScreen(viewModel: PosViewModel) {
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = AccentBlue)
                         Spacer(modifier = Modifier.width(10.dp))
-                        Text("Gerai Una AI sedang menganalisis perintah...", style = MaterialTheme.typography.bodySmall, color = Slate500)
+                        Text("KASLITE AI sedang menganalisis perintah...", style = MaterialTheme.typography.bodySmall, color = Slate500)
                     }
                 }
             }

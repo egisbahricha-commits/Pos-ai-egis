@@ -93,7 +93,7 @@ fun buildProfitLossShareText(summary: ProfitLossSummary): String {
         append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
         append("*$statusLabel: ${formatSignedRupiah(summary.netProfit)}*\n")
         append("Margin: ${String.format(Locale("id", "ID"), "%.1f", summary.marginPercent)}%\n")
-        append("Gerai Una Smart POS")
+        append("KASLITE POS")
     }
 }
 

@@ -195,3 +195,78 @@ test("Update preserves createdAt immutability and blocks changing ownerId", asyn
     })
   );
 });
+
+function validCustomerDemoLicense(uid, email, key) {
+  const ts = nowTimestamp();
+  const start = Date.now() - 1000;
+  return {
+    licenseKey: key,
+    storeName: "Toko Berkah",
+    ownerName: "Alice",
+    ownerEmail: email,
+    ownerUid: uid,
+    phone: "081234567890",
+    deviceId: "dev_abc123",
+    planType: "DEMO",
+    status: "DEMO",
+    demoStartedAtMillis: start,
+    demoExpiresAtMillis: start + 3 * 24 * 60 * 60 * 1000,
+    activatedAtMillis: 0,
+    expiresAtMillis: 0,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+}
+
+test("Licenses: customer can create 3-day DEMO, cannot self-activate FULL, cannot read other customers", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID, { email: "alice@example.com", email_verified: true }).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID, { email: "bob@example.com", email_verified: true }).firestore();
+
+  await assertSucceeds(
+    aliceDb.collection("licenses").doc("KSL-ALICE-1").set(validCustomerDemoLicense(ALICE_UID, "alice@example.com", "KSL-ALICE-1"))
+  );
+
+  // Customer cannot self-create ACTIVE/FULL license
+  await assertFails(
+    bobDb.collection("licenses").doc("KSL-BOB-FULL").set({
+      ...validCustomerDemoLicense(BOB_UID, "bob@example.com", "KSL-BOB-FULL"),
+      planType: "FULL",
+      status: "ACTIVE",
+    })
+  );
+
+  // Customer cannot elevate own DEMO to ACTIVE
+  await assertFails(
+    aliceDb.collection("licenses").doc("KSL-ALICE-1").update({
+      planType: "FULL",
+      status: "ACTIVE",
+      updatedAt: nowTimestamp(),
+    })
+  );
+
+  // Bob cannot get or list Alice's license
+  await assertFails(bobDb.collection("licenses").doc("KSL-ALICE-1").get());
+  await assertFails(bobDb.collection("licenses").get());
+});
+
+test("Licenses: Super Admin (egisbahricha@gmail.com) can list all, activate FULL, extend demo, and reset deviceId", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID, { email: "alice@example.com", email_verified: true }).firestore();
+  const adminDb = testEnv.authenticatedContext("super_uid", { email: "egisbahricha@gmail.com", email_verified: true }).firestore();
+
+  await assertSucceeds(
+    aliceDb.collection("licenses").doc("KSL-ALICE-1").set(validCustomerDemoLicense(ALICE_UID, "alice@example.com", "KSL-ALICE-1"))
+  );
+
+  await assertSucceeds(adminDb.collection("licenses").get());
+  await assertSucceeds(
+    adminDb.collection("licenses").doc("KSL-ALICE-1").update({
+      planType: "FULL",
+      status: "ACTIVE",
+      activatedAtMillis: Date.now(),
+      expiresAtMillis: Date.now() + 3650 * 24 * 60 * 60 * 1000,
+      deviceId: "",
+      updatedAt: nowTimestamp(),
+    })
+  );
+});
+

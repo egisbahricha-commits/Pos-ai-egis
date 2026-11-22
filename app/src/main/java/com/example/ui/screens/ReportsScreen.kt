@@ -1,7 +1,10 @@
 package com.example.ui.screens
 
 import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -92,9 +95,8 @@ import com.example.data.pricing.ProfitLossCalculator
 import com.example.data.pricing.ProfitLossPeriod
 import com.example.data.pricing.ProfitLossSummary
 import com.example.ui.components.DesignFilterChip
-import com.example.ui.components.KasGoListRowItem
-import com.example.ui.components.KasGoSearchBar
-import com.example.ui.components.KasGoSectionHeader
+import com.example.ui.components.KasLiteListRowItem
+import com.example.ui.components.KasLiteSearchBar
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -129,6 +131,14 @@ fun ReportsScreen(viewModel: PosViewModel) {
     val productVariants by viewModel.productVariants.collectAsStateWithLifecycle()
     val productBatches by viewModel.productBatches.collectAsStateWithLifecycle()
     val cashMutations by viewModel.cashMutations.collectAsStateWithLifecycle()
+
+    val exportExcelLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportReportsToExcel(uri)
+        }
+    }
 
     var selectedReportId by remember { mutableStateOf<Int?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -291,12 +301,58 @@ fun ReportsScreen(viewModel: PosViewModel) {
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        KasGoSearchBar(
+                        KasLiteSearchBar(
                             query = searchQuery,
                             onQueryChange = { searchQuery = it },
                             placeholder = "Cari dari 24 laporan...",
                             onBarcodeScanClick = null
                         )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { exportExcelLauncher.launch("Laporan_KASLITE.xlsx") },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White,
+                                    contentColor = ModuleLaporan
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("reports_export_excel_button")
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Export Excel (.xlsx)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.shareReportsAsExcel { uri ->
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            putExtra(Intent.EXTRA_SUBJECT, "Laporan KASLITE (.xlsx)")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, "Bagikan Laporan Excel KASLITE"))
+                                    }
+                                },
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.7f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("reports_share_excel_button")
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Bagikan Excel", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -336,7 +392,7 @@ fun ReportsScreen(viewModel: PosViewModel) {
 
             // Grouped Reports
             items(filteredReports) { report ->
-                KasGoListRowItem(
+                KasLiteListRowItem(
                     title = report.title,
                     subtitle = report.subtitle,
                     icon = report.icon,
@@ -567,7 +623,7 @@ private fun buildGeneralReportShareText(
     debtPayments: List<DebtPaymentEntity>,
     purchases: List<PurchaseEntity>
 ): String = buildString {
-    append("📊 *LAPORAN GERAI UNA: ${meta.title.uppercase()}*\n")
+    append("📊 *LAPORAN KASLITE: ${meta.title.uppercase()}*\n")
     append("Kategori: ${meta.section}\n")
     append("Waktu Cetak: ${SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale("id", "ID")).format(Date())}\n")
     append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -685,7 +741,7 @@ private fun ReportHeroSummaryCard(
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Data sinkron otomatis dari database lokal Gerai Una POS",
+                text = "Data tersimpan 100% lokal di database perangkat KASLITE",
                 style = MaterialTheme.typography.bodySmall.copy(color = Color.White.copy(alpha = 0.9f), fontSize = 11.sp)
             )
         }

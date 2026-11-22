@@ -63,7 +63,7 @@ import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
-import com.example.ui.components.KasGoSectionHeader
+import com.example.ui.components.KasLiteSectionHeader
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -355,7 +355,7 @@ fun MultiKasScreen(viewModel: PosViewModel) {
         // Ledger Tabs: Mutasi Kas vs Riwayat Transfer
         item {
             Spacer(modifier = Modifier.height(6.dp))
-            KasGoSectionHeader(
+            KasLiteSectionHeader(
                 title = "Buku Mutasi & Transfer Kas",
                 subtitle = "Catatan append-only setiap arus dana masuk/keluar"
             )
