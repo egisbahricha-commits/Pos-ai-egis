@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -59,6 +61,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -119,6 +122,12 @@ fun LoginScreen(viewModel: PosViewModel) {
     }
     var loginPin by remember { mutableStateOf("") }
 
+    // Secret 7-tap trigger for Super Admin
+    var logoTapCount by remember { mutableStateOf(0) }
+    var showSecretAdminDialog by remember { mutableStateOf(false) }
+    var secretEmailInput by remember { mutableStateOf("") }
+    var secretError by remember { mutableStateOf<String?>(null) }
+
     val launchInteractiveGoogleSignIn: () -> Unit = {
         coroutineScope.launch {
             viewModel.setAuthLoading(true)
@@ -165,7 +174,16 @@ fun LoginScreen(viewModel: PosViewModel) {
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
                                 color = Color.White.copy(alpha = 0.14f),
-                                modifier = Modifier.size(56.dp)
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable {
+                                        logoTapCount++
+                                        if (logoTapCount >= 7) {
+                                            logoTapCount = 0
+                                            showSecretAdminDialog = true
+                                        }
+                                    }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
@@ -328,7 +346,14 @@ fun LoginScreen(viewModel: PosViewModel) {
                                         modifier = Modifier
                                             .size(44.dp)
                                             .clip(RoundedCornerShape(12.dp))
-                                            .background(Color.White.copy(alpha = 0.16f)),
+                                            .background(Color.White.copy(alpha = 0.16f))
+                                            .clickable {
+                                                logoTapCount++
+                                                if (logoTapCount >= 7) {
+                                                    logoTapCount = 0
+                                                    showSecretAdminDialog = true
+                                                }
+                                            },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
@@ -439,6 +464,55 @@ fun LoginScreen(viewModel: PosViewModel) {
                     }
                 }
             }
+        }
+
+        if (showSecretAdminDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showSecretAdminDialog = false
+                    secretEmailInput = ""
+                    secretError = null
+                },
+                title = { Text("Login Rahasia Admin Pusat") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Masukkan email resmi Admin Pusat (egisbahricha@gmail.com):", style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(
+                            value = secretEmailInput,
+                            onValueChange = { secretEmailInput = it; secretError = null },
+                            label = { Text("Email Super Admin") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (secretError != null) {
+                            Text(secretError ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        if (secretEmailInput.trim().equals("egisbahricha@gmail.com", ignoreCase = true)) {
+                            showSecretAdminDialog = false
+                            secretEmailInput = ""
+                            secretError = null
+                            viewModel.loginAsSuperAdmin()
+                        } else {
+                            secretError = "Email Admin Pusat tidak valid."
+                        }
+                    }) {
+                        Text("Masuk")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showSecretAdminDialog = false
+                        secretEmailInput = ""
+                        secretError = null
+                    }) {
+                        Text("Batal")
+                    }
+                }
+            )
         }
     }
 }

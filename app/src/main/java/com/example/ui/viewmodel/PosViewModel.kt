@@ -508,6 +508,30 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentScreen = MutableStateFlow(Screen.DASHBOARD)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
+    fun loginAsSuperAdmin() {
+        val email = "egisbahricha@gmail.com"
+        val displayName = "Egis Bahricha (Super Admin)"
+        firebaseSessionStore.setLastLoginEmail(email)
+        firebaseSessionStore.setOfflineBypass(false)
+        _activeUserName.value = displayName
+        _activeRole.value = "Owner"
+        _currentScreen.value = Screen.SUPER_ADMIN
+        _authUiState.update {
+            it.copy(
+                hasEnteredApp = true,
+                isCloudSignedIn = false,
+                isOfflineMode = true,
+                userId = "super_admin_egis",
+                userEmail = email,
+                fullName = displayName,
+                storeName = firebaseSessionStore.getStoreNameHint().ifBlank { "Gerai Una POS (Pusat)" },
+                authError = null,
+                authInfoMessage = "Masuk sebagai Admin Pusat (Super Admin)."
+            )
+        }
+        _userMessage.value = "Berhasil masuk sebagai Admin Pusat."
+    }
+
     fun navigateTo(screen: Screen) {
         if (!hasMenuPermission(screen)) {
             _userMessage.value = "Akses menu ${screen.name} dibatasi untuk peran $_activeRole"
@@ -673,6 +697,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         firebaseSessionStore.setOfflineBypass(false)
         _activeUserName.value = displayName
         _activeRole.value = "Owner"
+        if (email.equals("egisbahricha@gmail.com", ignoreCase = true)) {
+            _currentScreen.value = Screen.SUPER_ADMIN
+        }
         _authUiState.update {
             it.copy(
                 hasEnteredApp = true,
