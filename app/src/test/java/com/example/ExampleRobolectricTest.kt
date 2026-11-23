@@ -130,34 +130,98 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test firebase cloud models default values and sync state`() {
-        val storeDoc = com.example.firebase.UserStoreProfileDoc(
-            id = "uid_owner_1",
-            ownerId = "uid_owner_1",
-            name = "KASLITE",
-            ownerEmail = "egisbahricha@gmail.com"
-        )
-        assertEquals("uid_owner_1", storeDoc.ownerId)
-        assertEquals("KASLITE", storeDoc.name)
+    fun `test Supabase LicenseDoc JSON parsing, ISO timestamps, session store, and config validation`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sessionStore = FirebaseSessionStore(context)
+        sessionStore.clearSupabaseSession()
 
-        val accountDoc = com.example.firebase.CashAccountDoc(
-            id = "acc_1",
-            ownerId = "uid_owner_1",
-            deviceId = "dev_123",
-            localId = 1L,
-            accountName = "Kas Toko",
-            balance = 1500000.0
+        // 1. Config validation
+        assertTrue(
+            com.example.supabase.SupabaseLicenseRepository.isValidConfig(
+                "https://xyzcompany.supabase.co/",
+                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test"
+            )
         )
-        assertEquals("Kas Toko", accountDoc.accountName)
-        assertEquals(1500000.0, accountDoc.balance, 0.01)
+        assertFalse(
+            com.example.supabase.SupabaseLicenseRepository.isValidConfig("", "anon")
+        )
+        assertFalse(
+            com.example.supabase.SupabaseLicenseRepository.isValidConfig(
+                "https://SUPABASE_URL_PLACEHOLDER.supabase.co",
+                "SUPABASE_ANON_KEY_PLACEHOLDER"
+            )
+        )
+        assertFalse(
+            com.example.supabase.SupabaseLicenseRepository.isValidConfig("http://evil.com", "anon")
+        )
 
-        val authState = com.example.firebase.FirebaseAuthUiState(
-            hasEnteredApp = true,
-            isCloudSignedIn = true,
-            userEmail = "egisbahricha@gmail.com"
+        // 2. ISO-8601 timestamp parsing
+        val parsedIso = com.example.supabase.SupabaseLicenseRepository.isoToMillis("2026-11-23T01:05:30.123456Z")
+        assertTrue(parsedIso > 0L)
+        assertEquals(0L, com.example.supabase.SupabaseLicenseRepository.isoToMillis("null"))
+
+        // 3. LicenseDoc JSON serialization & parsing roundtrip
+        val doc = com.example.firebase.LicenseDoc(
+            licenseKey = "KASLITE-ABC123",
+            storeName = "Toko Berkah",
+            ownerName = "Budi",
+            ownerEmail = "BUDI@GMAIL.COM",
+            ownerUid = "uuid-user-1",
+            phone = "08123456789",
+            deviceId = "dev_001",
+            planType = "DEMO",
+            status = "DEMO",
+            demoStartedAtMillis = 1_700_000_000_000L,
+            demoExpiresAtMillis = 1_700_259_200_000L
         )
-        assertEquals(true, authState.isCloudSignedIn)
-        assertEquals("egisbahricha@gmail.com", authState.userEmail)
+        val insertJson = com.example.supabase.SupabaseLicenseRepository.licenseDocToInsertJson(doc)
+        assertEquals("budi@gmail.com", insertJson.getString("owner_email"))
+        assertEquals("KASLITE-ABC123", insertJson.getString("license_key"))
+        insertJson.put("id", "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d")
+        insertJson.put("created_at", "2026-11-23T01:05:30Z")
+
+        val parsedDoc = com.example.supabase.SupabaseLicenseRepository.parseLicenseDocJson(insertJson)
+        assertEquals("9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d", parsedDoc.id)
+        assertEquals("KASLITE-ABC123", parsedDoc.licenseKey)
+        assertEquals("budi@gmail.com", parsedDoc.ownerEmail)
+        assertEquals("DEMO", parsedDoc.planType)
+        assertEquals(1_700_259_200_000L, parsedDoc.demoExpiresAtMillis)
+        assertTrue(parsedDoc.createdAtMillis > 0L)
+
+        // 4. GoTrue session parsing & persistence
+        val authJson = org.json.JSONObject(
+            """
+            {
+              "access_token": "jwt.access.token",
+              "refresh_token": "refresh_tok",
+              "expires_in": 3600,
+              "user": {
+                "id": "uid-supabase-99",
+                "email": "budi@gmail.com",
+                "user_metadata": { "full_name": "Budi Santoso" }
+              }
+            }
+            """.trimIndent()
+        )
+        val authSession = com.example.supabase.SupabaseLicenseRepository.parseAuthSessionJson(authJson, 1_700_000_000_000L)
+        assertEquals("jwt.access.token", authSession.accessToken)
+        assertEquals("uid-supabase-99", authSession.uid)
+        assertEquals("budi@gmail.com", authSession.email)
+        assertEquals("Budi Santoso", authSession.fullName)
+        assertFalse(authSession.requiresEmailConfirmation)
+
+        sessionStore.saveSupabaseSession(
+            accessToken = authSession.accessToken,
+            refreshToken = authSession.refreshToken,
+            uid = authSession.uid,
+            email = authSession.email,
+            fullName = authSession.fullName,
+            expiresAtMillis = authSession.expiresAtMillis
+        )
+        assertTrue(sessionStore.hasSupabaseSession())
+        assertEquals("budi@gmail.com", sessionStore.getSupabaseEmail())
+        sessionStore.clearSupabaseSession()
+        assertFalse(sessionStore.hasSupabaseSession())
     }
 
     @Test

@@ -91,7 +91,6 @@ import com.example.data.entity.CashierDeviceEntity
 import com.example.data.entity.PrinterEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.entity.UserAccountEntity
-import com.example.firebase.GoogleAuthHelper
 import com.example.firebase.LicenseAccessStatus
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignFilterChip
@@ -103,9 +102,10 @@ import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
 import com.example.ui.viewmodel.Screen
-import com.google.firebase.Firebase
-import com.google.firebase.auth.auth
-import kotlinx.coroutines.launch
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -151,6 +151,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
     var userToEdit by remember { mutableStateOf<UserAccountEntity?>(null) }
     var showAddUserDialog by remember { mutableStateOf(false) }
     var showLicenseKeyDialog by remember { mutableStateOf(false) }
+    var showRefreshAuthDialog by remember { mutableStateOf(false) }
 
     val isOwner = activeRole.equals("Owner", ignoreCase = true) || activeRole.equals("Admin", ignoreCase = true)
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
@@ -258,19 +259,16 @@ fun SettingsScreen(viewModel: PosViewModel) {
                     SettingsMenuRow(
                         icon = Icons.Default.Refresh,
                         title = if (licenseUiState.isRefreshing) "Memeriksa ke server..." else "Cek Status Lisensi Online",
-                        subtitle = "Segarkan status Demo/Full dari pusat lisensi KASLITE",
+                        subtitle = "Segarkan status Demo/Full dari pusat lisensi Supabase KASLITE",
                         badgeText = if (licenseUiState.isRefreshing) "Cek..." else "Online",
                         badgeType = BadgeType.INFO,
                         onClick = {
-                            val currentFbUser = runCatching { Firebase.auth.currentUser }.getOrNull()
-                            if (currentFbUser != null) {
-                                viewModel.refreshCustomerLicenseOnline(null)
+                            if (viewModel.hasActiveCustomerSupabaseSession()) {
+                                viewModel.refreshCustomerLicenseOnline(
+                                    onRequireAuth = { showRefreshAuthDialog = true }
+                                )
                             } else {
-                                coroutineScope.launch {
-                                    GoogleAuthHelper.signInWithGoogle(context).onSuccess { payload ->
-                                        viewModel.refreshCustomerLicenseOnline(payload)
-                                    }
-                                }
+                                showRefreshAuthDialog = true
                             }
                         }
                     )
@@ -952,8 +950,109 @@ fun SettingsScreen(viewModel: PosViewModel) {
         }
     }
 
+    if (showRefreshAuthDialog) {
+        var authEmail by remember { mutableStateOf(licenseUiState.ownerEmail.ifBlank { authUiState.lastEmail }) }
+        var authPassword by remember { mutableStateOf("") }
+        var showPass by remember { mutableStateOf(false) }
+        var localError by remember { mutableStateOf<String?>(null) }
+        var localInfo by remember { mutableStateOf<String?>(null) }
+        var isBusy by remember { mutableStateOf(false) }
+
+        Dialog(onDismissRequest = { if (!isBusy) showRefreshAuthDialog = false }) {
+            Surface(shape = RoundedCornerShape(16.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Cek Status Lisensi Supabase", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900))
+                    Text(
+                        "Masukkan Email & Password akun KASLITE Anda untuk memperbarui status lisensi dari Supabase.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                    )
+                    OutlinedTextField(
+                        value = authEmail,
+                        onValueChange = { authEmail = it.trim(); localError = null },
+                        label = { Text("Email Terdaftar") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = authPassword,
+                        onValueChange = { authPassword = it; localError = null },
+                        label = { Text("Password Akun") },
+                        trailingIcon = {
+                            IconButton(onClick = { showPass = !showPass }) {
+                                Icon(
+                                    if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showPass) "Sembunyikan password" else "Lihat password"
+                                )
+                            }
+                        },
+                        visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(
+                            enabled = !isBusy,
+                            onClick = {
+                                isBusy = true
+                                localError = null
+                                viewModel.sendSupabasePasswordReset(authEmail) { ok, msg ->
+                                    isBusy = false
+                                    if (ok) localInfo = msg else localError = msg
+                                }
+                            }
+                        ) { Text("Lupa Password?") }
+                    }
+                    if (!localInfo.isNullOrBlank()) {
+                        Text(localInfo ?: "", color = AccentBlue, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (!localError.isNullOrBlank()) {
+                        Text(localError ?: "", color = Rose500, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { showRefreshAuthDialog = false },
+                            enabled = !isBusy,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Batal", color = Slate700) }
+                        Button(
+                            onClick = {
+                                if (authEmail.isBlank() || authPassword.isBlank()) {
+                                    localError = "Email & password wajib diisi."
+                                    return@Button
+                                }
+                                isBusy = true
+                                localError = null
+                                viewModel.refreshCustomerLicenseOnline(authEmail, authPassword) { ok, msg ->
+                                    isBusy = false
+                                    if (ok) showRefreshAuthDialog = false else localError = msg
+                                }
+                            },
+                            enabled = !isBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (isBusy) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            } else {
+                                Text("Cek Lisensi", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (showLicenseKeyDialog) {
         var keyInput by remember { mutableStateOf(licenseUiState.licenseKey) }
+        val hasSession = viewModel.hasActiveCustomerSupabaseSession()
+        var authEmail by remember { mutableStateOf(licenseUiState.ownerEmail.ifBlank { authUiState.lastEmail }) }
+        var authPassword by remember { mutableStateOf("") }
+        var showPass by remember { mutableStateOf(false) }
         var localDialogError by remember { mutableStateOf<String?>(null) }
         var isSubmittingKey by remember { mutableStateOf(false) }
 
@@ -969,10 +1068,37 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         value = keyInput,
                         onValueChange = { keyInput = it; localDialogError = null },
                         label = { Text("Kunci Lisensi") },
-                        placeholder = { Text("Contoh: KL-XXXX-XXXX") },
+                        placeholder = { Text("Contoh: KASLITE-XXXXXX") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (!hasSession) {
+                        OutlinedTextField(
+                            value = authEmail,
+                            onValueChange = { authEmail = it.trim(); localDialogError = null },
+                            label = { Text("Email Akun KASLITE") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = authPassword,
+                            onValueChange = { authPassword = it; localDialogError = null },
+                            label = { Text("Password Akun") },
+                            trailingIcon = {
+                                IconButton(onClick = { showPass = !showPass }) {
+                                    Icon(
+                                        if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showPass) "Sembunyikan password" else "Lihat password"
+                                    )
+                                }
+                            },
+                            visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     if (!localDialogError.isNullOrBlank()) {
                         Text(localDialogError ?: "", color = Rose500, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
@@ -991,25 +1117,18 @@ fun SettingsScreen(viewModel: PosViewModel) {
                                     localDialogError = "Kunci lisensi tidak boleh kosong."
                                     return@Button
                                 }
-                                coroutineScope.launch {
-                                    isSubmittingKey = true
-                                    val fbUser = runCatching { Firebase.auth.currentUser }.getOrNull()
-                                    if (fbUser != null) {
-                                        viewModel.activateCustomerLicenseKey(keyInput, null) { ok, msg ->
-                                            isSubmittingKey = false
-                                            if (ok) showLicenseKeyDialog = false else localDialogError = msg
-                                        }
-                                    } else {
-                                        GoogleAuthHelper.signInWithGoogle(context).onSuccess { payload ->
-                                            viewModel.activateCustomerLicenseKey(keyInput, payload) { ok, msg ->
-                                                isSubmittingKey = false
-                                                if (ok) showLicenseKeyDialog = false else localDialogError = msg
-                                            }
-                                        }.onFailure { err ->
-                                            isSubmittingKey = false
-                                            localDialogError = err.localizedMessage ?: "Verifikasi akun Google gagal."
-                                        }
-                                    }
+                                if (!hasSession && (authEmail.isBlank() || authPassword.isBlank())) {
+                                    localDialogError = "Masukkan Email & Password akun KASLITE Anda terlebih dahulu."
+                                    return@Button
+                                }
+                                isSubmittingKey = true
+                                viewModel.activateCustomerLicenseKey(
+                                    licenseKey = keyInput,
+                                    email = if (hasSession) null else authEmail,
+                                    password = if (hasSession) null else authPassword
+                                ) { ok, msg ->
+                                    isSubmittingKey = false
+                                    if (ok) showLicenseKeyDialog = false else localDialogError = msg
                                 }
                             },
                             enabled = !isSubmittingKey,

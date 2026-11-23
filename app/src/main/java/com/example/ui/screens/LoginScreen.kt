@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
@@ -68,7 +69,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,7 +78,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -89,18 +88,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.UserAccountEntity
-import com.example.firebase.GoogleAuthHelper
 import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseUiState
+import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
-import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(viewModel: PosViewModel) {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
     val authState by viewModel.authUiState.collectAsStateWithLifecycle()
     val licenseUiState by viewModel.licenseUiState.collectAsStateWithLifecycle()
     val userAccounts by viewModel.userAccounts.collectAsStateWithLifecycle()
@@ -109,6 +105,12 @@ fun LoginScreen(viewModel: PosViewModel) {
     val isFirstTimeSetup = userAccounts.isEmpty()
 
     // Setup Admin Utama / Registrasi Pelanggan state
+    var customerEmail by remember(authState.lastEmail) {
+        mutableStateOf(authState.lastEmail)
+    }
+    var customerPassword by remember { mutableStateOf("") }
+    var isNewCustomerAccount by remember { mutableStateOf(true) }
+
     var setupStoreName by remember(storeProfile?.name) {
         mutableStateOf(
             storeProfile?.name?.takeIf { it.isNotBlank() && it != "Toko Saya" } ?: ""
@@ -132,54 +134,47 @@ fun LoginScreen(viewModel: PosViewModel) {
     }
     var loginPin by remember { mutableStateOf("") }
 
-    // Secret 7-tap trigger for Super Admin (real Firebase Google Sign-In)
+    // Returning user online license check dialog (when Supabase session needs Email & Password)
+    var showLicenseAuthDialog by remember { mutableStateOf(false) }
+    var licenseEmailInput by remember(authState.lastEmail) { mutableStateOf(authState.lastEmail) }
+    var licensePasswordInput by remember { mutableStateOf("") }
+    var licenseAuthDialogError by remember { mutableStateOf<String?>(null) }
+    var licenseAuthDialogInfo by remember { mutableStateOf<String?>(null) }
+    var isLicenseDialogBusy by remember { mutableStateOf(false) }
+    var showLicensePass by remember { mutableStateOf(false) }
+
+    // Secret 7-tap trigger for Super Admin (Supabase Email + Password)
     var logoTapCount by remember { mutableStateOf(0) }
     var showSecretAdminDialog by remember { mutableStateOf(false) }
+    var adminEmailInput by remember { mutableStateOf(SUPER_ADMIN_EMAIL) }
+    var adminPasswordInput by remember { mutableStateOf("") }
+    var showAdminPassword by remember { mutableStateOf(false) }
     var isSecretAdminBusy by remember { mutableStateOf(false) }
     var secretAdminError by remember { mutableStateOf<String?>(null) }
+    var secretAdminInfo by remember { mutableStateOf<String?>(null) }
 
-    val launchCustomerGoogleVerify: () -> Unit = {
-        coroutineScope.launch {
-            viewModel.setAuthLoading(true)
-            val result = GoogleAuthHelper.signInWithGoogle(context)
-            result.onSuccess { payload ->
-                viewModel.verifyCustomerGoogleForRegistration(payload)
-            }.onFailure { err ->
-                viewModel.setAuthError(err.localizedMessage ?: "Gagal verifikasi akun Google.")
-            }
-        }
+    val handleVerifyCustomerEmail: () -> Unit = {
+        viewModel.authenticateCustomerSupabase(
+            email = customerEmail,
+            password = customerPassword,
+            isNewAccount = isNewCustomerAccount,
+            fullNameHint = setupFullName
+        )
     }
 
-    val launchRefreshLicenseWithGoogle: () -> Unit = {
-        coroutineScope.launch {
-            val result = GoogleAuthHelper.signInWithGoogle(context)
-            result.onSuccess { payload ->
-                viewModel.refreshCustomerLicenseOnline(payload)
-            }.onFailure { err ->
-                viewModel.setAuthError(err.localizedMessage ?: "Gagal menghubungkan akun Google untuk cek lisensi.")
-            }
-        }
-    }
-
-    val launchSuperAdminGoogleSignIn: () -> Unit = {
-        coroutineScope.launch {
-            isSecretAdminBusy = true
-            secretAdminError = null
-            val result = GoogleAuthHelper.signInWithGoogle(context)
-            result.onSuccess { payload ->
-                if (!payload.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
-                    GoogleAuthHelper.clearCredentialState(context)
-                    isSecretAdminBusy = false
-                    secretAdminError = "Email ${payload.email} bukan Admin Pusat resmi ($SUPER_ADMIN_EMAIL)."
-                } else {
-                    isSecretAdminBusy = false
-                    showSecretAdminDialog = false
-                    viewModel.signInSuperAdminWithGooglePayload(payload)
+    val handleRefreshLicenseOnline: () -> Unit = {
+        if (viewModel.hasActiveCustomerSupabaseSession()) {
+            viewModel.refreshCustomerLicenseOnline(
+                onRequireAuth = {
+                    licenseAuthDialogError = null
+                    licenseAuthDialogInfo = null
+                    showLicenseAuthDialog = true
                 }
-            }.onFailure { err ->
-                isSecretAdminBusy = false
-                secretAdminError = err.localizedMessage ?: "Gagal login Google Admin Pusat."
-            }
+            )
+        } else {
+            licenseAuthDialogError = null
+            licenseAuthDialogInfo = null
+            showLicenseAuthDialog = true
         }
     }
 
@@ -225,6 +220,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                         if (logoTapCount >= 7) {
                                             logoTapCount = 0
                                             secretAdminError = null
+                                            secretAdminInfo = null
                                             showSecretAdminDialog = true
                                         }
                                     }
@@ -250,7 +246,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = if (isFirstTimeSetup)
-                                    "Daftar wajib online dengan email Google untuk mengaktifkan Demo 3 Hari. Setelah aktif, seluruh data toko berjalan 100% lokal di perangkat."
+                                    "Daftar wajib online dengan Email & Password (Supabase) untuk mengaktifkan Demo 3 Hari. Setelah aktif, seluruh data toko berjalan 100% lokal di perangkat."
                                 else
                                     "Masuk menggunakan Username & PIN lokal Anda. Data transaksi, produk, dan kas tersimpan aman 100% lokal di perangkat.",
                                 style = MaterialTheme.typography.bodyMedium.copy(
@@ -264,7 +260,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                             BrandFeatureRow(
                                 icon = Icons.Default.VerifiedUser,
                                 title = "Daftar Online • Trial Demo 3 Hari",
-                                subtitle = "Registrasi email Google tercatat otomatis di pusat lisensi untuk keamanan toko Anda"
+                                subtitle = "Registrasi Email & Password tercatat otomatis di pusat lisensi Supabase untuk keamanan toko Anda"
                             )
                             BrandFeatureRow(
                                 icon = Icons.Default.AccountBalanceWallet,
@@ -303,9 +299,27 @@ fun LoginScreen(viewModel: PosViewModel) {
                         item {
                             AuthContentCard(
                                 isFirstTimeSetup = isFirstTimeSetup,
-                                verifiedGoogleEmail = authState.verifiedGoogleEmail,
-                                onVerifyGoogleClick = launchCustomerGoogleVerify,
-                                onChangeGoogleEmailClick = { viewModel.clearVerifiedRegistrationEmail() },
+                                verifiedEmail = authState.verifiedGoogleEmail,
+                                customerEmail = customerEmail,
+                                onCustomerEmailChange = {
+                                    customerEmail = it.trim()
+                                    viewModel.clearAuthMessages()
+                                },
+                                customerPassword = customerPassword,
+                                onCustomerPasswordChange = {
+                                    customerPassword = it
+                                    viewModel.clearAuthMessages()
+                                },
+                                isNewCustomerAccount = isNewCustomerAccount,
+                                onToggleCustomerMode = { isNew ->
+                                    isNewCustomerAccount = isNew
+                                    viewModel.clearAuthMessages()
+                                },
+                                onVerifyCustomerEmailClick = handleVerifyCustomerEmail,
+                                onForgotCustomerPasswordClick = {
+                                    viewModel.sendSupabasePasswordReset(customerEmail)
+                                },
+                                onChangeEmailClick = { viewModel.clearVerifiedRegistrationEmail() },
                                 setupStoreName = setupStoreName,
                                 onSetupStoreNameChange = {
                                     setupStoreName = it
@@ -361,7 +375,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                     viewModel.loginWithLocalCredentials(loginUsername, loginPin)
                                 },
                                 licenseUiState = licenseUiState,
-                                onRefreshLicenseClick = launchRefreshLicenseWithGoogle,
+                                onRefreshLicenseClick = handleRefreshLicenseOnline,
                                 isLoading = authState.isAuthLoading,
                                 lastEmail = authState.lastEmail,
                                 authError = authState.authError,
@@ -407,6 +421,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                                 if (logoTapCount >= 7) {
                                                     logoTapCount = 0
                                                     secretAdminError = null
+                                                    secretAdminInfo = null
                                                     showSecretAdminDialog = true
                                                 }
                                             }
@@ -443,7 +458,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 Spacer(modifier = Modifier.height(10.dp))
                                 Text(
                                     text = if (isFirstTimeSetup)
-                                        "Daftar online dengan email Google untuk mengaktifkan Demo 3 Hari KASLITE. Data produk & transaksi tersimpan 100% lokal di HP Anda."
+                                        "Daftar online dengan Email & Password (Supabase) untuk mengaktifkan Demo 3 Hari KASLITE. Data produk & transaksi tersimpan 100% lokal di HP Anda."
                                     else
                                         "Masuk dengan Username & PIN lokal Anda. Koneksi internet hanya dibutuhkan untuk cek atau aktivasi lisensi.",
                                     style = MaterialTheme.typography.bodySmall.copy(
@@ -464,9 +479,27 @@ fun LoginScreen(viewModel: PosViewModel) {
                     ) {
                         AuthContentCard(
                             isFirstTimeSetup = isFirstTimeSetup,
-                            verifiedGoogleEmail = authState.verifiedGoogleEmail,
-                            onVerifyGoogleClick = launchCustomerGoogleVerify,
-                            onChangeGoogleEmailClick = { viewModel.clearVerifiedRegistrationEmail() },
+                            verifiedEmail = authState.verifiedGoogleEmail,
+                            customerEmail = customerEmail,
+                            onCustomerEmailChange = {
+                                customerEmail = it.trim()
+                                viewModel.clearAuthMessages()
+                            },
+                            customerPassword = customerPassword,
+                            onCustomerPasswordChange = {
+                                customerPassword = it
+                                viewModel.clearAuthMessages()
+                            },
+                            isNewCustomerAccount = isNewCustomerAccount,
+                            onToggleCustomerMode = { isNew ->
+                                isNewCustomerAccount = isNew
+                                viewModel.clearAuthMessages()
+                            },
+                            onVerifyCustomerEmailClick = handleVerifyCustomerEmail,
+                            onForgotCustomerPasswordClick = {
+                                viewModel.sendSupabasePasswordReset(customerEmail)
+                            },
+                            onChangeEmailClick = { viewModel.clearVerifiedRegistrationEmail() },
                             setupStoreName = setupStoreName,
                             onSetupStoreNameChange = {
                                 setupStoreName = it
@@ -522,7 +555,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 viewModel.loginWithLocalCredentials(loginUsername, loginPin)
                             },
                             licenseUiState = licenseUiState,
-                            onRefreshLicenseClick = launchRefreshLicenseWithGoogle,
+                            onRefreshLicenseClick = handleRefreshLicenseOnline,
                             isLoading = authState.isAuthLoading,
                             lastEmail = authState.lastEmail,
                             authError = authState.authError,
@@ -533,12 +566,136 @@ fun LoginScreen(viewModel: PosViewModel) {
             }
         }
 
+        // Returning user Supabase license refresh dialog
+        if (showLicenseAuthDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    if (!isLicenseDialogBusy) showLicenseAuthDialog = false
+                },
+                icon = {
+                    Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(28.dp))
+                },
+                title = {
+                    Text("Cek Status Lisensi Online", fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Masukkan Email & Password akun KASLITE Anda untuk menyinkronkan status Demo/Full dari Supabase.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
+                        )
+                        OutlinedTextField(
+                            value = licenseEmailInput,
+                            onValueChange = { licenseEmailInput = it.trim(); licenseAuthDialogError = null },
+                            label = { Text("Email Terdaftar") },
+                            leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = Slate500) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = loginFieldColors(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = licensePasswordInput,
+                            onValueChange = { licensePasswordInput = it; licenseAuthDialogError = null },
+                            label = { Text("Password Akun") },
+                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Slate500) },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { showLicensePass = !showLicensePass },
+                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                ) {
+                                    Icon(
+                                        if (showLicensePass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showLicensePass) "Sembunyikan password" else "Lihat password"
+                                    )
+                                }
+                            },
+                            visualTransformation = if (showLicensePass) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = loginFieldColors(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(
+                                enabled = !isLicenseDialogBusy,
+                                onClick = {
+                                    isLicenseDialogBusy = true
+                                    licenseAuthDialogError = null
+                                    viewModel.sendSupabasePasswordReset(licenseEmailInput) { ok, msg ->
+                                        isLicenseDialogBusy = false
+                                        if (ok) licenseAuthDialogInfo = msg else licenseAuthDialogError = msg
+                                    }
+                                }
+                            ) {
+                                Text("Lupa Password?", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        if (!licenseAuthDialogInfo.isNullOrBlank()) {
+                            Surface(shape = RoundedCornerShape(8.dp), color = Sapphire50, modifier = Modifier.fillMaxWidth()) {
+                                Text(licenseAuthDialogInfo ?: "", color = Sapphire800, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+                            }
+                        }
+                        if (!licenseAuthDialogError.isNullOrBlank()) {
+                            Surface(shape = RoundedCornerShape(8.dp), color = Rose100, modifier = Modifier.fillMaxWidth()) {
+                                Text(licenseAuthDialogError ?: "", color = Rose500, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        enabled = !isLicenseDialogBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                        onClick = {
+                            if (licenseEmailInput.isBlank() || licensePasswordInput.isBlank()) {
+                                licenseAuthDialogError = "Email dan password wajib diisi."
+                                return@Button
+                            }
+                            isLicenseDialogBusy = true
+                            licenseAuthDialogError = null
+                            viewModel.refreshCustomerLicenseOnline(
+                                email = licenseEmailInput,
+                                password = licensePasswordInput,
+                                onResult = { ok, msg ->
+                                    isLicenseDialogBusy = false
+                                    if (ok) {
+                                        licensePasswordInput = ""
+                                        showLicenseAuthDialog = false
+                                    } else {
+                                        licenseAuthDialogError = msg
+                                    }
+                                }
+                            )
+                        }
+                    ) {
+                        if (isLicenseDialogBusy) {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Memeriksa...")
+                        } else {
+                            Text("Cek Lisensi")
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(enabled = !isLicenseDialogBusy, onClick = { showLicenseAuthDialog = false }) {
+                        Text("Batal")
+                    }
+                }
+            )
+        }
+
+        // Secret 7-Tap Super Admin Dialog (Supabase Email + Password)
         if (showSecretAdminDialog) {
             AlertDialog(
                 onDismissRequest = {
                     if (!isSecretAdminBusy) {
                         showSecretAdminDialog = false
                         secretAdminError = null
+                        secretAdminInfo = null
                     }
                 },
                 icon = {
@@ -555,9 +712,76 @@ fun LoginScreen(viewModel: PosViewModel) {
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "Akses khusus Admin Pusat KASLITE ($SUPER_ADMIN_EMAIL). Autentikasi dilakukan langsung melalui Google & Firebase agar database pelanggan terbaca live.",
+                            text = "Akses khusus Admin Pusat KASLITE ($SUPER_ADMIN_EMAIL). Autentikasi melalui Supabase Auth untuk melihat & mengelola seluruh pelanggan live.",
                             style = MaterialTheme.typography.bodySmall.copy(color = Slate700)
                         )
+                        OutlinedTextField(
+                            value = adminEmailInput,
+                            onValueChange = { adminEmailInput = it.trim(); secretAdminError = null },
+                            label = { Text("Email Admin Pusat") },
+                            leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = Slate500) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = loginFieldColors(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("super_admin_email_input")
+                        )
+                        OutlinedTextField(
+                            value = adminPasswordInput,
+                            onValueChange = { adminPasswordInput = it; secretAdminError = null },
+                            label = { Text("Password Admin Pusat") },
+                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Slate500) },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { showAdminPassword = !showAdminPassword },
+                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                ) {
+                                    Icon(
+                                        if (showAdminPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showAdminPassword) "Sembunyikan password" else "Lihat password"
+                                    )
+                                }
+                            },
+                            visualTransformation = if (showAdminPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = loginFieldColors(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("super_admin_password_input")
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(
+                                enabled = !isSecretAdminBusy,
+                                onClick = {
+                                    isSecretAdminBusy = true
+                                    secretAdminError = null
+                                    viewModel.sendSupabasePasswordReset(adminEmailInput) { ok, msg ->
+                                        isSecretAdminBusy = false
+                                        if (ok) secretAdminInfo = msg else secretAdminError = msg
+                                    }
+                                }
+                            ) {
+                                Text("Lupa Password?", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        if (!secretAdminInfo.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Sapphire50,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = secretAdminInfo ?: "",
+                                    color = Sapphire800,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
                         if (!secretAdminError.isNullOrBlank()) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
@@ -576,17 +800,32 @@ fun LoginScreen(viewModel: PosViewModel) {
                 },
                 confirmButton = {
                     Button(
-                        onClick = launchSuperAdminGoogleSignIn,
+                        onClick = {
+                            isSecretAdminBusy = true
+                            secretAdminError = null
+                            viewModel.signInSuperAdminWithSupabase(
+                                email = adminEmailInput,
+                                password = adminPasswordInput
+                            ) { ok, msg ->
+                                isSecretAdminBusy = false
+                                if (ok) {
+                                    adminPasswordInput = ""
+                                    showSecretAdminDialog = false
+                                } else {
+                                    secretAdminError = msg
+                                }
+                            }
+                        },
                         enabled = !isSecretAdminBusy,
                         colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
-                        modifier = Modifier.testTag("super_admin_google_login_btn")
+                        modifier = Modifier.testTag("super_admin_supabase_login_btn")
                     ) {
                         if (isSecretAdminBusy) {
                             CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Menghubungkan...")
+                            Text("Memverifikasi...")
                         } else {
-                            Text("Login Super Admin via Google")
+                            Text("Login Super Admin")
                         }
                     }
                 },
@@ -596,6 +835,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                             if (!isSecretAdminBusy) {
                                 showSecretAdminDialog = false
                                 secretAdminError = null
+                                secretAdminInfo = null
                             }
                         }
                     ) {
@@ -631,9 +871,16 @@ private fun BrandFeatureRow(icon: ImageVector, title: String, subtitle: String) 
 @Composable
 private fun AuthContentCard(
     isFirstTimeSetup: Boolean,
-    verifiedGoogleEmail: String,
-    onVerifyGoogleClick: () -> Unit,
-    onChangeGoogleEmailClick: () -> Unit,
+    verifiedEmail: String,
+    customerEmail: String,
+    onCustomerEmailChange: (String) -> Unit,
+    customerPassword: String,
+    onCustomerPasswordChange: (String) -> Unit,
+    isNewCustomerAccount: Boolean,
+    onToggleCustomerMode: (Boolean) -> Unit,
+    onVerifyCustomerEmailClick: () -> Unit,
+    onForgotCustomerPasswordClick: () -> Unit,
+    onChangeEmailClick: () -> Unit,
     setupStoreName: String,
     onSetupStoreNameChange: (String) -> Unit,
     setupFullName: String,
@@ -660,6 +907,7 @@ private fun AuthContentCard(
     authError: String?,
     authInfo: String?
 ) {
+    var showCustomerPasswordText by remember { mutableStateOf(false) }
     var showPinText by remember { mutableStateOf(false) }
     var showConfirmPinText by remember { mutableStateOf(false) }
     val pinFocusRequester = remember { FocusRequester() }
@@ -675,8 +923,8 @@ private fun AuthContentCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (isFirstTimeSetup) {
-                // Step 1: Mandatory Online Google Verification Banner
-                val isEmailVerified = verifiedGoogleEmail.isNotBlank()
+                // Step 1: Mandatory Online Supabase Email + Password Verification Banner
+                val isEmailVerified = verifiedEmail.isNotBlank()
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = if (isEmailVerified) Emerald50 else Sapphire50,
@@ -700,7 +948,7 @@ private fun AuthContentCard(
                                     text = if (isEmailVerified)
                                         "Langkah 1 Selesai • Email Terverifikasi"
                                     else
-                                        "Langkah 1 (Wajib Online) • Verifikasi Email Google",
+                                        "Langkah 1 (Wajib Online) • Daftar / Masuk Email",
                                     style = MaterialTheme.typography.labelMedium.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = if (isEmailVerified) Emerald800 else Sapphire800
@@ -708,9 +956,9 @@ private fun AuthContentCard(
                                 )
                                 Text(
                                     text = if (isEmailVerified)
-                                        verifiedGoogleEmail
+                                        verifiedEmail
                                     else
-                                        "Wajib daftar online dengan email Google agar akun terdaftar di pusat lisensi dan Trial Demo 3 Hari aktif.",
+                                        "Daftarkan Email & Password Anda ke Supabase agar lisensi Trial Demo 3 Hari & dukungan Admin Pusat aktif.",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontSize = 11.sp,
                                         color = Slate700
@@ -720,19 +968,90 @@ private fun AuthContentCard(
                         }
 
                         if (!isEmailVerified) {
+                            DesignSegmentedTabs(
+                                options = listOf("SIGNUP" to "Daftar Baru", "SIGNIN" to "Masuk Akun Lama"),
+                                selectedKey = if (isNewCustomerAccount) "SIGNUP" else "SIGNIN",
+                                onSelect = { onToggleCustomerMode(it == "SIGNUP") }
+                            )
+
+                            OutlinedTextField(
+                                value = customerEmail,
+                                onValueChange = onCustomerEmailChange,
+                                label = { Text("Email Pemilik Toko *") },
+                                placeholder = { Text("contoh@gmail.com") },
+                                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = Slate500) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = loginFieldColors(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("customer_supabase_email_input")
+                            )
+
+                            OutlinedTextField(
+                                value = customerPassword,
+                                onValueChange = onCustomerPasswordChange,
+                                label = { Text("Password Akun Email (min. 6 karakter) *") },
+                                placeholder = { Text("Masukkan password") },
+                                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Slate500) },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { showCustomerPasswordText = !showCustomerPasswordText },
+                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                    ) {
+                                        Icon(
+                                            if (showCustomerPasswordText) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (showCustomerPasswordText) "Sembunyikan password" else "Lihat password"
+                                        )
+                                    }
+                                },
+                                visualTransformation = if (showCustomerPasswordText) VisualTransformation.None else PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = { if (!isLoading) onVerifyCustomerEmailClick() }),
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = loginFieldColors(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("customer_supabase_password_input")
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(
+                                    onClick = onForgotCustomerPasswordClick,
+                                    enabled = !isLoading
+                                ) {
+                                    Text("Lupa Password?", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+
                             Button(
-                                onClick = onVerifyGoogleClick,
+                                onClick = onVerifyCustomerEmailClick,
                                 enabled = !isLoading,
                                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp)
-                                    .testTag("customer_google_verify_button")
+                                    .testTag("customer_supabase_verify_button")
                             ) {
-                                Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Verifikasi Email Google (Wajib Trial 3 Hari)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                if (isLoading) {
+                                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Menghubungkan Supabase...", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                } else {
+                                    Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (isNewCustomerAccount) "Daftar & Aktifkan Email" else "Masuk Akun Email",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
                             }
                         } else {
                             Row(
@@ -745,7 +1064,7 @@ private fun AuthContentCard(
                                     style = MaterialTheme.typography.labelSmall.copy(color = Emerald700, fontWeight = FontWeight.Bold)
                                 )
                                 TextButton(
-                                    onClick = onChangeGoogleEmailClick,
+                                    onClick = onChangeEmailClick,
                                     enabled = !isLoading
                                 ) {
                                     Text("Ganti Email", fontSize = 12.sp, fontWeight = FontWeight.Bold)

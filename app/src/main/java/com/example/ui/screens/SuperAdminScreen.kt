@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -181,7 +182,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                 },
                 actions = {
                     IconButton(onClick = { viewModel.loadSuperAdminLicenses() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Muat Ulang Firestore")
+                        Icon(Icons.Default.Refresh, contentDescription = "Muat Ulang Supabase")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -228,7 +229,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Menu rahasia ini khusus untuk Admin Pusat ($SUPER_ADMIN_EMAIL) melalui login Google Firebase.",
+                        "Menu rahasia ini khusus untuk Admin Pusat ($SUPER_ADMIN_EMAIL) melalui login Email Supabase.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -311,7 +312,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                             ) {
                                 CircularProgressIndicator(modifier = Modifier.size(22.dp), color = AccentBlue)
                                 Spacer(modifier = Modifier.width(10.dp))
-                                Text("Memuat data pelanggan dari Firestore...", fontSize = 13.sp, color = Slate600)
+                                Text("Memuat data pelanggan dari Supabase...", fontSize = 13.sp, color = Slate600)
                             }
                         }
                     } else if (filteredLicenses.isEmpty()) {
@@ -323,7 +324,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (licenses.isEmpty()) "Belum ada pelanggan terdaftar di Firestore /licenses."
+                                    text = if (licenses.isEmpty()) "Belum ada pelanggan terdaftar di Supabase (tabel licenses)."
                                     else "Tidak ada lisensi yang cocok dengan pencarian.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Slate500
@@ -539,6 +540,23 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                                 Text("Reset Device", fontSize = 12.sp)
                                             }
                                         }
+
+                                        if (license.ownerEmail.isNotBlank()) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.superAdminSendResetPassword(license.ownerEmail) { _, msg ->
+                                                        snackbarMessage = msg
+                                                    }
+                                                },
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentBlue),
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                            ) {
+                                                Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Reset Password", fontSize = 12.sp)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -560,7 +578,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (generatedKeyResult != null) {
-                            Text("Lisensi berhasil dibuat di Firestore!", color = Emerald700, fontWeight = FontWeight.Bold)
+                            Text("Lisensi berhasil dibuat di Supabase!", color = Emerald700, fontWeight = FontWeight.Bold)
                             OutlinedTextField(
                                 value = generatedKeyResult ?: "",
                                 onValueChange = {},
@@ -592,7 +610,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                             OutlinedTextField(
                                 value = newOwnerEmail,
                                 onValueChange = { newOwnerEmail = it },
-                                label = { Text("Email Google Pemilik *") },
+                                label = { Text("Email Pemilik *") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -632,7 +650,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                         if (key != null) {
                                             generatedKeyResult = key
                                         } else {
-                                            snackbarMessage = "Gagal membuat lisensi di Firestore."
+                                            snackbarMessage = "Gagal membuat lisensi di Supabase."
                                         }
                                     }
                                 }

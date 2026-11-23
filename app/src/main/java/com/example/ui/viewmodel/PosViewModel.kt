@@ -21,20 +21,13 @@ import com.example.data.repository.PosRepository
 import com.example.data.repository.PurchaseItemDraft
 import com.example.firebase.FirebaseAuthUiState
 import com.example.firebase.FirebaseSessionStore
-import com.example.firebase.FirebaseSyncRepository
-import com.example.firebase.GoogleAuthHelper
-import com.example.firebase.GoogleSignInPayload
 import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseDoc
 import com.example.firebase.LicenseUiState
 import com.example.firebase.LocalLicenseSnapshot
+import com.example.supabase.SupabaseLicenseRepository
 import com.example.whatsapp.WhatsAppCommandCenter
 import com.example.whatsapp.WhatsAppMessageResponse
-import com.google.firebase.Firebase
-import com.google.firebase.FirebaseApp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,7 +41,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.util.Locale
@@ -95,7 +87,7 @@ fun evaluateLocalLicenseState(
     if (snapshot == null) {
         return LicenseUiState(
             accessStatus = LicenseAccessStatus.UNREGISTERED,
-            message = "Daftar online dengan email Google untuk memulai Demo 3 hari."
+            message = "Daftar online dengan Email & Password untuk memulai Demo 3 hari."
         )
     }
     val effectiveNow = maxOf(nowMillis, snapshot.maxSeenClockMillis)
@@ -454,15 +446,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val whatsAppCommandCenter = WhatsAppCommandCenter(repository, aiEngine)
 
     val firebaseSessionStore = FirebaseSessionStore(application)
-    private val isFirebaseConfigured: Boolean = runCatching {
-        FirebaseApp.getApps(application).isNotEmpty() || FirebaseApp.initializeApp(application) != null
-    }.getOrDefault(false)
-    val firebaseSyncRepository: FirebaseSyncRepository? = if (isFirebaseConfigured) {
-        runCatching { FirebaseSyncRepository(application, database, firebaseSessionStore) }.getOrNull()
-    } else null
-    private val auth: FirebaseAuth? = if (isFirebaseConfigured) {
-        runCatching { Firebase.auth }.getOrNull()
-    } else null
+    val supabaseRepository = SupabaseLicenseRepository(application, firebaseSessionStore)
 
     private val _authUiState = MutableStateFlow(
         FirebaseAuthUiState(
@@ -502,10 +486,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadSuperAdminLicenses() {
-        val syncRepo = firebaseSyncRepository
-        val activeUser = auth?.currentUser
-        if (syncRepo == null || activeUser == null || !activeUser.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
-            _superAdminError.value = "Harap masuk menggunakan akun Google Super Admin ($SUPER_ADMIN_EMAIL) via Firebase."
+        val sessionEmail = firebaseSessionStore.getSupabaseEmail()
+        if (!supabaseRepository.isConfigured()) {
+            _superAdminError.value = "Supabase belum dikonfigurasi. Isi SUPABASE_URL dan SUPABASE_ANON_KEY di menu Secrets."
+            return
+        }
+        if (!_authUiState.value.isSuperAdmin ||
+            !firebaseSessionStore.hasSupabaseSession() ||
+            !sessionEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
+        ) {
+            _superAdminError.value = "Harap masuk menggunakan akun Email Super Admin ($SUPER_ADMIN_EMAIL) via Supabase."
             return
         }
         licensesJob?.cancel()
@@ -513,10 +503,10 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             _isSuperAdminLoading.value = true
             _superAdminError.value = null
             try {
-                val list = syncRepo.getAllLicenses()
+                val list = supabaseRepository.getAllLicenses()
                 _allLicenses.value = list
             } catch (e: Exception) {
-                val msg = "Gagal memuat database pelanggan Firestore: ${e.localizedMessage ?: e.message}"
+                val msg = "Gagal memuat database pelanggan Supabase: ${e.localizedMessage ?: e.message}"
                 _superAdminError.value = msg
                 _userMessage.value = msg
             } finally {
@@ -526,15 +516,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetCustomerDeviceBinding(licenseKey: String, onResult: (Boolean, String) -> Unit) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            onResult(false, "Firebase tidak terhubung.")
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                syncRepo.resetDeviceBinding(licenseKey)
-                val list = syncRepo.getAllLicenses()
+                supabaseRepository.resetDeviceBinding(licenseKey)
+                val list = supabaseRepository.getAllLicenses()
                 _allLicenses.value = list
                 withContext(Dispatchers.Main) {
                     _userMessage.value = "Perangkat di-reset untuk lisensi $licenseKey"
@@ -556,21 +545,20 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         planType: String = "FULL",
         onResult: (String?) -> Unit
     ) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
+        if (!supabaseRepository.isConfigured()) {
             onResult(null)
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val created = syncRepo.createSuperAdminLicense(
+                val created = supabaseRepository.createSuperAdminLicense(
                     storeName = storeName,
                     ownerName = ownerName,
                     ownerEmail = ownerEmail,
                     phone = phone,
                     planType = planType
                 )
-                _allLicenses.value = syncRepo.getAllLicenses()
+                _allLicenses.value = supabaseRepository.getAllLicenses()
                 withContext(Dispatchers.Main) {
                     _userMessage.value = "Lisensi ${created.licenseKey} berhasil dibuat!"
                     onResult(created.licenseKey)
@@ -589,15 +577,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         durationDays: Int = 3650,
         onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            onResult(false, "Firebase tidak terhubung.")
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                syncRepo.superAdminActivateFull(licenseKey, durationDays)
-                _allLicenses.value = syncRepo.getAllLicenses()
+                supabaseRepository.superAdminActivateFull(licenseKey, durationDays)
+                _allLicenses.value = supabaseRepository.getAllLicenses()
                 withContext(Dispatchers.Main) {
                     _userMessage.value = "Lisensi $licenseKey diaktifkan FULL!"
                     onResult(true, "Lisensi $licenseKey berhasil diaktifkan FULL.")
@@ -615,15 +602,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         days: Int = 3,
         onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            onResult(false, "Firebase tidak terhubung.")
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                syncRepo.superAdminExtendDemo(licenseKey, days)
-                _allLicenses.value = syncRepo.getAllLicenses()
+                supabaseRepository.superAdminExtendDemo(licenseKey, days)
+                _allLicenses.value = supabaseRepository.getAllLicenses()
                 withContext(Dispatchers.Main) {
                     _userMessage.value = "Demo diperpanjang +$days hari untuk $licenseKey"
                     onResult(true, "Demo berhasil diperpanjang +$days hari.")
@@ -641,15 +627,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         suspended: Boolean,
         onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            onResult(false, "Firebase tidak terhubung.")
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                syncRepo.superAdminSetSuspended(licenseKey, suspended)
-                _allLicenses.value = syncRepo.getAllLicenses()
+                supabaseRepository.superAdminSetSuspended(licenseKey, suspended)
+                _allLicenses.value = supabaseRepository.getAllLicenses()
                 val label = if (suspended) "dinonaktifkan (SUSPENDED)" else "diaktifkan kembali"
                 withContext(Dispatchers.Main) {
                     _userMessage.value = "Lisensi $licenseKey $label"
@@ -663,35 +648,63 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun superAdminSendResetPassword(
+        email: String,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val clean = email.trim()
+        if (clean.isBlank() || !clean.contains("@")) {
+            onResult(false, "Email pelanggan tidak valid.")
+            return
+        }
+        viewModelScope.launch {
+            val res = supabaseRepository.sendPasswordReset(clean)
+            res.onSuccess {
+                val msg = "Email reset password dikirim ke $clean via Supabase Auth."
+                _userMessage.value = msg
+                onResult(true, msg)
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Gagal mengirim reset password."
+                _userMessage.value = msg
+                onResult(false, msg)
+            }
+        }
+    }
+
     private val _currentScreen = MutableStateFlow(Screen.DASHBOARD)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
-    fun signInSuperAdminWithGooglePayload(payload: GoogleSignInPayload) {
+    fun signInSuperAdminWithSupabase(
+        email: String,
+        password: String,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val cleanEmail = email.trim()
+        if (!cleanEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+            val msg = "Email \"$cleanEmail\" bukan Admin Pusat resmi ($SUPER_ADMIN_EMAIL)."
+            _authUiState.update { it.copy(isAuthLoading = false, isSuperAdmin = false, authError = msg) }
+            onResult(false, msg)
+            return
+        }
+        if (password.isBlank()) {
+            val msg = "Masukkan password akun Admin Pusat."
+            onResult(false, msg)
+            return
+        }
+
         viewModelScope.launch {
             _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
             try {
-                val activeAuth = auth
-                    ?: throw IllegalStateException("Firebase Auth belum tersedia pada build ini.")
-                val credential = GoogleAuthProvider.getCredential(payload.idToken, null)
-                val authResult = activeAuth.signInWithCredential(credential).await()
-                val firebaseUser = authResult.user
-                    ?: throw IllegalStateException("Akun Firebase tidak ditemukan setelah login Google.")
-                val email = firebaseUser.email.orEmpty()
-                if (!email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
-                    activeAuth.signOut()
-                    GoogleAuthHelper.clearCredentialState(getApplication())
-                    _authUiState.update {
-                        it.copy(
-                            isAuthLoading = false,
-                            isSuperAdmin = false,
-                            authError = "Email \"$email\" bukan Admin Pusat resmi ($SUPER_ADMIN_EMAIL)."
-                        )
-                    }
+                val session = supabaseRepository.signInWithEmail(cleanEmail, password).getOrThrow()
+                if (!session.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+                    supabaseRepository.signOut()
+                    val msg = "Email \"${session.email}\" bukan Admin Pusat resmi ($SUPER_ADMIN_EMAIL)."
+                    _authUiState.update { it.copy(isAuthLoading = false, isSuperAdmin = false, authError = msg) }
+                    onResult(false, msg)
                     return@launch
                 }
 
-                val displayName = firebaseUser.displayName?.takeIf { it.isNotBlank() } ?: "Admin Pusat (Egis)"
-                firebaseSessionStore.setLastLoginEmail(email)
+                val displayName = session.fullName.ifBlank { "Admin Pusat (Egis)" }
                 _activeUserName.value = displayName
                 _activeRole.value = "Owner"
                 _currentScreen.value = Screen.SUPER_ADMIN
@@ -701,27 +714,25 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         isCloudSignedIn = true,
                         isOfflineMode = false,
                         isSuperAdmin = true,
-                        userId = firebaseUser.uid,
-                        userEmail = email,
+                        userId = session.uid,
+                        userEmail = session.email,
                         fullName = displayName,
                         storeName = "KASLITE Admin Pusat",
-                        lastEmail = email,
+                        lastEmail = session.email,
                         isAuthLoading = false,
                         authError = null,
-                        authInfoMessage = "Masuk sebagai Admin Pusat ($email)."
+                        authInfoMessage = "Masuk sebagai Admin Pusat (${session.email})."
                     )
                 }
                 _userMessage.value = "Berhasil masuk sebagai Super Admin."
                 loadSuperAdminLicenses()
+                onResult(true, "Berhasil masuk sebagai Admin Pusat.")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _authUiState.update {
-                    it.copy(
-                        isAuthLoading = false,
-                        authError = e.localizedMessage ?: "Gagal masuk Super Admin via Firebase."
-                    )
-                }
+                val msg = e.localizedMessage ?: "Gagal masuk Admin Pusat via Supabase."
+                _authUiState.update { it.copy(isAuthLoading = false, authError = msg) }
+                onResult(false, msg)
             }
         }
     }
@@ -878,15 +889,20 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     _authUiState.update { it.copy(storeName = profile.name) }
                 }
 
-                // Restore any previously verified Firebase user for online registration step if still signed in
-                val existingFirebaseUser = auth?.currentUser
-                if (existingFirebaseUser != null && !existingFirebaseUser.email.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+                // Restore any previously verified customer Supabase session for online registration step
+                val existingSupaUid = firebaseSessionStore.getSupabaseUid()
+                val existingSupaEmail = firebaseSessionStore.getSupabaseEmail()
+                val existingSupaName = firebaseSessionStore.getSupabaseFullName()
+                if (existingSupaUid.isNotBlank() &&
+                    existingSupaEmail.isNotBlank() &&
+                    !existingSupaEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
+                ) {
                     _authUiState.update {
                         it.copy(
-                            verifiedGoogleUid = existingFirebaseUser.uid,
-                            verifiedGoogleEmail = existingFirebaseUser.email.orEmpty(),
-                            verifiedGoogleName = existingFirebaseUser.displayName.orEmpty(),
-                            lastEmail = existingFirebaseUser.email.orEmpty().ifBlank { it.lastEmail }
+                            verifiedGoogleUid = existingSupaUid,
+                            verifiedGoogleEmail = existingSupaEmail,
+                            verifiedGoogleName = existingSupaName,
+                            lastEmail = existingSupaEmail
                         )
                     }
                 }
@@ -914,7 +930,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearVerifiedRegistrationEmail() {
-        auth?.signOut()
+        viewModelScope.launch {
+            supabaseRepository.signOut()
+        }
         _authUiState.update {
             it.copy(
                 verifiedGoogleUid = "",
@@ -925,44 +943,58 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun verifyCustomerGoogleForRegistration(payload: GoogleSignInPayload) {
+    fun authenticateCustomerSupabase(
+        email: String,
+        password: String,
+        isNewAccount: Boolean,
+        fullNameHint: String = ""
+    ) {
         viewModelScope.launch {
             _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
             try {
-                val activeAuth = auth
-                    ?: throw IllegalStateException("Firebase belum terkonfigurasi pada build ini.")
-                val credential = GoogleAuthProvider.getCredential(payload.idToken, null)
-                val authResult = activeAuth.signInWithCredential(credential).await()
-                val firebaseUser = authResult.user
-                    ?: throw IllegalStateException("Akun Google tidak terbaca di Firebase.")
-                val email = firebaseUser.email.orEmpty()
-                val name = firebaseUser.displayName.orEmpty()
-                if (email.isNotBlank()) {
-                    firebaseSessionStore.setLastLoginEmail(email)
+                if (!supabaseRepository.isConfigured()) {
+                    throw IllegalStateException("Supabase belum dikonfigurasi pada build ini. Isi SUPABASE_URL dan SUPABASE_ANON_KEY di Secrets AI Studio.")
+                }
+                val session = if (isNewAccount) {
+                    supabaseRepository.signUpWithEmail(email, password, fullNameHint).getOrThrow()
+                } else {
+                    supabaseRepository.signInWithEmail(email, password).getOrThrow()
                 }
 
-                // Check whether this Google UID already has an existing license on Firestore
+                if (session.requiresEmailConfirmation || session.accessToken.isBlank()) {
+                    _authUiState.update {
+                        it.copy(
+                            isAuthLoading = false,
+                            lastEmail = session.email.ifBlank { email.trim() },
+                            authError = null,
+                            authInfoMessage = session.message
+                        )
+                    }
+                    return@launch
+                }
+
                 val existingLicense = runCatching {
-                    firebaseSyncRepository?.fetchLicenseByOwnerUid(firebaseUser.uid)
+                    supabaseRepository.fetchLicenseByOwnerUid(session.uid)
+                        ?: supabaseRepository.fetchLicenseByEmail(session.email)
                 }.getOrNull()
 
                 val currentDeviceId = firebaseSessionStore.getOrCreateDeviceId()
                 val infoMsg = when {
                     existingLicense == null ->
-                        "Email $email terverifikasi! Lengkapi data toko & PIN untuk aktivasi Trial Demo 3 hari."
+                        "Email ${session.email} terverifikasi! Lengkapi data toko & PIN untuk aktivasi Trial Demo 3 hari."
                     existingLicense.deviceId.isNotBlank() && existingLicense.deviceId != currentDeviceId ->
-                        "Email $email sudah terdaftar di perangkat lain. Hubungi Admin Pusat ($SUPER_ADMIN_EMAIL) untuk Reset Device."
+                        "Email ${session.email} sudah terdaftar di perangkat lain. Hubungi Admin Pusat ($SUPER_ADMIN_EMAIL) untuk Reset Device."
                     else ->
-                        "Email $email terverifikasi (Lisensi ditemukan: ${existingLicense.licenseKey}, status ${existingLicense.status})."
+                        "Email ${session.email} terverifikasi (Lisensi ditemukan: ${existingLicense.licenseKey}, status ${existingLicense.status})."
                 }
 
                 _authUiState.update {
                     it.copy(
                         isAuthLoading = false,
-                        verifiedGoogleUid = firebaseUser.uid,
-                        verifiedGoogleEmail = email,
-                        verifiedGoogleName = name,
-                        lastEmail = email.ifBlank { it.lastEmail },
+                        verifiedGoogleUid = session.uid,
+                        verifiedGoogleEmail = session.email,
+                        verifiedGoogleName = session.fullName,
+                        lastEmail = session.email.ifBlank { it.lastEmail },
                         authError = null,
                         authInfoMessage = infoMsg
                     )
@@ -973,9 +1005,37 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 _authUiState.update {
                     it.copy(
                         isAuthLoading = false,
-                        authError = e.localizedMessage ?: "Gagal memverifikasi email Google di Firebase."
+                        authError = e.localizedMessage ?: "Gagal memverifikasi akun email di Supabase."
                     )
                 }
+            }
+        }
+    }
+
+    fun sendSupabasePasswordReset(
+        email: String,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val clean = email.trim()
+        if (clean.isBlank() || !clean.contains("@")) {
+            val msg = "Masukkan alamat email yang valid terlebih dahulu."
+            _authUiState.update { it.copy(authError = msg) }
+            onResult(false, msg)
+            return
+        }
+        viewModelScope.launch {
+            _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
+            val res = supabaseRepository.sendPasswordReset(clean)
+            res.onSuccess {
+                val msg = "Link reset password dikirim ke $clean. Cek kotak masuk atau folder spam email Anda."
+                _authUiState.update { it.copy(isAuthLoading = false, authInfoMessage = msg, authError = null) }
+                _userMessage.value = msg
+                onResult(true, msg)
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Gagal mengirim link reset password."
+                _authUiState.update { it.copy(isAuthLoading = false, authError = msg) }
+                _userMessage.value = msg
+                onResult(false, msg)
             }
         }
     }
@@ -991,7 +1051,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         val state = _authUiState.value
         if (state.verifiedGoogleUid.isBlank() || state.verifiedGoogleEmail.isBlank()) {
             _authUiState.update {
-                it.copy(authError = "Pendaftaran awal wajib verifikasi email Google secara online terlebih dahulu.")
+                it.copy(authError = "Pendaftaran awal wajib verifikasi akun Email secara online terlebih dahulu.")
             }
             return
         }
@@ -1007,10 +1067,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             _authUiState.update { it.copy(authError = firstError) }
             return
         }
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
+        if (!supabaseRepository.isConfigured()) {
             _authUiState.update {
-                it.copy(authError = "Layanan Firebase pendaftaran pelanggan belum tersedia.")
+                it.copy(authError = "Supabase belum dikonfigurasi. Isi SUPABASE_URL dan SUPABASE_ANON_KEY pada menu Secrets.")
             }
             return
         }
@@ -1038,8 +1097,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
-                // Online mandatory license registration into Super Admin Firestore DB (/licenses)
-                val licenseDoc = syncRepo.registerOrFetchCustomerLicense(
+                // Online mandatory license registration into Super Admin Supabase DB (public.licenses)
+                val licenseDoc = supabaseRepository.registerOrFetchCustomerLicense(
                     ownerUid = state.verifiedGoogleUid,
                     ownerEmail = state.verifiedGoogleEmail,
                     ownerName = cleanFull,
@@ -1172,34 +1231,43 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshCustomerLicenseOnline(googlePayload: GoogleSignInPayload? = null) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            _userMessage.value = "Firebase belum tersedia untuk memeriksa lisensi."
+    fun hasActiveCustomerSupabaseSession(): Boolean = firebaseSessionStore.hasSupabaseSession()
+
+    fun refreshCustomerLicenseOnline(
+        email: String? = null,
+        password: String? = null,
+        onRequireAuth: () -> Unit = {},
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        if (!supabaseRepository.isConfigured()) {
+            val msg = "Supabase belum dikonfigurasi untuk memeriksa lisensi."
+            _userMessage.value = msg
+            onResult(false, msg)
             return
         }
         viewModelScope.launch {
             _licenseUiState.update { it.copy(isRefreshing = true) }
             try {
-                val activeAuth = auth ?: throw IllegalStateException("Firebase Auth tidak tersedia.")
-                var firebaseUser = activeAuth.currentUser
-                if (googlePayload != null) {
-                    val cred = GoogleAuthProvider.getCredential(googlePayload.idToken, null)
-                    firebaseUser = activeAuth.signInWithCredential(cred).await().user
-                }
-                if (firebaseUser == null) {
+                if (!email.isNullOrBlank() && !password.isNullOrBlank()) {
+                    supabaseRepository.signInWithEmail(email, password).getOrThrow()
+                } else if (!firebaseSessionStore.hasSupabaseSession()) {
                     _licenseUiState.update { it.copy(isRefreshing = false) }
-                    _userMessage.value = "Silakan verifikasi akun Google Anda untuk menyegarkan status lisensi."
+                    onRequireAuth()
                     return@launch
                 }
 
+                val uid = firebaseSessionStore.getSupabaseUid()
+                val activeEmail = firebaseSessionStore.getSupabaseEmail()
                 val snap = firebaseSessionStore.getLicenseSnapshot()
-                val fetched = syncRepo.fetchLicenseByOwnerUid(firebaseUser.uid)
-                    ?: snap?.licenseKey?.takeIf { it.isNotBlank() }?.let { syncRepo.getLicenseByKey(it) }
+                val fetched = supabaseRepository.fetchLicenseByOwnerUid(uid)
+                    ?: supabaseRepository.fetchLicenseByEmail(activeEmail)
+                    ?: snap?.licenseKey?.takeIf { it.isNotBlank() }?.let { supabaseRepository.getLicenseByKey(it) }
 
                 if (fetched == null) {
                     _licenseUiState.update { it.copy(isRefreshing = false) }
-                    _userMessage.value = "Belum ada data lisensi untuk email ${firebaseUser.email}."
+                    val msg = "Belum ada data lisensi untuk email $activeEmail."
+                    _userMessage.value = msg
+                    onResult(false, msg)
                     return@launch
                 }
 
@@ -1215,23 +1283,26 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _userMessage.value = statusLabel
                 _authUiState.update { it.copy(authInfoMessage = statusLabel, authError = null) }
+                onResult(true, statusLabel)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _licenseUiState.update { it.copy(isRefreshing = false) }
-                _userMessage.value = "Gagal cek lisensi online: ${e.localizedMessage ?: e.message}"
+                val msg = "Gagal cek lisensi online: ${e.localizedMessage ?: e.message}"
+                _userMessage.value = msg
+                onResult(false, msg)
             }
         }
     }
 
     fun activateCustomerLicenseKey(
         licenseKey: String,
-        googlePayload: GoogleSignInPayload? = null,
+        email: String? = null,
+        password: String? = null,
         onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
-        val syncRepo = firebaseSyncRepository
-        if (syncRepo == null) {
-            val msg = "Firebase tidak terhubung. Aktivasi kunci membutuhkan internet."
+        if (!supabaseRepository.isConfigured()) {
+            val msg = "Supabase belum dikonfigurasi. Aktivasi kunci membutuhkan internet."
             _userMessage.value = msg
             onResult(false, msg)
             return
@@ -1245,26 +1316,24 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _licenseUiState.update { it.copy(isRefreshing = true) }
             try {
-                val activeAuth = auth ?: throw IllegalStateException("Firebase Auth tidak tersedia.")
-                var firebaseUser = activeAuth.currentUser
-                if (googlePayload != null) {
-                    val cred = GoogleAuthProvider.getCredential(googlePayload.idToken, null)
-                    firebaseUser = activeAuth.signInWithCredential(cred).await().user
-                }
-                if (firebaseUser == null) {
+                if (!email.isNullOrBlank() && !password.isNullOrBlank()) {
+                    supabaseRepository.signInWithEmail(email, password).getOrThrow()
+                } else if (!firebaseSessionStore.hasSupabaseSession()) {
                     _licenseUiState.update { it.copy(isRefreshing = false) }
-                    val msg = "Harap login/verifikasi email Google dahulu untuk mengklaim kunci lisensi."
+                    val msg = "Masukkan Email & Password akun KASLITE Anda dahulu untuk mengklaim lisensi."
                     _userMessage.value = msg
                     onResult(false, msg)
                     return@launch
                 }
 
+                val uid = firebaseSessionStore.getSupabaseUid()
+                val activeEmail = firebaseSessionStore.getSupabaseEmail()
                 val profile = withContext(Dispatchers.IO) { database.extendedPosDao().getStoreProfileSync() }
-                val updated = syncRepo.activateLicenseKeyForCustomer(
+                val updated = supabaseRepository.activateLicenseKeyForCustomer(
                     licenseKey = cleanKey,
-                    ownerUid = firebaseUser.uid,
-                    ownerEmail = firebaseUser.email.orEmpty(),
-                    ownerName = _activeUserName.value.ifBlank { firebaseUser.displayName.orEmpty() },
+                    ownerUid = uid,
+                    ownerEmail = activeEmail,
+                    ownerName = _activeUserName.value.ifBlank { firebaseSessionStore.getSupabaseFullName() },
                     storeName = profile?.name.orEmpty(),
                     phone = profile?.phone.orEmpty(),
                     deviceId = firebaseSessionStore.getOrCreateDeviceId()
@@ -1291,10 +1360,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             withContext(NonCancellable) {
                 licensesJob?.cancel()
                 if (wasSuperAdmin) {
-                    auth?.signOut()
+                    supabaseRepository.signOut()
                 }
                 firebaseSessionStore.setOfflineBypass(false)
-                GoogleAuthHelper.clearCredentialState(getApplication())
             }
             _activeUserId.value = 0L
             _activeRole.value = ""
@@ -2884,7 +2952,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 withContext(NonCancellable) {
                     licensesJob?.cancel()
-                    auth?.signOut()
+                    supabaseRepository.signOut()
                     firebaseSessionStore.setOfflineBypass(false)
                     firebaseSessionStore.setStoreNameHint("Toko Saya")
                 }

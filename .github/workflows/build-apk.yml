@@ -26,9 +26,9 @@ jobs:
       - name: Check prebuilt APK in repository
         id: check-apk
         run: |
-          if [ "${{ inputs.rebuild_from_source }}" != "true" ] && [ -f apk/gerai-una-pos-ai.apk ]; then
+          if [ "${{ inputs.rebuild_from_source }}" != "true" ] && [ -f apk/kaslite-pos.apk ]; then
             echo "use_prebuilt=true" >> "$GITHUB_OUTPUT"
-            cp apk/gerai-una-pos-ai.apk gerai-una-pos-ai.apk
+            cp apk/kaslite-pos.apk kaslite-pos.apk
           else
             echo "use_prebuilt=false" >> "$GITHUB_OUTPUT"
           fi
@@ -76,14 +76,17 @@ jobs:
           unzip -q /tmp/gradle.zip -d /opt
           echo "/opt/gradle-9.3.1/bin" >> "$GITHUB_PATH"
 
-      - name: Restore google-services.json from Secret (optional)
+      - name: Configure Supabase Secrets (.env)
         if: steps.check-apk.outputs.use_prebuilt != 'true'
         env:
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          if [ -n "$GOOGLE_SERVICES_JSON" ] && [ ! -f app/google-services.json ]; then
-            printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
-            echo "app/google-services.json dipulihkan dari GitHub Secret."
+          if [ ! -f .env ] && [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+            printf 'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > .env
+            echo "Konfigurasi .env dipersiapkan dari GitHub Secrets."
+          else
+            echo "Menggunakan placeholder .env.example."
           fi
 
       - name: Build Debug APK
@@ -96,9 +99,9 @@ jobs:
             --no-daemon \
             --no-configuration-cache \
             --console=plain \
-            --max-workers=1 \
-            -Pkotlin.compiler.execution.strategy=out-of-process \
-            -Dorg.gradle.jvmargs="-Xmx2560m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" \
+            --max-workers=2 \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            -Dorg.gradle.jvmargs="-Xmx3584m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8" \
             2>&1 | tee /tmp/gradle-build.log; then
             echo "## Build Debug APK Gagal" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -108,13 +111,13 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk gerai-una-pos-ai.apk
+          cp app/build/outputs/apk/debug/app-debug.apk kaslite-pos.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v6
         with:
-          name: gerai-una-pos-ai-apk
-          path: gerai-una-pos-ai.apk
+          name: kaslite-pos-apk
+          path: kaslite-pos.apk
           retention-days: 30
 
       - name: Publish APK to GitHub Releases
@@ -122,15 +125,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view latest-apk >/dev/null 2>&1; then
-            gh release upload latest-apk gerai-una-pos-ai.apk --clobber
+            gh release upload latest-apk kaslite-pos.apk --clobber
             gh release edit latest-apk \
-              --title "Gerai Una POS AI (Latest APK)" \
-              --notes "Unduh file **gerai-una-pos-ai.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda." \
+              --title "KASLITE POS (Latest APK)" \
+              --notes "Unduh file **kaslite-pos.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda." \
               --latest
           else
-            gh release create latest-apk gerai-una-pos-ai.apk \
+            gh release create latest-apk kaslite-pos.apk \
               --target "${{ github.sha }}" \
-              --title "Gerai Una POS AI (Latest APK)" \
-              --notes "Unduh file **gerai-una-pos-ai.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda." \
+              --title "KASLITE POS (Latest APK)" \
+              --notes "Unduh file **kaslite-pos.apk** pada bagian **Assets** di bawah ini untuk menginstal aplikasi di perangkat Android Anda." \
               --latest
           fi

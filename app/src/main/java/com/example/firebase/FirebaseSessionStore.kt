@@ -56,6 +56,53 @@ class FirebaseSessionStore(context: Context) {
 
     fun getStoreNameHint(): String = prefs.getString("store_name_hint", "Toko Saya") ?: "Toko Saya"
 
+    fun saveSupabaseSession(
+        accessToken: String,
+        refreshToken: String,
+        uid: String,
+        email: String,
+        fullName: String = "",
+        expiresAtMillis: Long = 0L
+    ) {
+        prefs.edit()
+            .putString("supa_access_token", accessToken)
+            .putString("supa_refresh_token", refreshToken)
+            .putString("supa_uid", uid)
+            .putString("supa_email", email)
+            .putString("supa_full_name", fullName)
+            .putLong("supa_expires_at", expiresAtMillis)
+            .apply()
+        if (email.isNotBlank()) {
+            setLastLoginEmail(email)
+        }
+    }
+
+    fun getSupabaseAccessToken(): String = prefs.getString("supa_access_token", "") ?: ""
+
+    fun getSupabaseRefreshToken(): String = prefs.getString("supa_refresh_token", "") ?: ""
+
+    fun getSupabaseUid(): String = prefs.getString("supa_uid", "") ?: ""
+
+    fun getSupabaseEmail(): String = prefs.getString("supa_email", "") ?: ""
+
+    fun getSupabaseFullName(): String = prefs.getString("supa_full_name", "") ?: ""
+
+    fun getSupabaseExpiresAtMillis(): Long = prefs.getLong("supa_expires_at", 0L)
+
+    fun hasSupabaseSession(): Boolean =
+        getSupabaseAccessToken().isNotBlank() && getSupabaseUid().isNotBlank()
+
+    fun clearSupabaseSession() {
+        prefs.edit()
+            .remove("supa_access_token")
+            .remove("supa_refresh_token")
+            .remove("supa_uid")
+            .remove("supa_email")
+            .remove("supa_full_name")
+            .remove("supa_expires_at")
+            .apply()
+    }
+
     fun saveLicenseSnapshot(snapshot: LocalLicenseSnapshot) {
         val now = System.currentTimeMillis()
         val oldMax = getMaxSeenClockMillis()

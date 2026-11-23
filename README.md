@@ -1,6 +1,6 @@
-# GERAI UNA SMART POS AI
+# KASLITE — Smart POS
 
-Aplikasi Kasir Android (Jetpack Compose + Room Offline-First + Firebase Auth & Cloud Firestore Sync).
+Aplikasi Kasir Android (Jetpack Compose + Room Lokal + Lisensi Pelanggan Supabase untuk Super Admin).
 
 ---
 
@@ -11,9 +11,9 @@ Aplikasi Kasir Android (Jetpack Compose + Room Offline-First + Firebase Auth & C
 
 ### Cara Unduh APK Terbaru:
 1. Buka tab **[Releases](../../releases)** pada repositori ini.
-2. Pilih rilis **Gerai Una POS AI (Latest APK)** → bagian **Assets** → unduh **`gerai-una-pos-ai.apk`**.
-3. Alternatifnya, buka tab **[Actions](../../actions)** → pilih workflow **Build & Publish APK** terbaru → unduh artifact **`gerai-una-pos-ai-apk`**.
-4. Instal file **`gerai-una-pos-ai.apk`** di perangkat Android Anda.
+2. Pilih rilis **KASLITE POS (Latest APK)** → bagian **Assets** → unduh **`kaslite-pos.apk`**.
+3. Alternatifnya, buka tab **[Actions](../../actions)** → pilih workflow **Build & Publish APK** terbaru → unduh artifact **`kaslite-pos-apk`**.
+4. Instal file **`kaslite-pos.apk`** di perangkat Android Anda.
 
-> **Catatan Cloud Sync (Opsional):** Saat *Push to GitHub* dari AI Studio, file `app/google-services.json` tidak ikut terunggah demi keamanan. Build APK GitHub tetap berjalan normal menggunakan **Mode Offline (Room DB)**. Jika ingin mengaktifkan Login Google & Cloud Sync di APK hasil build GitHub, tambahkan GitHub Repository Secret bernama **`GOOGLE_SERVICES_JSON`** berisi isi file `app/google-services.json`, lalu jalankan ulang workflow.
+> **Catatan Konfigurasi Supabase:** Untuk mengaktifkan pendaftaran email pelanggan, lisensi Demo 3 Hari, dan Super Admin di APK hasil build GitHub, jalankan `supabase_schema.sql` pada SQL Editor Supabase Anda, lalu tambahkan GitHub Repository Secrets **`SUPABASE_URL`** dan **`SUPABASE_ANON_KEY`** sebelum menjalankan workflow.
 
