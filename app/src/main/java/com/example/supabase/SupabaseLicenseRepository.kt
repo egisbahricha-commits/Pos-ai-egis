@@ -261,7 +261,7 @@ class SupabaseLicenseRepository(
                 put("data", JSONObject().apply { put("full_name", fullName.trim()) })
             }
         }
-        val res = executeHttp("POST", "/auth/v1/signup", payload.toString(), bearerToken = anonKey)
+        val res = executeHttp("POST", "/auth/v1/signup", payload.toString(), bearerToken = null)
         if (res.code !in 200..299) {
             throw IllegalStateException(translateErrorMessage(res.code, res.body))
         }
@@ -301,7 +301,7 @@ class SupabaseLicenseRepository(
             method = "POST",
             pathAndQuery = "/auth/v1/token?grant_type=password",
             bodyJson = payload.toString(),
-            bearerToken = anonKey
+            bearerToken = null
         )
         if (res.code !in 200..299) {
             throw IllegalStateException(translateErrorMessage(res.code, res.body))
@@ -332,7 +332,7 @@ class SupabaseLicenseRepository(
             method = "POST",
             pathAndQuery = "/auth/v1/token?grant_type=refresh_token",
             bodyJson = payload.toString(),
-            bearerToken = anonKey
+            bearerToken = null
         )
         if (res.code !in 200..299) {
             sessionStore.clearSupabaseSession()
@@ -367,7 +367,7 @@ class SupabaseLicenseRepository(
         val cleanEmail = email.trim().lowercase(Locale.ROOT)
         require(cleanEmail.contains("@") && cleanEmail.contains(".")) { "Masukkan email yang valid terlebih dahulu." }
         val payload = JSONObject().apply { put("email", cleanEmail) }
-        val res = executeHttp("POST", "/auth/v1/recover", payload.toString(), bearerToken = anonKey)
+        val res = executeHttp("POST", "/auth/v1/recover", payload.toString(), bearerToken = null)
         if (res.code !in 200..299) {
             throw IllegalStateException(translateErrorMessage(res.code, res.body))
         }
