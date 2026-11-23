@@ -110,6 +110,7 @@ import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.KasLiteSearchBar
 import com.example.ui.components.ProductThumbnail
+import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -139,6 +140,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     val productVariants by viewModel.productVariants.collectAsStateWithLifecycle()
     val bundles by viewModel.bundles.collectAsStateWithLifecycle()
     val promos by viewModel.promos.collectAsStateWithLifecycle()
+    val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
 
     val decimalProductIds = remember(products) {
         products.filter { it.allowDecimalQty }.map { it.id }.toSet()
@@ -148,6 +150,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var selectedProductType by remember { mutableStateOf("SEMUA") } // SEMUA, FISIK, DIGITAL, PAKET
     var showBarcodeScanner by remember { mutableStateOf(false) }
+    var showScannerSettingsDialog by remember { mutableStateOf(false) }
 
     var isCartSheetOpen by remember { mutableStateOf(false) }
     var isPaymentModalOpen by remember { mutableStateOf(false) }
@@ -555,11 +558,24 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     if (showBarcodeScanner) {
         BarcodeScannerDialog(
             title = "Scan Barcode Kasir",
+            scannerSettings = scannerSettings,
+            onOpenScannerSettings = {
+                showBarcodeScanner = false
+                showScannerSettingsDialog = true
+            },
             onBarcodeDetected = { code ->
                 showBarcodeScanner = false
                 handleBarcodeScanned(code)
             },
             onDismiss = { showBarcodeScanner = false }
+        )
+    }
+
+    if (showScannerSettingsDialog) {
+        ScannerSettingsDialog(
+            currentSettings = scannerSettings,
+            onSaveSettings = { updated -> viewModel.updateScannerSettings(updated) },
+            onDismiss = { showScannerSettingsDialog = false }
         )
     }
 

@@ -113,6 +113,7 @@ import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseUiState
 import com.example.ui.components.DesignToastSnackbar
 import com.example.ui.components.KasLiteTopBar
+import com.example.ui.components.PrinterManagerDialog
 import com.example.ui.components.ReceiptDialog
 import com.example.ui.components.formatRupiah
 import com.example.ui.screens.AIChatScreen
@@ -144,7 +145,6 @@ import com.example.ui.viewmodel.isScreenAllowedWhenDemoLocked
 import kotlinx.coroutines.launch
 
 import androidx.compose.foundation.isSystemInDarkTheme
-import com.example.ui.components.ReceiptPrintHelper
 
 class MainActivity : ComponentActivity() {
 
@@ -164,6 +164,11 @@ class MainActivity : ComponentActivity() {
                 MainAppContent(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.syncCustomerLicenseSilently(force = true)
     }
 }
 
@@ -193,6 +198,8 @@ fun MainAppContent(viewModel: PosViewModel) {
     val customers by viewModel.customers.collectAsStateWithLifecycle()
     val lastCompletedSale by viewModel.lastCompletedSale.collectAsStateWithLifecycle()
     val lastCompletedSaleItems by viewModel.lastCompletedSaleItems.collectAsStateWithLifecycle()
+    val printers by viewModel.printers.collectAsStateWithLifecycle()
+    val activePrinter by viewModel.activePrinter.collectAsStateWithLifecycle()
     val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
 
     if (!authUiState.hasEnteredApp) {
@@ -207,9 +214,19 @@ fun MainAppContent(viewModel: PosViewModel) {
         }
     }
 
+    LaunchedEffect(authUiState.hasEnteredApp, authUiState.isSuperAdmin) {
+        if (authUiState.hasEnteredApp && !authUiState.isSuperAdmin) {
+            while (true) {
+                kotlinx.coroutines.delay(45_000L)
+                viewModel.syncCustomerLicenseSilently()
+            }
+        }
+    }
+
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var tabletSidebarMode by remember { mutableStateOf(TabletSidebarMode.MINIMIZED) }
     var showNotificationsDialog by remember { mutableStateOf(false) }
+    var showReceiptPrinterManager by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val cartBadgeCount = remember(cart) {
@@ -1050,18 +1067,41 @@ fun MainAppContent(viewModel: PosViewModel) {
             sale = completedSale,
             items = lastCompletedSaleItems,
             storeProfile = storeProfile,
+            activePrinter = activePrinter,
             onDismiss = { viewModel.dismissReceiptModal() },
             onShareWhatsApp = { text ->
                 viewModel.whatsAppCommandCenter.shareViaWhatsApp(context, text)
             },
             onPrintReceipt = {
-                ReceiptPrintHelper.printReceipt(
+                viewModel.printSaleReceipt(
+                    context = context,
+                    sale = completedSale,
+                    items = lastCompletedSaleItems
+                )
+            },
+            onPrintSystemPdf = {
+                viewModel.printSaleReceipt(
                     context = context,
                     sale = completedSale,
                     items = lastCompletedSaleItems,
-                    storeProfile = storeProfile
+                    forceSystemPrint = true
                 )
+            },
+            onOpenPrinterSettings = {
+                showReceiptPrinterManager = true
             }
+        )
+    }
+
+    if (showReceiptPrinterManager) {
+        PrinterManagerDialog(
+            printers = printers,
+            activePrinterId = activePrinter?.id ?: 0L,
+            onSelectPrimaryPrinter = { printerId -> viewModel.selectPreferredPrinter(printerId) },
+            onSavePrinter = { printer, setAsPrimary -> viewModel.savePrinter(printer, setAsPrimary) },
+            onDeletePrinter = { printer -> viewModel.deletePrinter(printer) },
+            onTestPrint = { printer, cb -> viewModel.printTestReceipt(context, printer, cb) },
+            onDismiss = { showReceiptPrinterManager = false }
         )
     }
 }

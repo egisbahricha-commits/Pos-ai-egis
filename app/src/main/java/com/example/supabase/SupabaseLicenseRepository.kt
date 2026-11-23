@@ -31,6 +31,11 @@ data class SupabaseAuthSession(
     val message: String = ""
 )
 
+class SuspendedLicenseException(
+    val licenseDoc: LicenseDoc,
+    message: String
+) : IllegalStateException(message)
+
 class SupabaseLicenseRepository(
     context: Context,
     private val sessionStore: FirebaseSessionStore,
@@ -188,6 +193,71 @@ class SupabaseLicenseRepository(
                 else -> "Permintaan Supabase gagal (HTTP $statusCode)."
             }
         }
+
+        fun resolveAuthoritativeCustomerLicense(
+            byKey: LicenseDoc?,
+            ownerRows: List<LicenseDoc>,
+            currentDeviceId: String = ""
+        ): LicenseDoc? {
+            if (byKey != null) {
+                if (byKey.status.equals("SUSPENDED", ignoreCase = true)) {
+                    return byKey
+                }
+                if (byKey.deviceId.isNotBlank() &&
+                    currentDeviceId.isNotBlank() &&
+                    byKey.deviceId != currentDeviceId
+                ) {
+                    return byKey
+                }
+                if (byKey.planType.equals("FULL", ignoreCase = true) ||
+                    byKey.status.equals("ACTIVE", ignoreCase = true)
+                ) {
+                    return byKey
+                }
+                // Currently on DEMO key: check if any row owned by this uid was upgraded/suspended as FULL
+                val matchingFull = ownerRows
+                    .filter {
+                        (it.planType.equals("FULL", ignoreCase = true) ||
+                            it.status.equals("ACTIVE", ignoreCase = true)) &&
+                            (it.deviceId.isBlank() || currentDeviceId.isBlank() || it.deviceId == currentDeviceId)
+                    }
+                    .sortedWith(
+                        compareByDescending<LicenseDoc> { it.status.equals("SUSPENDED", ignoreCase = true) }
+                            .thenByDescending { it.updatedAtMillis }
+                            .thenByDescending { it.activatedAtMillis }
+                    )
+                    .firstOrNull()
+                if (matchingFull != null) return matchingFull
+                return byKey
+            }
+
+            if (ownerRows.isEmpty()) return null
+            val deviceEligible = ownerRows.filter {
+                it.deviceId.isBlank() || currentDeviceId.isBlank() || it.deviceId == currentDeviceId
+            }.ifEmpty { ownerRows }
+
+            val bestFull = deviceEligible
+                .filter {
+                    it.planType.equals("FULL", ignoreCase = true) ||
+                        it.status.equals("ACTIVE", ignoreCase = true)
+                }
+                .sortedWith(
+                    compareByDescending<LicenseDoc> { it.status.equals("SUSPENDED", ignoreCase = true) }
+                        .thenByDescending { it.status.equals("ACTIVE", ignoreCase = true) }
+                        .thenByDescending { it.updatedAtMillis }
+                        .thenByDescending { it.activatedAtMillis }
+                )
+                .firstOrNull()
+            if (bestFull != null) return bestFull
+
+            return deviceEligible
+                .sortedWith(
+                    compareByDescending<LicenseDoc> { it.status.equals("SUSPENDED", ignoreCase = true) }
+                        .thenByDescending { it.updatedAtMillis }
+                        .thenByDescending { it.createdAtMillis }
+                )
+                .firstOrNull()
+        }
     }
 
     fun isConfigured(): Boolean = isValidConfig(baseUrl, anonKey)
@@ -335,7 +405,9 @@ class SupabaseLicenseRepository(
             bearerToken = null
         )
         if (res.code !in 200..299) {
-            sessionStore.clearSupabaseSession()
+            if (res.code == 400 || res.code == 401) {
+                sessionStore.clearSupabaseSession()
+            }
             throw IllegalStateException(translateErrorMessage(res.code, res.body))
         }
         val parsed = parseAuthSessionJson(JSONObject(res.body))
@@ -413,19 +485,50 @@ class SupabaseLicenseRepository(
         }
     }
 
+    suspend fun fetchLicensesByOwnerUid(uid: String): List<LicenseDoc> {
+        if (uid.isBlank()) return emptyList()
+        return queryLicenseList("owner_uid=eq.${urlEncode(uid)}&select=*&order=updated_at.desc,created_at.desc&limit=20")
+    }
+
     suspend fun fetchLicenseByOwnerUid(uid: String): LicenseDoc? {
         if (uid.isBlank()) return null
-        return queryLicenseList("owner_uid=eq.${urlEncode(uid)}&select=*&limit=1").firstOrNull()
+        return fetchLicensesByOwnerUid(uid).firstOrNull()
     }
 
     suspend fun fetchLicenseByEmail(email: String): LicenseDoc? {
         val clean = email.trim().lowercase(Locale.ROOT)
         if (clean.isBlank()) return null
-        val exact = queryLicenseList("owner_email=eq.${urlEncode(clean)}&select=*&limit=5")
-            .firstOrNull { it.ownerEmail.equals(clean, ignoreCase = true) }
-        if (exact != null) return exact
-        return queryLicenseList("owner_email=ilike.${urlEncode(clean)}&select=*&limit=5")
-            .firstOrNull { it.ownerEmail.equals(clean, ignoreCase = true) }
+        val exact = queryLicenseList("owner_email=eq.${urlEncode(clean)}&select=*&order=updated_at.desc,created_at.desc&limit=10")
+            .filter { it.ownerEmail.equals(clean, ignoreCase = true) }
+        if (exact.isNotEmpty()) {
+            return exact.firstOrNull { !it.planType.equals("FULL", ignoreCase = true) || it.ownerUid.isNotBlank() }
+                ?: exact.firstOrNull()
+        }
+        val ilike = queryLicenseList("owner_email=ilike.${urlEncode(clean)}&select=*&order=updated_at.desc,created_at.desc&limit=10")
+            .filter { it.ownerEmail.equals(clean, ignoreCase = true) }
+        return ilike.firstOrNull { !it.planType.equals("FULL", ignoreCase = true) || it.ownerUid.isNotBlank() }
+            ?: ilike.firstOrNull()
+    }
+
+    suspend fun fetchBestMatchingCustomerLicense(
+        uid: String,
+        email: String,
+        currentLicenseKey: String,
+        currentDeviceId: String = ""
+    ): LicenseDoc? {
+        val byKey = currentLicenseKey.trim().takeIf { it.isNotBlank() }?.let { getLicenseByKey(it) }
+        val ownerRows = fetchLicensesByOwnerUid(uid)
+        val resolved = resolveAuthoritativeCustomerLicense(byKey, ownerRows, currentDeviceId)
+        if (resolved != null) return resolved
+
+        val cleanEmail = email.trim().lowercase(Locale.ROOT)
+        if (cleanEmail.isBlank()) return null
+        val emailMatches = queryLicenseList("owner_email=eq.${urlEncode(cleanEmail)}&select=*&order=updated_at.desc,created_at.desc&limit=10")
+            .filter {
+                it.ownerEmail.equals(cleanEmail, ignoreCase = true) &&
+                    (it.ownerUid == uid || (it.ownerUid.isBlank() && !it.planType.equals("FULL", ignoreCase = true)))
+            }
+        return resolveAuthoritativeCustomerLicense(null, emailMatches, currentDeviceId)
     }
 
     suspend fun getLicenseByKey(licenseKey: String): LicenseDoc? {
@@ -471,7 +574,19 @@ class SupabaseLicenseRepository(
         deviceId: String
     ): LicenseDoc {
         val cleanEmail = ownerEmail.trim().lowercase(Locale.ROOT)
-        val existing = fetchLicenseByOwnerUid(ownerUid) ?: fetchLicenseByEmail(cleanEmail)
+        val existingByUid = fetchLicensesByOwnerUid(ownerUid).let { rows ->
+            resolveAuthoritativeCustomerLicense(null, rows, deviceId)
+        }
+        // Only match by email during registration if it is already owned by this uid OR is an unclaimed DEMO row.
+        // Never auto-claim an unclaimed FULL license key created by Admin Pusat — customer must enter that key manually.
+        val existingByEmail = if (existingByUid == null) {
+            queryLicenseList("owner_email=eq.${urlEncode(cleanEmail)}&select=*&order=updated_at.desc,created_at.desc&limit=10")
+                .firstOrNull {
+                    it.ownerEmail.equals(cleanEmail, ignoreCase = true) &&
+                        (it.ownerUid == ownerUid || (it.ownerUid.isBlank() && it.planType.equals("DEMO", ignoreCase = true)))
+                }
+        } else null
+        val existing = existingByUid ?: existingByEmail
         if (existing != null) {
             val needClaimOrBind = (existing.ownerUid.isBlank() || existing.deviceId.isBlank()) &&
                 (existing.ownerUid.isBlank() || existing.ownerUid == ownerUid)
@@ -524,7 +639,10 @@ class SupabaseLicenseRepository(
         val existing = getLicenseByKey(cleanKey)
             ?: throw IllegalStateException("Kunci lisensi \"$cleanKey\" tidak ditemukan. Hubungi Admin Pusat.")
         if (existing.status.equals("SUSPENDED", ignoreCase = true)) {
-            throw IllegalStateException("Lisensi \"$cleanKey\" sedang dinonaktifkan (SUSPENDED).")
+            throw SuspendedLicenseException(
+                existing,
+                "Lisensi \"$cleanKey\" sedang dinonaktifkan (SUSPENDED)."
+            )
         }
         if (existing.ownerUid.isNotBlank() && existing.ownerUid != ownerUid) {
             throw IllegalStateException("Kunci lisensi ini terdaftar untuk akun lain (${existing.ownerEmail}).")

@@ -1069,4 +1069,195 @@ class ExampleRobolectricTest {
             db.close()
         }
     }
+
+    @Test
+    fun `test HardwareDevicePreferences saves and loads ScannerSettings and preferredPrinterId`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.hardware.HardwareDevicePreferences(context)
+
+        val customSettings = com.example.hardware.ScannerSettings(
+            preferredMode = "HARDWARE",
+            selectedScannerId = "BT:00:11:22:33:44:55",
+            selectedScannerName = "Honeywell Xenon BT",
+            continuousMode = false,
+            beepOnScan = false,
+            vibrateOnScan = true,
+            defaultTorchOn = true,
+            scanCooldownMs = 1800L,
+            autoCaptureHardwareInput = true,
+            stripWhitespace = false
+        )
+        prefs.saveScannerSettings(customSettings)
+        prefs.setPreferredPrinterId(42L)
+
+        val loaded = prefs.loadScannerSettings()
+        assertEquals("HARDWARE", loaded.preferredMode)
+        assertEquals("BT:00:11:22:33:44:55", loaded.selectedScannerId)
+        assertEquals("Honeywell Xenon BT", loaded.selectedScannerName)
+        assertFalse(loaded.continuousMode)
+        assertFalse(loaded.beepOnScan)
+        assertTrue(loaded.vibrateOnScan)
+        assertTrue(loaded.defaultTorchOn)
+        assertEquals(1800L, loaded.scanCooldownMs)
+        assertTrue(loaded.autoCaptureHardwareInput)
+        assertFalse(loaded.stripWhitespace)
+        assertEquals(42L, prefs.getPreferredPrinterId())
+    }
+
+    @Test
+    fun `test ThermalPrinterEngine ESC POS and TSPL byte formatting for 40mm 58mm and 80mm printers`() {
+        val sale = SaleEntity(
+            id = 1L,
+            invoiceNumber = "INV-2026-009",
+            date = 1_763_890_000_000L,
+            customerName = "Bapak Andi",
+            cashierName = "Kasir Utama",
+            subtotal = 50000.0,
+            discount = 2000.0,
+            finalAmount = 48000.0,
+            amountPaid = 50000.0,
+            changeAmount = 2000.0,
+            paymentMethod = "TUNAI"
+        )
+        val items = listOf(
+            com.example.data.repository.CartItem(
+                productId = 1L,
+                productName = "Beras Pulen 5kg",
+                unitName = "sak",
+                quantity = 1.0,
+                unitPrice = 50000.0
+            )
+        )
+        val profile = StoreProfileEntity(
+            name = "Toko Berkah",
+            address = "Jl. Merdeka No. 10",
+            phone = "081234567890",
+            receiptFooter = "Selamat Belanja"
+        )
+
+        assertEquals(24, com.example.hardware.ThermalPrinterEngine.columnsForWidthMm(40))
+        assertEquals(32, com.example.hardware.ThermalPrinterEngine.columnsForWidthMm(58))
+        assertEquals(48, com.example.hardware.ThermalPrinterEngine.columnsForWidthMm(80))
+        assertTrue(com.example.hardware.ThermalPrinterEngine.isUsbAddress("USB:1234:5678:/dev/bus/usb/001/002"))
+        assertTrue(com.example.hardware.ThermalPrinterEngine.isSystemPrintAddress("SYSTEM_PRINT"))
+        assertFalse(com.example.hardware.ThermalPrinterEngine.isSystemPrintAddress("AA:BB:CC:DD:EE:FF"))
+
+        val escPrinter = com.example.data.entity.PrinterEntity(
+            id = 1L,
+            name = "RPP02N 58mm",
+            bluetoothAddress = "AA:BB:CC:DD:EE:FF",
+            type = "struk",
+            widthMm = 58,
+            language = "escpos",
+            autoCut = true,
+            openDrawer = true
+        )
+        val escBytes = com.example.hardware.ThermalPrinterEngine.buildEscPosReceiptBytes(
+            printer = escPrinter,
+            sale = sale,
+            items = items,
+            storeProfile = profile
+        )
+        val escText = String(escBytes, Charsets.ISO_8859_1)
+        assertTrue(escText.contains("Toko Berkah"))
+        assertTrue(escText.contains("INV-2026-009"))
+        assertTrue(escText.contains("Beras Pulen 5kg"))
+        assertTrue(escText.contains("Selamat Belanja"))
+        // Verify ESC @ init header & GS V auto-cut trailer exist
+        assertEquals(0x1B.toByte(), escBytes[0])
+        assertEquals(0x40.toByte(), escBytes[1])
+
+        val tsplPrinter = escPrinter.copy(
+            name = "Xprinter Label 40mm",
+            type = "stiker",
+            widthMm = 40,
+            language = "tspl"
+        )
+        val tsplBytes = com.example.hardware.ThermalPrinterEngine.buildTsplReceiptBytes(
+            printer = tsplPrinter,
+            sale = sale,
+            items = items,
+            storeProfile = profile
+        )
+        val tsplText = String(tsplBytes, Charsets.ISO_8859_1)
+        assertTrue(tsplText.contains("SIZE 40 mm"))
+        assertTrue(tsplText.contains("INV-2026-009"))
+        assertTrue(tsplText.contains("PRINT 1,1"))
+
+        val testEscBytes = com.example.hardware.ThermalPrinterEngine.buildTestPageBytes(escPrinter, profile)
+        assertTrue(String(testEscBytes, Charsets.ISO_8859_1).contains("TES PRINTER BERHASIL"))
+
+        val testTsplBytes = com.example.hardware.ThermalPrinterEngine.buildTestPageBytes(tsplPrinter, profile)
+        assertTrue(String(testTsplBytes, Charsets.ISO_8859_1).contains("TES CETAK STIKER OK"))
+    }
+
+    @Test
+    fun `test HardwareDeviceDiscovery inspectHardware runs safely on JVM context`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val snapshot = com.example.hardware.HardwareDeviceDiscovery.inspectHardware(context)
+        assertNotNull(snapshot)
+        assertNotNull(snapshot.scanners)
+        assertNotNull(snapshot.printers)
+    }
+
+    @Test
+    fun `test resolveAuthoritativeCustomerLicense enforces SUSPENDED FULL lock over fallback rows`() {
+        val demoRow = com.example.firebase.LicenseDoc(
+            id = "row-demo",
+            licenseKey = "KASLITE-DEMO01",
+            ownerUid = "uid-1",
+            ownerEmail = "toko@gmail.com",
+            deviceId = "dev-A",
+            planType = "DEMO",
+            status = "DEMO",
+            demoExpiresAtMillis = System.currentTimeMillis() + 86_400_000L
+        )
+        val suspendedFullRow = com.example.firebase.LicenseDoc(
+            id = "row-full",
+            licenseKey = "KASLITE-3AB5EB",
+            ownerUid = "uid-1",
+            ownerEmail = "toko@gmail.com",
+            deviceId = "dev-A",
+            planType = "FULL",
+            status = "SUSPENDED"
+        )
+        val activeFullRow = suspendedFullRow.copy(status = "ACTIVE")
+
+        // 1. If active key KASLITE-3AB5EB was suspended, it must override demoRow
+        val resolvedByKey = com.example.supabase.SupabaseLicenseRepository.resolveAuthoritativeCustomerLicense(
+            byKey = suspendedFullRow,
+            ownerRows = listOf(demoRow, suspendedFullRow),
+            currentDeviceId = "dev-A"
+        )
+        assertEquals("KASLITE-3AB5EB", resolvedByKey?.licenseKey)
+        assertEquals("SUSPENDED", resolvedByKey?.status)
+
+        // 2. Fresh reinstall (byKey == null) with both demoRow & suspendedFullRow still locks as SUSPENDED
+        val resolvedWithoutKey = com.example.supabase.SupabaseLicenseRepository.resolveAuthoritativeCustomerLicense(
+            byKey = null,
+            ownerRows = listOf(demoRow, suspendedFullRow),
+            currentDeviceId = "dev-A"
+        )
+        assertEquals("KASLITE-3AB5EB", resolvedWithoutKey?.licenseKey)
+        assertEquals("SUSPENDED", resolvedWithoutKey?.status)
+
+        // 3. When current demo row exists and Admin activates a claimed FULL row, it upgrades to ACTIVE FULL
+        val upgraded = com.example.supabase.SupabaseLicenseRepository.resolveAuthoritativeCustomerLicense(
+            byKey = demoRow,
+            ownerRows = listOf(demoRow, activeFullRow),
+            currentDeviceId = "dev-A"
+        )
+        assertEquals("KASLITE-3AB5EB", upgraded?.licenseKey)
+        assertEquals("ACTIVE", upgraded?.status)
+
+        // 4. Local evaluator locks immediately when FULL plan is marked SUSPENDED
+        val store = FirebaseSessionStore(ApplicationProvider.getApplicationContext())
+        store.clearLicenseSnapshot()
+        val snap = store.saveFromLicenseDoc(suspendedFullRow)
+        val uiState = evaluateLocalLicenseState(snap, System.currentTimeMillis(), "dev-A")
+        assertEquals(LicenseAccessStatus.SUSPENDED, uiState.accessStatus)
+        assertTrue(uiState.isLockedToProductOnly)
+        assertFalse(uiState.isFullActive)
+        store.clearLicenseSnapshot()
+    }
 }

@@ -1,6 +1,7 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -25,7 +26,12 @@ import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseDoc
 import com.example.firebase.LicenseUiState
 import com.example.firebase.LocalLicenseSnapshot
+import com.example.hardware.HardwareDevicePreferences
+import com.example.hardware.ScannerSettings
+import com.example.hardware.ThermalPrinterEngine
 import com.example.supabase.SupabaseLicenseRepository
+import com.example.supabase.SuspendedLicenseException
+import com.example.ui.components.ReceiptPrintHelper
 import com.example.whatsapp.WhatsAppCommandCenter
 import com.example.whatsapp.WhatsAppMessageResponse
 import kotlinx.coroutines.CancellationException
@@ -447,6 +453,13 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     val firebaseSessionStore = FirebaseSessionStore(application)
     val supabaseRepository = SupabaseLicenseRepository(application, firebaseSessionStore)
+    val hardwareDevicePrefs = HardwareDevicePreferences(application)
+
+    private val _scannerSettings = MutableStateFlow(hardwareDevicePrefs.loadScannerSettings())
+    val scannerSettings: StateFlow<ScannerSettings> = _scannerSettings.asStateFlow()
+
+    private val _preferredPrinterId = MutableStateFlow(hardwareDevicePrefs.getPreferredPrinterId())
+    val preferredPrinterId: StateFlow<Long> = _preferredPrinterId.asStateFlow()
 
     private val _authUiState = MutableStateFlow(
         FirebaseAuthUiState(
@@ -477,12 +490,72 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val isSuperAdminLoading: StateFlow<Boolean> = _isSuperAdminLoading.asStateFlow()
 
     private var licensesJob: Job? = null
+    private var silentLicenseSyncJob: Job? = null
+
+    @Volatile
+    private var lastSilentLicenseSyncMillis: Long = 0L
 
     private fun refreshLicenseStateFromStore() {
         val deviceId = firebaseSessionStore.getOrCreateDeviceId()
         val now = firebaseSessionStore.updateMaxSeenClockMillis()
         val snap = firebaseSessionStore.getLicenseSnapshot()
         _licenseUiState.value = evaluateLocalLicenseState(snap, now, deviceId)
+    }
+
+    fun syncCustomerLicenseSilently(force: Boolean = false) {
+        if (_authUiState.value.isSuperAdmin) return
+        if (!supabaseRepository.isConfigured() || !firebaseSessionStore.hasSupabaseSession()) return
+        val sessionEmail = firebaseSessionStore.getSupabaseEmail()
+        if (sessionEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) return
+
+        val now = System.currentTimeMillis()
+        if (!force && (now - lastSilentLicenseSyncMillis) < 15_000L) return
+        if (silentLicenseSyncJob?.isActive == true && !force) return
+
+        silentLicenseSyncJob?.cancel()
+        silentLicenseSyncJob = viewModelScope.launch {
+            try {
+                lastSilentLicenseSyncMillis = System.currentTimeMillis()
+                val uid = firebaseSessionStore.getSupabaseUid()
+                val activeEmail = firebaseSessionStore.getSupabaseEmail()
+                val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+                val snap = firebaseSessionStore.getLicenseSnapshot()
+                val previousStatus = _licenseUiState.value.accessStatus
+
+                val fetched = supabaseRepository.fetchBestMatchingCustomerLicense(
+                    uid = uid,
+                    email = activeEmail,
+                    currentLicenseKey = snap?.licenseKey.orEmpty(),
+                    currentDeviceId = deviceId
+                ) ?: return@launch
+
+                firebaseSessionStore.saveFromLicenseDoc(fetched)
+                refreshLicenseStateFromStore()
+
+                val newStatus = _licenseUiState.value.accessStatus
+                if (newStatus != previousStatus) {
+                    when (newStatus) {
+                        LicenseAccessStatus.SUSPENDED -> {
+                            _userMessage.value = "Lisensi dinonaktifkan Admin Pusat."
+                        }
+                        LicenseAccessStatus.DEVICE_MISMATCH -> {
+                            _userMessage.value = "Lisensi terikat di perangkat lain."
+                        }
+                        LicenseAccessStatus.DEMO_EXPIRED -> {
+                            _userMessage.value = "Masa aktif lisensi berakhir. Hanya menu Produk & Pengaturan aktif."
+                        }
+                        LicenseAccessStatus.FULL_ACTIVE -> {
+                            _userMessage.value = "Lisensi FULL aktif! Semua menu terbuka."
+                        }
+                        else -> Unit
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Silent check: keep existing local snapshot if offline/transient error
+            }
+        }
     }
 
     fun loadSuperAdminLicenses() {
@@ -907,6 +980,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 refreshLicenseStateFromStore()
+                syncCustomerLicenseSilently(force = true)
             } catch (_: Exception) {
             }
         }
@@ -915,6 +989,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         licensesJob?.cancel()
+        silentLicenseSyncJob?.cancel()
     }
 
     fun clearAuthMessages() {
@@ -973,19 +1048,23 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
+                val currentDeviceId = firebaseSessionStore.getOrCreateDeviceId()
                 val existingLicense = runCatching {
-                    supabaseRepository.fetchLicenseByOwnerUid(session.uid)
-                        ?: supabaseRepository.fetchLicenseByEmail(session.email)
+                    supabaseRepository.fetchBestMatchingCustomerLicense(
+                        uid = session.uid,
+                        email = session.email,
+                        currentLicenseKey = "",
+                        currentDeviceId = currentDeviceId
+                    )
                 }.getOrNull()
 
-                val currentDeviceId = firebaseSessionStore.getOrCreateDeviceId()
                 val infoMsg = when {
                     existingLicense == null ->
                         "Email ${session.email} terverifikasi! Lengkapi data toko & PIN untuk aktivasi Trial Demo 3 hari."
                     existingLicense.deviceId.isNotBlank() && existingLicense.deviceId != currentDeviceId ->
                         "Email ${session.email} sudah terdaftar di perangkat lain. Hubungi Admin Pusat ($SUPER_ADMIN_EMAIL) untuk Reset Device."
                     else ->
-                        "Email ${session.email} terverifikasi (Lisensi ditemukan: ${existingLicense.licenseKey}, status ${existingLicense.status})."
+                        "Email ${session.email} terverifikasi (Status akun: ${existingLicense.status})."
                 }
 
                 _authUiState.update {
@@ -1218,6 +1297,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             "Selamat datang, ${user.name} ($roleDisplay)"
                         }
+                        syncCustomerLicenseSilently(force = true)
                     }
                 }
             } catch (e: Exception) {
@@ -1258,10 +1338,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
                 val uid = firebaseSessionStore.getSupabaseUid()
                 val activeEmail = firebaseSessionStore.getSupabaseEmail()
+                val deviceId = firebaseSessionStore.getOrCreateDeviceId()
                 val snap = firebaseSessionStore.getLicenseSnapshot()
-                val fetched = supabaseRepository.fetchLicenseByOwnerUid(uid)
-                    ?: supabaseRepository.fetchLicenseByEmail(activeEmail)
-                    ?: snap?.licenseKey?.takeIf { it.isNotBlank() }?.let { supabaseRepository.getLicenseByKey(it) }
+                val fetched = supabaseRepository.fetchBestMatchingCustomerLicense(
+                    uid = uid,
+                    email = activeEmail,
+                    currentLicenseKey = snap?.licenseKey.orEmpty(),
+                    currentDeviceId = deviceId
+                )
 
                 if (fetched == null) {
                     _licenseUiState.update { it.copy(isRefreshing = false) }
@@ -1340,11 +1424,28 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 firebaseSessionStore.saveFromLicenseDoc(updated)
                 refreshLicenseStateFromStore()
-                val msg = "Lisensi ${updated.licenseKey} diperbarui (${_licenseUiState.value.accessStatus.name})!"
+                val msg = "Lisensi berhasil diaktifkan (${_licenseUiState.value.accessStatus.name})!"
                 _userMessage.value = msg
                 onResult(true, msg)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: SuspendedLicenseException) {
+                val uid = firebaseSessionStore.getSupabaseUid()
+                val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+                val currentKey = firebaseSessionStore.getLicenseSnapshot()?.licenseKey.orEmpty()
+                val doc = e.licenseDoc
+                if ((doc.ownerUid.isNotBlank() && doc.ownerUid == uid) ||
+                    (doc.deviceId.isNotBlank() && doc.deviceId == deviceId) ||
+                    (currentKey.isNotBlank() && doc.licenseKey.equals(currentKey, ignoreCase = true))
+                ) {
+                    firebaseSessionStore.saveFromLicenseDoc(doc)
+                    refreshLicenseStateFromStore()
+                } else {
+                    _licenseUiState.update { it.copy(isRefreshing = false) }
+                }
+                val msg = e.localizedMessage ?: "Lisensi sedang dinonaktifkan (SUSPENDED)."
+                _userMessage.value = msg
+                onResult(false, msg)
             } catch (e: Exception) {
                 _licenseUiState.update { it.copy(isRefreshing = false) }
                 val msg = e.localizedMessage ?: "Gagal mengaktivasi kunci lisensi."
@@ -1426,6 +1527,11 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     val userAccounts: StateFlow<List<UserAccountEntity>> = repository.userAccounts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val menuPermissions: StateFlow<List<MenuPermissionEntity>> = repository.menuPermissions.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val printers: StateFlow<List<PrinterEntity>> = repository.printers.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val activePrinter: StateFlow<PrinterEntity?> = combine(printers, _preferredPrinterId) { list, prefId ->
+        list.firstOrNull { it.id == prefId && it.isActive }
+            ?: list.firstOrNull { it.isActive }
+            ?: list.firstOrNull()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val cashierDevices: StateFlow<List<CashierDeviceEntity>> = repository.cashierDevices.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val productVariants: StateFlow<List<ProductVariantEntity>> = repository.productVariants.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val wholesaleTiers: StateFlow<List<WholesaleTierEntity>> = repository.wholesaleTiers.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -2514,9 +2620,32 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun savePrinter(printer: PrinterEntity) {
+    fun showUserMessage(message: String) {
+        _userMessage.value = message
+    }
+
+    fun updateScannerSettings(newSettings: ScannerSettings) {
+        hardwareDevicePrefs.saveScannerSettings(newSettings)
+        _scannerSettings.value = newSettings
+        _userMessage.value = "Pengaturan scanner barcode disimpan"
+    }
+
+    fun selectPreferredPrinter(printerId: Long) {
+        hardwareDevicePrefs.setPreferredPrinterId(printerId)
+        _preferredPrinterId.value = printerId
+        val chosen = printers.value.firstOrNull { it.id == printerId }
+        if (chosen != null) {
+            _userMessage.value = "Printer utama: ${chosen.name}"
+        }
+    }
+
+    fun savePrinter(printer: PrinterEntity, setAsPrimary: Boolean = true) {
         viewModelScope.launch {
-            repository.savePrinter(printer)
+            val savedId = repository.savePrinter(printer)
+            if (setAsPrimary || _preferredPrinterId.value <= 0L) {
+                hardwareDevicePrefs.setPreferredPrinterId(savedId)
+                _preferredPrinterId.value = savedId
+            }
             _userMessage.value = "Printer \"${printer.name}\" disimpan"
         }
     }
@@ -2524,7 +2653,75 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     fun deletePrinter(printer: PrinterEntity) {
         viewModelScope.launch {
             repository.deletePrinter(printer)
+            if (_preferredPrinterId.value == printer.id) {
+                hardwareDevicePrefs.setPreferredPrinterId(0L)
+                _preferredPrinterId.value = 0L
+            }
             _userMessage.value = "Printer dihapus"
+        }
+    }
+
+    fun printSaleReceipt(
+        context: Context,
+        sale: SaleEntity,
+        items: List<CartItem>,
+        forceSystemPrint: Boolean = false
+    ) {
+        val printer = activePrinter.value
+        ReceiptPrintHelper.printReceipt(
+            context = context,
+            sale = sale,
+            items = items,
+            storeProfile = storeProfile.value,
+            printer = printer,
+            forceSystemPrint = forceSystemPrint,
+            onResult = { _, msg ->
+                _userMessage.value = msg
+            }
+        )
+    }
+
+    fun printTestReceipt(
+        context: Context,
+        printer: PrinterEntity,
+        onResult: (Boolean, String) -> Unit = { _, msg -> _userMessage.value = msg }
+    ) {
+        if (ThermalPrinterEngine.isSystemPrintAddress(printer.bluetoothAddress)) {
+            val dummySale = SaleEntity(
+                invoiceNumber = "TES-${System.currentTimeMillis() % 10000}",
+                customerName = "Tes Printer",
+                cashierName = _activeUserName.value,
+                subtotal = 15000.0,
+                finalAmount = 15000.0,
+                amountPaid = 20000.0,
+                changeAmount = 5000.0,
+                paymentMethod = "TUNAI"
+            )
+            val dummyItems = listOf(
+                CartItem(
+                    productId = 0L,
+                    productName = "Tes Koneksi Printer KASLITE",
+                    unitName = "pcs",
+                    quantity = 1.0,
+                    unitPrice = 15000.0
+                )
+            )
+            val ok = ReceiptPrintHelper.printViaSystemPrintManager(context, dummySale, dummyItems, storeProfile.value)
+            onResult(ok, if (ok) "Membuka dialog tes cetak sistem..." else "Layanan cetak sistem tidak tersedia")
+            return
+        }
+
+        viewModelScope.launch {
+            val payload = ThermalPrinterEngine.buildTestPageBytes(printer, storeProfile.value)
+            val res = ThermalPrinterEngine.sendToPrinter(context, printer, payload)
+            res.onSuccess { msg ->
+                _userMessage.value = msg
+                onResult(true, msg)
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Tes cetak gagal"
+                _userMessage.value = msg
+                onResult(false, msg)
+            }
         }
     }
 

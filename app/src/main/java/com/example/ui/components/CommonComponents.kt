@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Badge
@@ -84,6 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.data.entity.PrinterEntity
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.repository.CartItem
@@ -800,9 +802,12 @@ fun ReceiptDialog(
     sale: SaleEntity,
     items: List<CartItem>,
     storeProfile: StoreProfileEntity? = null,
+    activePrinter: PrinterEntity? = null,
     onDismiss: () -> Unit,
     onShareWhatsApp: (receiptText: String) -> Unit,
-    onPrintReceipt: (() -> Unit)? = null
+    onPrintReceipt: (() -> Unit)? = null,
+    onPrintSystemPdf: (() -> Unit)? = null,
+    onOpenPrinterSettings: (() -> Unit)? = null
 ) {
     val dateStr = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(Date(sale.date))
     val storeTitle = storeProfile?.name?.ifBlank { "Toko Saya" } ?: "Toko Saya"
@@ -1048,7 +1053,53 @@ fun ReceiptDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                if (onPrintReceipt != null || onOpenPrinterSettings != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Sapphire50,
+                        border = BorderStroke(1.dp, AccentBlue.copy(alpha = 0.25f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Print, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (activePrinter != null) {
+                                        "Printer: ${activePrinter.name} (${activePrinter.widthMm}mm)"
+                                    } else {
+                                        "Printer: Cetak Sistem / PDF"
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Slate800,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (onOpenPrinterSettings != null) {
+                                Text(
+                                    text = "Atur Printer",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = AccentBlue,
+                                    modifier = Modifier
+                                        .clickable { onOpenPrinterSettings() }
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (onPrintReceipt != null) {
@@ -1062,7 +1113,12 @@ fun ReceiptDialog(
                         ) {
                             Icon(Icons.Default.Print, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Cetak Struk", color = AccentBlue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(
+                                if (activePrinter != null) "Cetak" else "Cetak Struk",
+                                color = AccentBlue,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
                         }
                     }
                     Button(
@@ -1079,7 +1135,16 @@ fun ReceiptDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                if (activePrinter != null && onPrintSystemPdf != null) {
+                    TextButton(
+                        onClick = onPrintSystemPdf,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Text("Atau Cetak PDF / Printer Sistem", fontSize = 11.sp, color = Slate600, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Button(
                     onClick = onDismiss,

@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -55,6 +56,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.SaleItemEntity
+import com.example.data.repository.CartItem
 import com.example.ui.components.BadgeType
 import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.DesignEmptyState
@@ -347,11 +349,38 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                                 border = BorderStroke(1.dp, Rose500.copy(alpha = 0.5f)),
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
-                                    .weight(1f)
+                                    .weight(0.9f)
                                     .heightIn(min = 48.dp)
                             ) {
-                                Text("Retur", fontWeight = FontWeight.Bold)
+                                Text("Retur", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val cartItems = saleItemsDetail.map { itm ->
+                                    CartItem(
+                                        productId = itm.productId ?: 0L,
+                                        productName = itm.productName,
+                                        unitName = itm.unit,
+                                        quantity = itm.quantity,
+                                        unitPrice = itm.unitPrice,
+                                        variantId = itm.variantId,
+                                        variantName = itm.variantName
+                                    )
+                                }
+                                viewModel.printSaleReceipt(context, sale, cartItems)
+                            },
+                            border = BorderStroke(1.dp, AccentBlue),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1.1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("history_print_receipt_button")
+                        ) {
+                            Icon(Icons.Default.Print, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Cetak", color = AccentBlue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
 
                         Button(
@@ -379,12 +408,12 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                             colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
-                                .weight(1.4f)
+                                .weight(1.2f)
                                 .heightIn(min = 48.dp)
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Kirim WA", fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Kirim WA", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                 }

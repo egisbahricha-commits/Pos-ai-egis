@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Security
@@ -92,12 +93,15 @@ import com.example.data.entity.PrinterEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.entity.UserAccountEntity
 import com.example.firebase.LicenseAccessStatus
+import com.example.hardware.HardwareDeviceDiscovery
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.PinPadDialog
+import com.example.ui.components.PrinterManagerDialog
+import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
@@ -122,6 +126,8 @@ fun SettingsScreen(viewModel: PosViewModel) {
     val userAccounts by viewModel.userAccounts.collectAsStateWithLifecycle()
     val menuPermissions by viewModel.menuPermissions.collectAsStateWithLifecycle()
     val printers by viewModel.printers.collectAsStateWithLifecycle()
+    val activePrinter by viewModel.activePrinter.collectAsStateWithLifecycle()
+    val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
     val cashierDevices by viewModel.cashierDevices.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val kasLiteBackupState by viewModel.kasLiteBackupState.collectAsStateWithLifecycle()
@@ -147,16 +153,20 @@ fun SettingsScreen(viewModel: PosViewModel) {
     var showPinDialog by remember { mutableStateOf(false) }
     var showStoreProfileDialog by remember { mutableStateOf(false) }
     var showPrintersDialog by remember { mutableStateOf(false) }
+    var showScannerSettingsDialog by remember { mutableStateOf(false) }
     var showDevicesDialog by remember { mutableStateOf(false) }
     var userToEdit by remember { mutableStateOf<UserAccountEntity?>(null) }
     var showAddUserDialog by remember { mutableStateOf(false) }
     var showLicenseKeyDialog by remember { mutableStateOf(false) }
     var showRefreshAuthDialog by remember { mutableStateOf(false) }
 
+    val hardwareSummary = remember(showPrintersDialog, showScannerSettingsDialog) {
+        HardwareDeviceDiscovery.inspectHardware(context)
+    }
     val isOwner = activeRole.equals("Owner", ignoreCase = true) || activeRole.equals("Admin", ignoreCase = true)
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val activeUserId by viewModel.activeUserId.collectAsStateWithLifecycle()
-    val primaryPrinter = printers.firstOrNull()
+    val primaryPrinter = activePrinter
     val ppnPercent = (storeProfile?.ppnBp ?: 0) / 100.0
 
     LazyColumn(
@@ -250,7 +260,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                             LicenseAccessStatus.DEVICE_MISMATCH -> "Terikat Perangkat Lain"
                             LicenseAccessStatus.UNREGISTERED -> "Status Lokal"
                         },
-                        subtitle = "Email: $registeredEmail • Key: ${licenseUiState.licenseKey.ifBlank { "-" }}\nAktivasi / bantuan hubungi: $SUPER_ADMIN_EMAIL",
+                        subtitle = "Email: $registeredEmail • Paket: ${licenseUiState.planType.ifBlank { "DEMO" }}\nAktivasi / bantuan hubungi: $SUPER_ADMIN_EMAIL",
                         badgeText = badgeLabel,
                         badgeType = badgeType,
                         onClick = { showLicenseKeyDialog = true }
@@ -405,8 +415,37 @@ fun SettingsScreen(viewModel: PosViewModel) {
                     SettingsMenuRow(
                         icon = Icons.Default.Print,
                         title = "Printer struk & stiker (${printers.size})",
-                        subtitle = if (primaryPrinter != null) "${primaryPrinter.name} (${primaryPrinter.widthMm}mm, ${primaryPrinter.language.uppercase()})" else "Tambah printer Bluetooth",
+                        subtitle = if (primaryPrinter != null) {
+                            "Utama: ${primaryPrinter.name} (${primaryPrinter.widthMm}mm, ${primaryPrinter.language.uppercase()})"
+                        } else if (hardwareSummary.printers.isNotEmpty()) {
+                            "${hardwareSummary.printers.size} printer terdeteksi di perangkat — ketuk untuk pilih"
+                        } else {
+                            "Deteksi otomatis printer Bluetooth / USB OTG"
+                        },
+                        badgeText = if (primaryPrinter != null) "Aktif" else "Atur",
+                        badgeType = if (primaryPrinter != null) BadgeType.SUCCESS else BadgeType.INFO,
                         onClick = { showPrintersDialog = true }
+                    )
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.Default.QrCodeScanner,
+                        title = "Pengaturan Scan Barcode",
+                        subtitle = buildString {
+                            val modeLabel = when (scannerSettings.preferredMode) {
+                                "KAMERA" -> "Kamera"
+                                "HARDWARE" -> "Alat USB/BT"
+                                else -> "Kamera + Alat"
+                            }
+                            append("Mode: $modeLabel")
+                            if (scannerSettings.selectedScannerName.isNotBlank()) {
+                                append(" • ${scannerSettings.selectedScannerName}")
+                            } else if (hardwareSummary.scanners.isNotEmpty()) {
+                                append(" • ${hardwareSummary.scanners.size} alat terdeteksi")
+                            }
+                        },
+                        badgeText = if (hardwareSummary.scanners.any { it.isConnectedNow }) "Siap" else "Atur",
+                        badgeType = if (hardwareSummary.scanners.any { it.isConnectedNow }) BadgeType.SUCCESS else BadgeType.INFO,
+                        onClick = { showScannerSettingsDialog = true }
                     )
                     HorizontalDivider(color = BorderDefault)
                     SettingsMenuRow(
@@ -815,87 +854,23 @@ fun SettingsScreen(viewModel: PosViewModel) {
     }
 
     if (showPrintersDialog) {
-        var newPrinterName by remember { mutableStateOf("") }
-        var btAddr by remember { mutableStateOf("") }
-        var printerType by remember { mutableStateOf("struk") }
-        var widthMm by remember { mutableStateOf(58) }
-        var autoCut by remember { mutableStateOf(false) }
+        PrinterManagerDialog(
+            printers = printers,
+            activePrinterId = primaryPrinter?.id ?: 0L,
+            onSelectPrimaryPrinter = { printerId -> viewModel.selectPreferredPrinter(printerId) },
+            onSavePrinter = { printer, setAsPrimary -> viewModel.savePrinter(printer, setAsPrimary) },
+            onDeletePrinter = { printer -> viewModel.deletePrinter(printer) },
+            onTestPrint = { printer, callback -> viewModel.printTestReceipt(context, printer, callback) },
+            onDismiss = { showPrintersDialog = false }
+        )
+    }
 
-        Dialog(onDismissRequest = { showPrintersDialog = false }) {
-            Surface(shape = RoundedCornerShape(18.dp), color = SurfaceWhite, modifier = Modifier.fillMaxWidth()) {
-                LazyColumn(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    item { Text("Printer Bluetooth", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)) }
-                    printers.forEach { p ->
-                        item {
-                            Surface(shape = RoundedCornerShape(10.dp), color = BgCanvas, border = BorderStroke(1.dp, BorderDefault), modifier = Modifier.fillMaxWidth()) {
-                                Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(p.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text("${p.bluetoothAddress.ifBlank { "Belum diatur" }} • ${p.type} • ${p.widthMm}mm • ${p.language}", fontSize = 11.sp, color = Slate600)
-                                    }
-                                    IconButton(onClick = { viewModel.deletePrinter(p) }) {
-                                        Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus", tint = Rose500)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    item { HorizontalDivider(color = BorderDefault) }
-                    item { DesignLabeledTextField("Nama Printer Baru", newPrinterName, { newPrinterName = it }) }
-                    item { DesignLabeledTextField("Alamat Bluetooth / MAC", btAddr, { btAddr = it }) }
-                    item {
-                        DesignSegmentedTabs(
-                            options = listOf("struk" to "Struk (ESC/POS)", "stiker" to "Stiker (TSPL)"),
-                            selectedKey = printerType,
-                            onSelect = { printerType = it }
-                        )
-                    }
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf(40, 58, 80).forEach { w ->
-                                DesignFilterChip(label = "${w}mm", selected = widthMm == w, onClick = { widthMm = w })
-                            }
-                        }
-                    }
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                            Text("Auto Cut Kertas", fontSize = 13.sp, color = Slate800)
-                            Switch(checked = autoCut, onCheckedChange = { autoCut = it }, colors = SwitchDefaults.colors(checkedTrackColor = AccentBlue))
-                        }
-                    }
-                    item {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            TextButton(onClick = { showPrintersDialog = false }) { Text("Tutup") }
-                            Button(
-                                onClick = {
-                                    if (newPrinterName.isNotBlank()) {
-                                        viewModel.savePrinter(
-                                            PrinterEntity(
-                                                name = newPrinterName.trim(),
-                                                bluetoothAddress = btAddr.trim(),
-                                                type = printerType,
-                                                language = if (printerType == "stiker") "tspl" else "escpos",
-                                                widthMm = widthMm,
-                                                autoCut = autoCut
-                                            )
-                                        )
-                                        newPrinterName = ""
-                                        btAddr = ""
-                                    }
-                                },
-                                enabled = newPrinterName.isNotBlank(),
-                                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Tambah Printer", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if (showScannerSettingsDialog) {
+        ScannerSettingsDialog(
+            currentSettings = scannerSettings,
+            onSaveSettings = { updated -> viewModel.updateScannerSettings(updated) },
+            onDismiss = { showScannerSettingsDialog = false }
+        )
     }
 
     if (showDevicesDialog) {
@@ -1048,7 +1023,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
     }
 
     if (showLicenseKeyDialog) {
-        var keyInput by remember { mutableStateOf(licenseUiState.licenseKey) }
+        var keyInput by remember { mutableStateOf("") }
         val hasSession = viewModel.hasActiveCustomerSupabaseSession()
         var authEmail by remember { mutableStateOf(licenseUiState.ownerEmail.ifBlank { authUiState.lastEmail }) }
         var authPassword by remember { mutableStateOf("") }

@@ -39,7 +39,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
@@ -48,6 +50,9 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -84,6 +89,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -92,12 +98,20 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import com.example.data.entity.PrinterEntity
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.repository.CartItem
+import com.example.hardware.DetectedScannerDevice
+import com.example.hardware.HardwareDeviceDiscovery
+import com.example.hardware.ScannerSettings
+import com.example.hardware.ThermalPrinterEngine
 import com.example.ui.theme.*
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -172,23 +186,45 @@ fun ProductThumbnail(
 @Composable
 fun BarcodeScannerDialog(
     title: String = "Scan Barcode Produk",
+    scannerSettings: ScannerSettings = ScannerSettings(),
+    onOpenScannerSettings: (() -> Unit)? = null,
     onBarcodeDetected: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var activeTab by remember { mutableStateOf("KAMERA") } // KAMERA, FOTO, SCANNER
+    var activeTab by remember(scannerSettings.preferredMode) {
+        mutableStateOf(if (scannerSettings.preferredMode == "HARDWARE") "SCANNER" else "KAMERA")
+    }
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED
         )
     }
-    var torchEnabled by remember { mutableStateOf(false) }
+    var torchEnabled by remember(scannerSettings.defaultTorchOn) {
+        mutableStateOf(scannerSettings.defaultTorchOn)
+    }
     var isProcessingPhoto by remember { mutableStateOf(false) }
     var photoStatusMessage by remember { mutableStateOf<String?>(null) }
     var candidateBarcodes by remember { mutableStateOf<List<String>>(emptyList()) }
     var manualOrHidCode by remember { mutableStateOf("") }
     var alreadyEmitted by remember { mutableStateOf(false) }
+    var detectedScanners by remember { mutableStateOf<List<DetectedScannerDevice>>(emptyList()) }
+    var hasBtPerm by remember { mutableStateOf(HardwareDeviceDiscovery.hasBluetoothConnectPermission(context)) }
+
+    val btPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        hasBtPerm = HardwareDeviceDiscovery.hasBluetoothConnectPermission(context)
+        detectedScanners = HardwareDeviceDiscovery.detectConnectedScanners(context)
+    }
+
+    LaunchedEffect(activeTab) {
+        if (activeTab == "SCANNER") {
+            hasBtPerm = HardwareDeviceDiscovery.hasBluetoothConnectPermission(context)
+            detectedScanners = HardwareDeviceDiscovery.detectConnectedScanners(context)
+        }
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -261,11 +297,23 @@ fun BarcodeScannerDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = title,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Tutup", tint = Slate400)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (onOpenScannerSettings != null) {
+                            IconButton(
+                                onClick = onOpenScannerSettings,
+                                modifier = Modifier.testTag("dialog_scanner_settings_button")
+                            ) {
+                                Icon(Icons.Default.Settings, contentDescription = "Pengaturan Scanner", tint = AccentBlue)
+                            }
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "Tutup", tint = Slate400)
+                        }
                     }
                 }
 
@@ -428,18 +476,104 @@ fun BarcodeScannerDialog(
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Keyboard, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(20.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Icon(Icons.Default.Keyboard, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "Scanner USB / Bluetooth",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            hasBtPerm = HardwareDeviceDiscovery.hasBluetoothConnectPermission(context)
+                                            detectedScanners = HardwareDeviceDiscovery.detectConnectedScanners(context)
+                                        },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Deteksi Ulang Scanner", tint = AccentBlue, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+
+                                if (!hasBtPerm) {
+                                    Surface(
+                                        onClick = {
+                                            val perms = HardwareDeviceDiscovery.requiredBluetoothPermissions()
+                                            if (perms.isNotEmpty()) btPermLauncher.launch(perms)
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = AmberWarningBg,
+                                        border = BorderStroke(1.dp, Amber500.copy(alpha = 0.5f)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.Bluetooth, contentDescription = null, tint = Amber500, modifier = Modifier.size(16.dp))
+                                            Text(
+                                                "Ketuk untuk izinkan deteksi scanner Bluetooth",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Slate900
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (detectedScanners.isNotEmpty()) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            "Terdeteksi di perangkat (${detectedScanners.size}):",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Emerald700
+                                        )
+                                        detectedScanners.take(3).forEach { sc ->
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = SurfaceWhite,
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    if (sc.isConnectedNow) Emerald500.copy(alpha = 0.5f) else BorderDefault
+                                                ),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (sc.transport.contains("USB", true)) Icons.Default.Usb else Icons.Default.Bluetooth,
+                                                        contentDescription = null,
+                                                        tint = if (sc.isConnectedNow) Emerald700 else Slate500,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(sc.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Slate900, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                        Text("${sc.transport} • ${sc.detail}", fontSize = 10.sp, color = Slate500, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    }
+                                                    if (sc.isConnectedNow) {
+                                                        Icon(Icons.Default.CheckCircle, contentDescription = "Terhubung", tint = Emerald700, modifier = Modifier.size(16.dp))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
                                     Text(
-                                        "Mode Alat Scanner USB / Bluetooth",
-                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                        "Belum ada scanner eksternal terdeteksi. Hubungkan scanner USB OTG atau pair lewat Bluetooth lalu tembak barcode di bawah.",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp)
                                     )
                                 }
-                                Text(
-                                    "Tembak barcode menggunakan alat scanner fisik USB/Bluetooth (HID), atau ketik kode lalu tekan Enter.",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
-                                )
+
                                 OutlinedTextField(
                                     value = manualOrHidCode,
                                     onValueChange = { raw ->
@@ -453,7 +587,7 @@ fun BarcodeScannerDialog(
                                             manualOrHidCode = raw
                                         }
                                     },
-                                    placeholder = { Text("Menunggu input alat scanner / ketik SKU...") },
+                                    placeholder = { Text("Menunggu tembakan alat scanner / ketik SKU...") },
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                     keyboardActions = KeyboardActions(
@@ -478,7 +612,9 @@ fun BarcodeScannerDialog(
                                         .fillMaxWidth()
                                         .focusRequester(focusRequester)
                                         .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyUp && keyEvent.key == Key.Enter) {
+                                            if (keyEvent.type == KeyEventType.KeyUp &&
+                                                (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
+                                            ) {
                                                 val cleaned = manualOrHidCode.trim()
                                                 if (cleaned.isNotEmpty() && !alreadyEmitted) {
                                                     alreadyEmitted = true
@@ -639,6 +775,46 @@ private fun CameraBarcodePreviewBox(
 
 object ReceiptPrintHelper {
     fun printReceipt(
+        context: Context,
+        sale: SaleEntity,
+        items: List<CartItem>,
+        storeProfile: StoreProfileEntity?,
+        printer: PrinterEntity? = null,
+        forceSystemPrint: Boolean = false,
+        onResult: ((Boolean, String) -> Unit)? = null
+    ): Boolean {
+        val useDirectThermal = !forceSystemPrint &&
+            printer != null &&
+            printer.bluetoothAddress.isNotBlank() &&
+            !ThermalPrinterEngine.isSystemPrintAddress(printer.bluetoothAddress)
+
+        if (useDirectThermal && printer != null) {
+            CoroutineScope(Dispatchers.Main).launch {
+                val payload = if (printer.language.equals("tspl", ignoreCase = true)) {
+                    ThermalPrinterEngine.buildTsplReceiptBytes(printer, sale, items, storeProfile)
+                } else {
+                    ThermalPrinterEngine.buildEscPosReceiptBytes(printer, sale, items, storeProfile)
+                }
+                val result = ThermalPrinterEngine.sendToPrinter(context, printer, payload)
+                result.onSuccess { msg ->
+                    onResult?.invoke(true, msg)
+                }.onFailure { err ->
+                    onResult?.invoke(false, err.localizedMessage ?: "Gagal mencetak ke printer ${printer.name}")
+                }
+            }
+            return true
+        }
+
+        val ok = printViaSystemPrintManager(context, sale, items, storeProfile)
+        if (ok) {
+            onResult?.invoke(true, "Membuka dialog cetak sistem Android...")
+        } else {
+            onResult?.invoke(false, "Layanan cetak sistem tidak tersedia")
+        }
+        return ok
+    }
+
+    fun printViaSystemPrintManager(
         context: Context,
         sale: SaleEntity,
         items: List<CartItem>,

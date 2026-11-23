@@ -53,6 +53,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -66,7 +67,9 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -91,11 +94,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -132,10 +137,15 @@ import com.example.data.entity.ProductVariantEntity
 import com.example.data.entity.UnitConversionEntity
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
+import com.example.hardware.BluetoothSppScannerClient
+import com.example.hardware.DetectedScannerDevice
+import com.example.hardware.HardwareDeviceDiscovery
+import com.example.hardware.ScannerFeedbackPlayer
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.ProductThumbnail
+import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.BarcodeLookupOutcome
@@ -179,12 +189,14 @@ private data class DetectedBoxUi(
 fun BarcodeScanCartScreen(viewModel: PosViewModel) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
 
     val products by viewModel.products.collectAsStateWithLifecycle()
     val cart by viewModel.cart.collectAsStateWithLifecycle()
     val adminTiers by viewModel.adminTiers.collectAsStateWithLifecycle()
     val cartDiscount by viewModel.cartDiscount.collectAsStateWithLifecycle()
     val cartTaxRate by viewModel.cartTaxRate.collectAsStateWithLifecycle()
+    val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
 
     val productImageMap = remember(products) { products.associate { it.id to it.imageUri } }
     val decimalProductIds = remember(products) { products.filter { it.allowDecimalQty }.map { it.id }.toSet() }
@@ -195,13 +207,21 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 PackageManager.PERMISSION_GRANTED
         )
     }
-    var continuousMode by remember { mutableStateOf(true) }
-    var isPaused by remember { mutableStateOf(false) }
-    var torchEnabled by remember { mutableStateOf(false) }
+    var continuousMode by remember(scannerSettings.continuousMode) { mutableStateOf(scannerSettings.continuousMode) }
+    var isPaused by remember(scannerSettings.preferredMode) {
+        mutableStateOf(scannerSettings.preferredMode == "HARDWARE")
+    }
+    var torchEnabled by remember(scannerSettings.defaultTorchOn) { mutableStateOf(scannerSettings.defaultTorchOn) }
     var useFrontCamera by remember { mutableStateOf(false) }
     var manualBarcode by remember { mutableStateOf("") }
+    var isManualInputFocused by remember { mutableStateOf(false) }
     var scanBanner by remember { mutableStateOf<ScanBannerState?>(null) }
     var detectedBoxes by remember { mutableStateOf<List<DetectedBoxUi>>(emptyList()) }
+
+    var showScannerSettingsDialog by remember { mutableStateOf(false) }
+    var detectedScanners by remember { mutableStateOf(HardwareDeviceDiscovery.detectConnectedScanners(context)) }
+    val hardwareKeyBuffer = remember { StringBuilder() }
+    var lastHardwareKeyAtMs by remember { mutableLongStateOf(0L) }
 
     var pendingSelection by remember { mutableStateOf<BarcodeLookupOutcome.NeedsSelection?>(null) }
     var quickRegisterBarcode by remember { mutableStateOf<String?>(null) }
@@ -209,6 +229,12 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
 
     var lastScannedCode by remember { mutableStateOf("") }
     var lastScanElapsedMs by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(showScannerSettingsDialog) {
+        if (!showScannerSettingsDialog) {
+            detectedScanners = HardwareDeviceDiscovery.detectConnectedScanners(context)
+        }
+    }
 
     BackHandler {
         viewModel.navigateTo(Screen.POS_KASIR)
@@ -221,12 +247,12 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
     }
 
     fun processScannedCode(rawCode: String, fromCameraFrame: Boolean, source: String = if (fromCameraFrame) "CAMERA" else "MANUAL") {
-        val cleaned = rawCode.trim()
+        val cleaned = if (scannerSettings.stripWhitespace) rawCode.trim() else rawCode
         if (cleaned.isEmpty()) return
 
         if (fromCameraFrame) {
             val now = SystemClock.elapsedRealtime()
-            val minDelay = if (cleaned.equals(lastScannedCode, ignoreCase = true)) 1600L else 350L
+            val minDelay = if (cleaned.equals(lastScannedCode, ignoreCase = true)) scannerSettings.scanCooldownMs else 350L
             if (now - lastScanElapsedMs < minDelay) return
             lastScannedCode = cleaned
             lastScanElapsedMs = now
@@ -234,7 +260,8 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
 
         when (val outcome = viewModel.scanBarcodeAndAddToCart(cleaned, source = source)) {
             is BarcodeLookupOutcome.AddedVariant -> {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (scannerSettings.vibrateOnScan) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
                 scanBanner = ScanBannerState.Matched(
                     code = cleaned,
                     productName = "${outcome.product.name} (${outcome.variant.name})",
@@ -247,7 +274,8 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 if (!continuousMode && fromCameraFrame) isPaused = true
             }
             is BarcodeLookupOutcome.AddedProduct -> {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (scannerSettings.vibrateOnScan) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
                 scanBanner = ScanBannerState.Matched(
                     code = cleaned,
                     productName = outcome.product.name,
@@ -260,7 +288,8 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 if (!continuousMode && fromCameraFrame) isPaused = true
             }
             is BarcodeLookupOutcome.NeedsSelection -> {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (scannerSettings.vibrateOnScan) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
                 pendingSelection = outcome
                 flexiblePriceInput = if (outcome.product.sellingPrice > 0) {
                     outcome.product.sellingPrice.toLong().toString()
@@ -268,12 +297,34 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 if (fromCameraFrame) isPaused = true
             }
             is BarcodeLookupOutcome.NotFound -> {
+                ScannerFeedbackPlayer.playWarning(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
                 scanBanner = ScanBannerState.Unrecognized(
                     code = cleaned,
                     timestampMs = System.currentTimeMillis()
                 )
                 if (!continuousMode && fromCameraFrame) isPaused = true
             }
+        }
+    }
+
+    // Listen to Bluetooth SPP scanner if explicitly selected in settings
+    DisposableEffect(scannerSettings.selectedScannerId) {
+        val selectedId = scannerSettings.selectedScannerId
+        if (selectedId.startsWith("BT:")) {
+            val mac = selectedId.removePrefix("BT:")
+            val client = BluetoothSppScannerClient()
+            client.startListening(
+                context = context,
+                macAddress = mac,
+                scope = coroutineScope,
+                onBarcodeRead = { code ->
+                    processScannedCode(code, fromCameraFrame = false, source = "BLUETOOTH_SPP")
+                },
+                onStatusChanged = { _, _ -> }
+            )
+            onDispose { client.stop() }
+        } else {
+            onDispose { }
         }
     }
 
@@ -326,9 +377,52 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
             .fillMaxSize()
             .background(BgCanvas)
             .testTag("barcode_scan_cart_screen")
+            .onPreviewKeyEvent { event ->
+                val activeHardwareCapture = scannerSettings.autoCaptureHardwareInput &&
+                    !isManualInputFocused &&
+                    pendingSelection == null &&
+                    quickRegisterBarcode == null &&
+                    !showScannerSettingsDialog
+                if (!activeHardwareCapture) return@onPreviewKeyEvent false
+
+                val native = event.nativeKeyEvent
+                val dev = native.device
+                val isExternalHardware = dev != null && !dev.isVirtual && native.deviceId > 0
+                if (!isExternalHardware) return@onPreviewKeyEvent false
+
+                if (event.type == KeyEventType.KeyDown) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastHardwareKeyAtMs > 1200L) {
+                        hardwareKeyBuffer.setLength(0)
+                    }
+                    lastHardwareKeyAtMs = now
+                    val keyCode = native.keyCode
+                    if (keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
+                        keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                        keyCode == android.view.KeyEvent.KEYCODE_TAB
+                    ) {
+                        val code = hardwareKeyBuffer.toString().trim()
+                        hardwareKeyBuffer.setLength(0)
+                        if (code.isNotEmpty()) {
+                            processScannedCode(code, fromCameraFrame = false, source = "HID_SCANNER")
+                        }
+                        true
+                    } else {
+                        val ch = native.unicodeChar
+                        if (ch >= 32) {
+                            hardwareKeyBuffer.append(ch.toChar())
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
     ) {
         val isTablet = maxWidth >= 720.dp
-        val isScannerSuspended = isPaused || pendingSelection != null || quickRegisterBarcode != null
+        val isScannerSuspended = isPaused || pendingSelection != null || quickRegisterBarcode != null || showScannerSettingsDialog
 
         if (isTablet) {
             Row(modifier = Modifier.fillMaxSize()) {
@@ -348,6 +442,7 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                         if (useFrontCamera) torchEnabled = false
                     },
                     onToggleContinuous = { continuousMode = !continuousMode },
+                    onOpenSettings = { showScannerSettingsDialog = true },
                     onPickPhoto = {
                         photoPickerLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -385,6 +480,10 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                     cart = cart,
                     productImages = productImageMap,
                     decimalProductIds = decimalProductIds,
+                    detectedScanners = detectedScanners,
+                    selectedScannerName = scannerSettings.selectedScannerName,
+                    onOpenScannerSettings = { showScannerSettingsDialog = true },
+                    onManualFocusChanged = { isManualInputFocused = it },
                     manualBarcode = manualBarcode,
                     onManualBarcodeChange = { manualBarcode = it },
                     onManualSubmit = { code ->
@@ -430,6 +529,7 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                         if (useFrontCamera) torchEnabled = false
                     },
                     onToggleContinuous = { continuousMode = !continuousMode },
+                    onOpenSettings = { showScannerSettingsDialog = true },
                     onPickPhoto = {
                         photoPickerLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -467,6 +567,10 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                     cart = cart,
                     productImages = productImageMap,
                     decimalProductIds = decimalProductIds,
+                    detectedScanners = detectedScanners,
+                    selectedScannerName = scannerSettings.selectedScannerName,
+                    onOpenScannerSettings = { showScannerSettingsDialog = true },
+                    onManualFocusChanged = { isManualInputFocused = it },
                     manualBarcode = manualBarcode,
                     onManualBarcodeChange = { manualBarcode = it },
                     onManualSubmit = { code ->
@@ -495,6 +599,14 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 )
             }
         }
+    }
+
+    if (showScannerSettingsDialog) {
+        ScannerSettingsDialog(
+            currentSettings = scannerSettings,
+            onSaveSettings = { updated -> viewModel.updateScannerSettings(updated) },
+            onDismiss = { showScannerSettingsDialog = false }
+        )
     }
 
     pendingSelection?.let { selection ->
@@ -635,6 +747,7 @@ private fun CameraScannerPane(
     onToggleTorch: () -> Unit,
     onFlipCamera: () -> Unit,
     onToggleContinuous: () -> Unit,
+    onOpenSettings: () -> Unit,
     onPickPhoto: () -> Unit,
     onBackToCashier: () -> Unit,
     onDetectedBoxesChanged: (List<DetectedBoxUi>) -> Unit,
@@ -744,11 +857,11 @@ private fun CameraScannerPane(
                     }
                 }
 
-                if (hasCameraPermission) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (hasCameraPermission) {
                         Surface(
                             onClick = onTogglePause,
                             shape = CircleShape,
@@ -808,6 +921,25 @@ private fun CameraScannerPane(
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
+                        }
+                    }
+
+                    Surface(
+                        onClick = onOpenSettings,
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.55f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("scanner_settings_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Pengaturan Scan Barcode",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 }
@@ -1340,6 +1472,10 @@ private fun ScanCartDockPanel(
     cart: List<CartItem>,
     productImages: Map<Long, String>,
     decimalProductIds: Set<Long>,
+    detectedScanners: List<DetectedScannerDevice>,
+    selectedScannerName: String,
+    onOpenScannerSettings: () -> Unit,
+    onManualFocusChanged: (Boolean) -> Unit,
     manualBarcode: String,
     onManualBarcodeChange: (String) -> Unit,
     onManualSubmit: (String) -> Unit,
@@ -1353,6 +1489,13 @@ private fun ScanCartDockPanel(
     cartFinalTotal: Double,
     modifier: Modifier = Modifier
 ) {
+    val activeHardware = detectedScanners.firstOrNull { it.isConnectedNow } ?: detectedScanners.firstOrNull()
+    val bannerTitle = when {
+        selectedScannerName.isNotBlank() -> "Alat Aktif: $selectedScannerName"
+        activeHardware != null -> "${activeHardware.transport}: ${activeHardware.name}"
+        else -> "Pengaturan & Deteksi Scanner USB / Bluetooth"
+    }
+
     Surface(
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
         color = SurfaceWhite,
@@ -1360,6 +1503,46 @@ private fun ScanCartDockPanel(
         modifier = modifier
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Connected Hardware Scanner Status Bar + Settings shortcut
+            Surface(
+                onClick = onOpenScannerSettings,
+                color = if (activeHardware?.isConnectedNow == true || selectedScannerName.isNotBlank()) Emerald100 else Sapphire50,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("scanner_hardware_status_bar")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = if (activeHardware?.transport?.contains("USB", true) == true) Icons.Default.Usb else Icons.Default.Bluetooth,
+                            contentDescription = null,
+                            tint = if (activeHardware?.isConnectedNow == true || selectedScannerName.isNotBlank()) Emerald700 else AccentBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = bannerTitle,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (activeHardware?.isConnectedNow == true || selectedScannerName.isNotBlank()) Emerald800 else AccentBlue,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Settings, contentDescription = null, tint = Slate600, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Atur", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate700)
+                    }
+                }
+            }
+
             // Manual barcode & gallery photo bar
             Row(
                 modifier = Modifier
@@ -1415,9 +1598,13 @@ private fun ScanCartDockPanel(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .weight(1f)
+                        .onFocusChanged { onManualFocusChanged(it.isFocused) }
                         .testTag("scanner_manual_input")
                         .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyUp && keyEvent.key == Key.Enter && manualBarcode.isNotBlank()) {
+                            if (keyEvent.type == KeyEventType.KeyUp &&
+                                (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter) &&
+                                manualBarcode.isNotBlank()
+                            ) {
                                 onManualSubmit(manualBarcode)
                                 true
                             } else false
