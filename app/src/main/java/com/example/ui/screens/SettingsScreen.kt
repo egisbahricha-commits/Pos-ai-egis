@@ -161,6 +161,8 @@ fun SettingsScreen(viewModel: PosViewModel) {
     var showAddUserDialog by remember { mutableStateOf(false) }
     var showLicenseKeyDialog by remember { mutableStateOf(false) }
     var showRefreshAuthDialog by remember { mutableStateOf(false) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var updateDialogInfo by remember { mutableStateOf<PosViewModel.AppUpdateInfo?>(null) }
 
     val hardwareSummary = remember(showPrintersDialog, showScannerSettingsDialog) {
         HardwareDeviceDiscovery.inspectHardware(context)
@@ -600,15 +602,44 @@ fun SettingsScreen(viewModel: PosViewModel) {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = storeProfile?.name?.ifBlank { "KASLITE POS" } ?: "KASLITE POS",
+                        text = (storeProfile?.name?.ifBlank { "KASLITE POS" } ?: "KASLITE POS") + " (Versi ${com.example.BuildConfig.VERSION_NAME})",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
                     )
                     Text(
-                        text = "Mode Produksi • Penyimpanan Data Toko 100% Lokal di Perangkat",
+                        text = "Mode Produksi • Sinkronisasi Cloud Supabase & Update Otomatis GitHub",
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
                     )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.checkForGitHubAppUpdate { hasUpdate, msg, info ->
+                                if (hasUpdate && info != null) {
+                                    updateDialogInfo = info
+                                    showUpdateDialog = true
+                                } else {
+                                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_check_update_btn")
+                    ) {
+                        val isCheckingUpdate by viewModel.isCheckingUpdate.collectAsStateWithLifecycle()
+                        if (isCheckingUpdate) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Memeriksa Pembaruan...", fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Periksa Pembaruan Aplikasi (GitHub)", fontWeight = FontWeight.Bold)
+                        }
+                    }
+
                     if (isOwner) {
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Button(
                             onClick = { showResetConfirmDialog = true },
                             colors = ButtonDefaults.buttonColors(containerColor = Rose500),
@@ -1241,6 +1272,93 @@ fun SettingsScreen(viewModel: PosViewModel) {
             onConfirm = { replaceExisting -> viewModel.confirmKasLiteRestore(replaceExisting) },
             onDismiss = { if (!kasLiteBackupState.isRestoring) viewModel.dismissKasLiteRestorePreview() }
         )
+    }
+
+    if (showUpdateDialog && updateDialogInfo != null) {
+        val info = updateDialogInfo!!
+        Dialog(onDismissRequest = { showUpdateDialog = false }) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = SurfaceWhite,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(AccentBlueSoft),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, tint = AccentBlue)
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Pembaruan KASLITE Tersedia!",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                            )
+                            Text(
+                                "Versi Terbaru: ${info.latestVersionName} (Saat ini: ${com.example.BuildConfig.VERSION_NAME})",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate600, fontSize = 12.sp)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Sapphire50,
+                        border = BorderStroke(1.dp, Sapphire200),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "Catatan Rilis Pembaruan:",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Sapphire800)
+                            )
+                            Text(
+                                info.releaseNotes,
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate700, fontSize = 12.sp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        "Pembaruan ini akan mendownload file APK dari GitHub dan langsung menginstalnya tanpa menghapus data kasir Anda.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp)
+                    )
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { showUpdateDialog = false },
+                            border = BorderStroke(1.dp, BorderInput),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Nanti Saja", color = Slate700)
+                        }
+                        Button(
+                            onClick = {
+                                showUpdateDialog = false
+                                viewModel.downloadAndInstallUpdate(context, info)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("kaslite_download_install_btn")
+                        ) {
+                            Text("Download & Install", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (kasLiteBackupState.inspectResult == null && kasLiteBackupState.errorMessage != null) {

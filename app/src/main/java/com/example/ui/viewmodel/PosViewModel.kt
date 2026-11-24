@@ -2,6 +2,7 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
@@ -3752,5 +3753,164 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun formatRupiah(amount: Double): String {
         return java.text.NumberFormat.getIntegerInstance(Locale("id", "ID")).format(amount.toLong())
+    }
+
+    // ============================================================================
+    // GITHUB APP UPDATE CHECKER & OTA INSTALLER
+    // ============================================================================
+    data class AppUpdateInfo(
+        val latestVersionName: String,
+        val latestVersionCode: Int,
+        val releaseNotes: String,
+        val apkDownloadUrl: String
+    )
+
+    private val _isCheckingUpdate = MutableStateFlow(false)
+    val isCheckingUpdate: StateFlow<Boolean> = _isCheckingUpdate.asStateFlow()
+
+    private val _updateProgressMessage = MutableStateFlow<String?>(null)
+    val updateProgressMessage: StateFlow<String?> = _updateProgressMessage.asStateFlow()
+
+    fun checkForGitHubAppUpdate(
+        githubRepoOwner: String = "egisbahricha", // Ganti sesuai username GitHub Anda
+        githubRepoName: String = "kaslite-pos",   // Ganti sesuai nama repo GitHub Anda
+        onResult: (Boolean, String, AppUpdateInfo?) -> Unit
+    ) {
+        if (_isCheckingUpdate.value) return
+        _isCheckingUpdate.value = true
+        _updateProgressMessage.value = "Memeriksa pembaruan dari GitHub..."
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val urlStr = "https://api.github.com/repos/$githubRepoOwner/$githubRepoName/releases/latest"
+                val conn = (java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 10_000
+                    readTimeout = 10_000
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    throw IllegalStateException("Gagal terhubung ke GitHub (HTTP $code). Pastikan repo publik.")
+                }
+                val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                val rootObj = org.json.JSONObject(responseText)
+                val tagName = rootObj.optString("tag_name", "v1.0").trim()
+                val latestVerName = tagName.removePrefix("v").removePrefix("V")
+                val latestVerCode = latestVerName.replace(".", "").toIntOrNull() ?: 11
+                val releaseNotes = rootObj.optString("body", "Pembaruan sistem dan perbaikan bug KASLITE.")
+
+                var apkUrl = ""
+                val assets = rootObj.optJSONArray("assets") ?: org.json.JSONArray()
+                for (i in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(i)
+                    val name = asset.optString("name", "")
+                    if (name.endsWith(".apk", ignoreCase = true)) {
+                        apkUrl = asset.optString("browser_download_url", "")
+                        break
+                    }
+                }
+                if (apkUrl.isBlank()) {
+                    // Fallback ke zipball / tarball atau tag release URL
+                    apkUrl = rootObj.optString("html_url", "")
+                }
+
+                val currentVerCode = BuildConfig.VERSION_CODE
+                val updateInfo = AppUpdateInfo(
+                    latestVersionName = tagName,
+                    latestVersionCode = latestVerCode,
+                    releaseNotes = releaseNotes,
+                    apkDownloadUrl = apkUrl
+                )
+
+                withContext(Dispatchers.Main) {
+                    _isCheckingUpdate.value = false
+                    _updateProgressMessage.value = null
+                    if (latestVerCode > currentVerCode && apkUrl.isNotBlank()) {
+                        onResult(true, "Versi baru $tagName tersedia!", updateInfo)
+                    } else {
+                        onResult(false, "Aplikasi Anda sudah menggunakan versi terbaru (${BuildConfig.VERSION_NAME}).", updateInfo)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _isCheckingUpdate.value = false
+                    _updateProgressMessage.value = null
+                    onResult(false, "Gagal memeriksa pembaruan: ${e.localizedMessage}", null)
+                }
+            }
+        }
+    }
+
+    fun downloadAndInstallUpdate(context: Context, updateInfo: AppUpdateInfo) {
+        val apkUrl = updateInfo.apkDownloadUrl
+        if (apkUrl.isBlank() || !apkUrl.endsWith(".apk", ignoreCase = true)) {
+            // Jika bukan direct link APK, arahkan ke browser GitHub Release
+            runCatching {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.apkDownloadUrl.ifBlank { "https://github.com" }))
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            }
+            return
+        }
+
+        _isCheckingUpdate.value = true
+        _updateProgressMessage.value = "Mengunduh pembaruan ${updateInfo.latestVersionName}..."
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val downloadDir = java.io.File(context.getExternalFilesDir(null), "Download")
+                if (!downloadDir.exists()) downloadDir.mkdirs()
+                val apkFile = java.io.File(downloadDir, "kaslite_update_${updateInfo.latestVersionName}.apk")
+                if (apkFile.exists()) apkFile.delete()
+
+                val url = java.net.URL(apkUrl)
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 30_000
+                    instanceFollowRedirects = true
+                }
+                val inputStream = conn.inputStream
+                val outputStream = java.io.FileOutputStream(apkFile)
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                }
+                outputStream.close()
+                inputStream.close()
+
+                withContext(Dispatchers.Main) {
+                    _isCheckingUpdate.value = false
+                    _updateProgressMessage.value = null
+                    _userMessage.value = "Unduhan selesai! Memulai instalasi..."
+
+                    // Install APK via FileProvider
+                    val apkUri = androidx.core.content.FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        apkFile
+                    )
+                    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(apkUri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(installIntent)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _isCheckingUpdate.value = false
+                    _updateProgressMessage.value = null
+                    _userMessage.value = "Gagal mengunduh pembaruan: ${e.localizedMessage}"
+                    // Fallback buka browser
+                    runCatching {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.apkDownloadUrl))
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                    }
+                }
+            }
+        }
     }
 }
