@@ -674,7 +674,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
                                     )
                                     Text(
-                                        "Masukkan format username/nama-repo (contoh: egisbahricha/kaslite-pos).",
+                                        "Masukkan format username/nama-repo (contoh: egisbahricha-commits/Pos-ai-egis).",
                                         style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
                                     )
                                     OutlinedTextField(

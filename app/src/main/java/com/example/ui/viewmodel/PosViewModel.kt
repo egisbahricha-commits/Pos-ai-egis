@@ -3793,19 +3793,28 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         return false
     }
 
-    fun getSavedGitHubUpdateRepo(): String {
-        val prefs = getApplication<Application>().getSharedPreferences("kaslite_update_prefs", Context.MODE_PRIVATE)
-        return prefs.getString("github_repo_slug", "egisbahricha/kaslite-pos")
-            ?.trim()
-            ?.ifBlank { "egisbahricha/kaslite-pos" }
-            ?: "egisbahricha/kaslite-pos"
-    }
-
-    fun saveGitHubUpdateRepo(repoSlug: String) {
-        val cleaned = repoSlug.trim()
+    private fun normalizeGitHubSlug(rawInput: String): String {
+        val cleaned = rawInput.trim()
             .removePrefix("https://github.com/")
             .removePrefix("http://github.com/")
             .trim('/')
+        val parts = cleaned.split('/').filter { it.isNotBlank() }
+        return if (parts.size >= 2) "${parts[0]}/${parts[1]}" else cleaned
+    }
+
+    fun getSavedGitHubUpdateRepo(): String {
+        val defaultSlug = "egisbahricha-commits/Pos-ai-egis"
+        val prefs = getApplication<Application>().getSharedPreferences("kaslite_update_prefs", Context.MODE_PRIVATE)
+        val saved = prefs.getString("github_repo_slug", defaultSlug)?.trim().orEmpty()
+        return if (saved.isBlank() || saved == "egisbahricha/kaslite-pos") {
+            defaultSlug
+        } else {
+            normalizeGitHubSlug(saved)
+        }
+    }
+
+    fun saveGitHubUpdateRepo(repoSlug: String) {
+        val cleaned = normalizeGitHubSlug(repoSlug)
         if (cleaned.contains("/")) {
             getApplication<Application>()
                 .getSharedPreferences("kaslite_update_prefs", Context.MODE_PRIVATE)
@@ -3820,10 +3829,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         onResult: (Boolean, String, AppUpdateInfo?) -> Unit
     ) {
         if (_isCheckingUpdate.value) return
-        val normalizedSlug = githubRepoSlug.trim()
-            .removePrefix("https://github.com/")
-            .removePrefix("http://github.com/")
-            .trim('/')
+        val normalizedSlug = normalizeGitHubSlug(githubRepoSlug)
         if (!normalizedSlug.contains("/")) {
             onResult(false, "Format repository GitHub harus: username/nama-repo", null)
             return
@@ -3839,10 +3845,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     connectTimeout = 10_000
                     readTimeout = 10_000
                     setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "KASLITE-POS-Android/${BuildConfig.VERSION_NAME}")
                 }
                 val code = conn.responseCode
                 if (code !in 200..299) {
-                    throw IllegalStateException("Gagal terhubung ke GitHub (HTTP $code). Pastikan repo publik & sudah ada Release.")
+                    val hint = when (code) {
+                        404 -> "Repo $normalizedSlug belum punya Release atau masih Private (HTTP 404)."
+                        403 -> "Akses API GitHub dibatasi sementara (HTTP 403). Coba lagi sebentar."
+                        else -> "Gagal terhubung ke GitHub (HTTP $code)."
+                    }
+                    throw IllegalStateException(hint)
                 }
                 val responseText = conn.inputStream.bufferedReader().use { it.readText() }
                 val rootObj = org.json.JSONObject(responseText)
