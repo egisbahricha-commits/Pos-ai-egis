@@ -602,7 +602,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = (storeProfile?.name?.ifBlank { "KASLITE POS" } ?: "KASLITE POS") + " (Versi ${com.example.BuildConfig.VERSION_NAME})",
+                        text = (storeProfile?.name?.ifBlank { "KASLITE POS" } ?: "KASLITE POS") + " (Versi ${com.example.BuildConfig.VERSION_NAME} • Kode ${com.example.BuildConfig.VERSION_CODE})",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
                     )
                     Text(
@@ -610,9 +610,11 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         style = MaterialTheme.typography.bodySmall.copy(color = Slate500)
                     )
                     Spacer(modifier = Modifier.height(10.dp))
+                    var currentRepoSlug by remember { mutableStateOf(viewModel.getSavedGitHubUpdateRepo()) }
+                    var showRepoEditDialog by remember { mutableStateOf(false) }
                     OutlinedButton(
                         onClick = {
-                            viewModel.checkForGitHubAppUpdate { hasUpdate, msg, info ->
+                            viewModel.checkForGitHubAppUpdate(currentRepoSlug) { hasUpdate, msg, info ->
                                 if (hasUpdate && info != null) {
                                     updateDialogInfo = info
                                     showUpdateDialog = true
@@ -635,6 +637,73 @@ fun SettingsScreen(viewModel: PosViewModel) {
                             Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Periksa Pembaruan Aplikasi (GitHub)", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (isSuperAdmin) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Repo GitHub: $currentRepoSlug",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp),
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = { showRepoEditDialog = true },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                            ) {
+                                Text("Ubah Repo", fontSize = 11.sp, color = AccentBlue)
+                            }
+                        }
+                    }
+                    if (showRepoEditDialog) {
+                        var repoInput by remember { mutableStateOf(currentRepoSlug) }
+                        Dialog(onDismissRequest = { showRepoEditDialog = false }) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = SurfaceWhite,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text(
+                                        "Atur Repository GitHub Update",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                                    )
+                                    Text(
+                                        "Masukkan format username/nama-repo (contoh: egisbahricha/kaslite-pos).",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                                    )
+                                    OutlinedTextField(
+                                        value = repoInput,
+                                        onValueChange = { repoInput = it },
+                                        label = { Text("Username / Nama Repo") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(
+                                            onClick = { showRepoEditDialog = false },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Batal")
+                                        }
+                                        Button(
+                                            onClick = {
+                                                viewModel.saveGitHubUpdateRepo(repoInput)
+                                                currentRepoSlug = viewModel.getSavedGitHubUpdateRepo()
+                                                showRepoEditDialog = false
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Simpan")
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 

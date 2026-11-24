@@ -3771,18 +3771,69 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     private val _updateProgressMessage = MutableStateFlow<String?>(null)
     val updateProgressMessage: StateFlow<String?> = _updateProgressMessage.asStateFlow()
 
+    private fun parseVersionParts(rawVersion: String): List<Int> {
+        return rawVersion.trim()
+            .removePrefix("v")
+            .removePrefix("V")
+            .split(".", "-", "_")
+            .mapNotNull { segment -> segment.takeWhile { it.isDigit() }.toIntOrNull() }
+    }
+
+    private fun isRemoteVersionNewer(remoteVersion: String, currentVersion: String): Boolean {
+        val remoteParts = parseVersionParts(remoteVersion)
+        val currentParts = parseVersionParts(currentVersion)
+        if (remoteParts.isEmpty()) return false
+        val maxLen = maxOf(remoteParts.size, currentParts.size)
+        for (i in 0 until maxLen) {
+            val r = remoteParts.getOrElse(i) { 0 }
+            val c = currentParts.getOrElse(i) { 0 }
+            if (r > c) return true
+            if (r < c) return false
+        }
+        return false
+    }
+
+    fun getSavedGitHubUpdateRepo(): String {
+        val prefs = getApplication<Application>().getSharedPreferences("kaslite_update_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("github_repo_slug", "egisbahricha/kaslite-pos")
+            ?.trim()
+            ?.ifBlank { "egisbahricha/kaslite-pos" }
+            ?: "egisbahricha/kaslite-pos"
+    }
+
+    fun saveGitHubUpdateRepo(repoSlug: String) {
+        val cleaned = repoSlug.trim()
+            .removePrefix("https://github.com/")
+            .removePrefix("http://github.com/")
+            .trim('/')
+        if (cleaned.contains("/")) {
+            getApplication<Application>()
+                .getSharedPreferences("kaslite_update_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putString("github_repo_slug", cleaned)
+                .apply()
+        }
+    }
+
     fun checkForGitHubAppUpdate(
-        githubRepoOwner: String = "egisbahricha", // Ganti sesuai username GitHub Anda
-        githubRepoName: String = "kaslite-pos",   // Ganti sesuai nama repo GitHub Anda
+        githubRepoSlug: String = getSavedGitHubUpdateRepo(),
         onResult: (Boolean, String, AppUpdateInfo?) -> Unit
     ) {
         if (_isCheckingUpdate.value) return
+        val normalizedSlug = githubRepoSlug.trim()
+            .removePrefix("https://github.com/")
+            .removePrefix("http://github.com/")
+            .trim('/')
+        if (!normalizedSlug.contains("/")) {
+            onResult(false, "Format repository GitHub harus: username/nama-repo", null)
+            return
+        }
         _isCheckingUpdate.value = true
         _updateProgressMessage.value = "Memeriksa pembaruan dari GitHub..."
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val urlStr = "https://api.github.com/repos/$githubRepoOwner/$githubRepoName/releases/latest"
+                val urlStr = "https://api.github.com/repos/$normalizedSlug/releases/latest"
                 val conn = (java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection).apply {
                     requestMethod = "GET"
                     connectTimeout = 10_000
@@ -3791,14 +3842,13 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val code = conn.responseCode
                 if (code !in 200..299) {
-                    throw IllegalStateException("Gagal terhubung ke GitHub (HTTP $code). Pastikan repo publik.")
+                    throw IllegalStateException("Gagal terhubung ke GitHub (HTTP $code). Pastikan repo publik & sudah ada Release.")
                 }
                 val responseText = conn.inputStream.bufferedReader().use { it.readText() }
                 val rootObj = org.json.JSONObject(responseText)
-                val tagName = rootObj.optString("tag_name", "v1.0").trim()
-                val latestVerName = tagName.removePrefix("v").removePrefix("V")
-                val latestVerCode = latestVerName.replace(".", "").toIntOrNull() ?: 11
+                val tagName = rootObj.optString("tag_name", "v${BuildConfig.VERSION_NAME}").trim()
                 val releaseNotes = rootObj.optString("body", "Pembaruan sistem dan perbaikan bug KASLITE.")
+                    .ifBlank { "Pembaruan sistem dan perbaikan bug KASLITE." }
 
                 var apkUrl = ""
                 val assets = rootObj.optJSONArray("assets") ?: org.json.JSONArray()
@@ -3811,14 +3861,13 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 if (apkUrl.isBlank()) {
-                    // Fallback ke zipball / tarball atau tag release URL
                     apkUrl = rootObj.optString("html_url", "")
                 }
 
-                val currentVerCode = BuildConfig.VERSION_CODE
+                val hasNewerVersion = isRemoteVersionNewer(tagName, BuildConfig.VERSION_NAME)
                 val updateInfo = AppUpdateInfo(
                     latestVersionName = tagName,
-                    latestVersionCode = latestVerCode,
+                    latestVersionCode = BuildConfig.VERSION_CODE + if (hasNewerVersion) 1 else 0,
                     releaseNotes = releaseNotes,
                     apkDownloadUrl = apkUrl
                 )
@@ -3826,7 +3875,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.Main) {
                     _isCheckingUpdate.value = false
                     _updateProgressMessage.value = null
-                    if (latestVerCode > currentVerCode && apkUrl.isNotBlank()) {
+                    if (hasNewerVersion && apkUrl.isNotBlank()) {
                         onResult(true, "Versi baru $tagName tersedia!", updateInfo)
                     } else {
                         onResult(false, "Aplikasi Anda sudah menggunakan versi terbaru (${BuildConfig.VERSION_NAME}).", updateInfo)
@@ -3843,74 +3892,15 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadAndInstallUpdate(context: Context, updateInfo: AppUpdateInfo) {
-        val apkUrl = updateInfo.apkDownloadUrl
-        if (apkUrl.isBlank() || !apkUrl.endsWith(".apk", ignoreCase = true)) {
-            // Jika bukan direct link APK, arahkan ke browser GitHub Release
-            runCatching {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.apkDownloadUrl.ifBlank { "https://github.com" }))
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
+        val targetUrl = updateInfo.apkDownloadUrl.ifBlank { "https://github.com" }
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return
-        }
-
-        _isCheckingUpdate.value = true
-        _updateProgressMessage.value = "Mengunduh pembaruan ${updateInfo.latestVersionName}..."
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val downloadDir = java.io.File(context.getExternalFilesDir(null), "Download")
-                if (!downloadDir.exists()) downloadDir.mkdirs()
-                val apkFile = java.io.File(downloadDir, "kaslite_update_${updateInfo.latestVersionName}.apk")
-                if (apkFile.exists()) apkFile.delete()
-
-                val url = java.net.URL(apkUrl)
-                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                    instanceFollowRedirects = true
-                }
-                val inputStream = conn.inputStream
-                val outputStream = java.io.FileOutputStream(apkFile)
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                    outputStream.write(buffer, 0, bytesRead)
-                }
-                outputStream.close()
-                inputStream.close()
-
-                withContext(Dispatchers.Main) {
-                    _isCheckingUpdate.value = false
-                    _updateProgressMessage.value = null
-                    _userMessage.value = "Unduhan selesai! Memulai instalasi..."
-
-                    // Install APK via FileProvider
-                    val apkUri = androidx.core.content.FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        apkFile
-                    )
-                    val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(apkUri, "application/vnd.android.package-archive")
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(installIntent)
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    _isCheckingUpdate.value = false
-                    _updateProgressMessage.value = null
-                    _userMessage.value = "Gagal mengunduh pembaruan: ${e.localizedMessage}"
-                    // Fallback buka browser
-                    runCatching {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.apkDownloadUrl))
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                    }
-                }
-            }
+            context.startActivity(intent)
+            _userMessage.value = "Membuka unduhan APK ${updateInfo.latestVersionName}. Setelah selesai, ketuk file APK untuk menimpa tanpa hapus data."
+        }.onFailure { err ->
+            _userMessage.value = "Gagal membuka link unduhan: ${err.localizedMessage}"
         }
     }
 }
