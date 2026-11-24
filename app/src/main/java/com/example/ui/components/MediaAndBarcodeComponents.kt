@@ -102,8 +102,17 @@ import com.example.data.entity.PrinterEntity
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.repository.CartItem
+import androidx.compose.foundation.focusable
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import android.os.SystemClock
+import com.example.hardware.BarcodeInputSanitizer
+import com.example.hardware.BluetoothSppScannerClient
 import com.example.hardware.DetectedScannerDevice
 import com.example.hardware.HardwareDeviceDiscovery
+import com.example.hardware.ScannerFeedbackPlayer
 import com.example.hardware.ScannerSettings
 import com.example.hardware.ThermalPrinterEngine
 import com.example.ui.theme.*
@@ -111,6 +120,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -183,6 +193,137 @@ fun ProductThumbnail(
     }
 }
 
+/**
+ * Reusable screen-level hardware barcode scanner capture for USB OTG (HID), Bluetooth HID,
+ * and Bluetooth SPP scanners. Automatically maintains focus on the container while [enabled]
+ * is true so keystrokes trigger scanning even when no search text field is focused.
+ */
+@Composable
+fun hardwareBarcodeCaptureModifier(
+    enabled: Boolean,
+    scannerSettings: ScannerSettings,
+    onBarcodeScanned: (code: String, source: String) -> Unit
+): Modifier {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val currentOnScan by rememberUpdatedState(onBarcodeScanned)
+    val stripWhitespace by rememberUpdatedState(scannerSettings.stripWhitespace)
+    val focusRequester = remember { FocusRequester() }
+    val keyBuffer = remember { StringBuilder() }
+    var lastKeyAtMs by remember { mutableLongStateOf(0L) }
+    var pulseCount by remember { mutableIntStateOf(0) }
+    var pendingTerminatorKey by remember { mutableStateOf<Key?>(null) }
+
+    LaunchedEffect(enabled) {
+        if (enabled) {
+            delay(60)
+            runCatching { focusRequester.requestFocus() }
+        } else {
+            keyBuffer.setLength(0)
+            pendingTerminatorKey = null
+        }
+    }
+
+    LaunchedEffect(pulseCount, enabled) {
+        if (enabled && pulseCount > 0) {
+            delay(260)
+            val buffered = BarcodeInputSanitizer.cleanBarcodeValue(keyBuffer.toString(), stripWhitespace)
+            if (buffered.length >= 3) {
+                keyBuffer.setLength(0)
+                currentOnScan(buffered, "HID_SCANNER")
+            }
+        }
+    }
+
+    DisposableEffect(enabled, scannerSettings.selectedScannerId) {
+        val selectedId = scannerSettings.selectedScannerId
+        if (enabled && selectedId.startsWith("BT:")) {
+            val mac = selectedId.removePrefix("BT:")
+            val client = BluetoothSppScannerClient()
+            client.startListening(
+                context = context,
+                macAddress = mac,
+                scope = coroutineScope,
+                onBarcodeRead = { code ->
+                    val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(code, stripWhitespace)
+                    if (cleaned.isNotEmpty()) {
+                        currentOnScan(cleaned, "BLUETOOTH_SPP")
+                    }
+                },
+                onStatusChanged = { _, _ -> }
+            )
+            onDispose { client.stop() }
+        } else {
+            onDispose { }
+        }
+    }
+
+    return Modifier
+        .focusRequester(focusRequester)
+        .focusable()
+        .onPreviewKeyEvent { keyEvent ->
+            if (!enabled) return@onPreviewKeyEvent false
+            val native = keyEvent.nativeKeyEvent
+            if (!BarcodeInputSanitizer.isHardwareScannerKeyEvent(native)) return@onPreviewKeyEvent false
+
+            if (native.action == android.view.KeyEvent.ACTION_MULTIPLE) {
+                val chars = native.characters.orEmpty()
+                if (chars.isNotEmpty()) {
+                    val ready = BarcodeInputSanitizer.extractTerminatedBarcodes(keyBuffer, chars, stripWhitespace)
+                    if (ready.isNotEmpty()) {
+                        ready.forEach { currentOnScan(it, "HID_SCANNER") }
+                    } else {
+                        val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(keyBuffer.toString(), stripWhitespace)
+                        if (cleaned.isNotEmpty()) {
+                            keyBuffer.setLength(0)
+                            currentOnScan(cleaned, "HID_SCANNER")
+                        }
+                    }
+                    return@onPreviewKeyEvent true
+                }
+            }
+
+            when (keyEvent.type) {
+                KeyEventType.KeyDown -> {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastKeyAtMs > 1500L) {
+                        keyBuffer.setLength(0)
+                    }
+                    lastKeyAtMs = now
+                    if (BarcodeInputSanitizer.isTerminatorKeyCode(native.keyCode)) {
+                        val code = BarcodeInputSanitizer.cleanBarcodeValue(keyBuffer.toString(), stripWhitespace)
+                        keyBuffer.setLength(0)
+                        if (code.isNotEmpty()) {
+                            pendingTerminatorKey = keyEvent.key
+                            currentOnScan(code, "HID_SCANNER")
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        val ch = BarcodeInputSanitizer.extractPrintableChar(native)
+                        if (ch != null) {
+                            keyBuffer.append(ch)
+                            pulseCount++
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+                KeyEventType.KeyUp -> {
+                    if (pendingTerminatorKey == keyEvent.key) {
+                        pendingTerminatorKey = null
+                        true
+                    } else {
+                        keyBuffer.isNotEmpty() && BarcodeInputSanitizer.extractPrintableChar(native) != null
+                    }
+                }
+                else -> false
+            }
+        }
+}
+
 @Composable
 fun BarcodeScannerDialog(
     title: String = "Scan Barcode Produk",
@@ -211,6 +352,19 @@ fun BarcodeScannerDialog(
     var alreadyEmitted by remember { mutableStateOf(false) }
     var detectedScanners by remember { mutableStateOf<List<DetectedScannerDevice>>(emptyList()) }
     var hasBtPerm by remember { mutableStateOf(HardwareDeviceDiscovery.hasBluetoothConnectPermission(context)) }
+    val coroutineScope = rememberCoroutineScope()
+    val dialogHidBuffer = remember { StringBuilder() }
+    var dialogLastHidAtMs by remember { mutableLongStateOf(0L) }
+    var dialogPendingTerminatorKey by remember { mutableStateOf<Key?>(null) }
+
+    fun emitDetectedCode(rawCode: String) {
+        val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(rawCode, scannerSettings.stripWhitespace)
+        if (cleaned.isNotEmpty() && !alreadyEmitted) {
+            alreadyEmitted = true
+            ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
+            onBarcodeDetected(cleaned)
+        }
+    }
 
     val btPermLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -220,9 +374,28 @@ fun BarcodeScannerDialog(
     }
 
     LaunchedEffect(activeTab) {
+        alreadyEmitted = false
         if (activeTab == "SCANNER") {
             hasBtPerm = HardwareDeviceDiscovery.hasBluetoothConnectPermission(context)
             detectedScanners = HardwareDeviceDiscovery.detectConnectedScanners(context)
+        }
+    }
+
+    DisposableEffect(activeTab, scannerSettings.selectedScannerId) {
+        val selectedId = scannerSettings.selectedScannerId
+        if (activeTab == "SCANNER" && selectedId.startsWith("BT:")) {
+            val mac = selectedId.removePrefix("BT:")
+            val client = BluetoothSppScannerClient()
+            client.startListening(
+                context = context,
+                macAddress = mac,
+                scope = coroutineScope,
+                onBarcodeRead = { code -> emitDetectedCode(code) },
+                onStatusChanged = { _, _ -> }
+            )
+            onDispose { client.stop() }
+        } else {
+            onDispose { }
         }
     }
 
@@ -253,10 +426,7 @@ fun BarcodeScannerDialog(
                                 photoStatusMessage = "Barcode tidak ditemukan pada foto. Pastikan foto tajam dan tidak blur."
                             }
                             values.size == 1 -> {
-                                if (!alreadyEmitted) {
-                                    alreadyEmitted = true
-                                    onBarcodeDetected(values.first())
-                                }
+                                emitDetectedCode(values.first())
                             }
                             else -> {
                                 candidateBarcodes = values
@@ -282,6 +452,44 @@ fun BarcodeScannerDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("barcode_scanner_dialog")
+                .onPreviewKeyEvent { keyEvent ->
+                    if (activeTab != "SCANNER") return@onPreviewKeyEvent false
+                    val native = keyEvent.nativeKeyEvent
+                    if (!BarcodeInputSanitizer.isHardwareScannerKeyEvent(native)) return@onPreviewKeyEvent false
+                    val isSubmitKey = BarcodeInputSanitizer.isTerminatorKeyCode(native.keyCode)
+                    when (keyEvent.type) {
+                        KeyEventType.KeyDown -> {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - dialogLastHidAtMs > 1500L) {
+                                dialogHidBuffer.setLength(0)
+                            }
+                            dialogLastHidAtMs = now
+                            if (isSubmitKey) {
+                                val fromField = BarcodeInputSanitizer.cleanBarcodeValue(manualOrHidCode, scannerSettings.stripWhitespace)
+                                val fromBuf = BarcodeInputSanitizer.cleanBarcodeValue(dialogHidBuffer.toString(), scannerSettings.stripWhitespace)
+                                val code = fromField.ifEmpty { fromBuf }
+                                dialogHidBuffer.setLength(0)
+                                if (code.isNotEmpty()) {
+                                    dialogPendingTerminatorKey = keyEvent.key
+                                    emitDetectedCode(code)
+                                    true
+                                } else false
+                            } else {
+                                BarcodeInputSanitizer.extractPrintableChar(native)?.let { ch ->
+                                    dialogHidBuffer.append(ch)
+                                }
+                                false // Let focused OutlinedTextField still receive typed characters smoothly
+                            }
+                        }
+                        KeyEventType.KeyUp -> {
+                            if (dialogPendingTerminatorKey == keyEvent.key) {
+                                dialogPendingTerminatorKey = null
+                                true
+                            } else false
+                        }
+                        else -> false
+                    }
+                }
         ) {
             Column(
                 modifier = Modifier.padding(18.dp),
@@ -461,9 +669,11 @@ fun BarcodeScannerDialog(
 
                     "SCANNER" -> {
                         val focusRequester = remember { FocusRequester() }
+                        var fieldPendingTerminator by remember { mutableStateOf<Key?>(null) }
                         LaunchedEffect(activeTab) {
                             if (activeTab == "SCANNER") {
-                                focusRequester.requestFocus()
+                                delay(60)
+                                runCatching { focusRequester.requestFocus() }
                             }
                         }
                         Surface(
@@ -577,14 +787,16 @@ fun BarcodeScannerDialog(
                                 OutlinedTextField(
                                     value = manualOrHidCode,
                                     onValueChange = { raw ->
-                                        if (raw.contains('\n') || raw.contains('\r')) {
-                                            val cleaned = raw.replace("\r", "").replace("\n", "").trim()
-                                            if (cleaned.isNotEmpty() && !alreadyEmitted) {
-                                                alreadyEmitted = true
-                                                onBarcodeDetected(cleaned)
+                                        if (BarcodeInputSanitizer.hasTerminatorChar(raw)) {
+                                            val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(raw, scannerSettings.stripWhitespace)
+                                            dialogHidBuffer.setLength(0)
+                                            if (cleaned.isNotEmpty()) {
+                                                emitDetectedCode(cleaned)
+                                            } else {
+                                                manualOrHidCode = ""
                                             }
                                         } else {
-                                            manualOrHidCode = raw
+                                            manualOrHidCode = BarcodeInputSanitizer.cleanBarcodeValue(raw, stripWhitespace = false)
                                         }
                                     },
                                     placeholder = { Text("Menunggu tembakan alat scanner / ketik SKU...") },
@@ -592,11 +804,10 @@ fun BarcodeScannerDialog(
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                     keyboardActions = KeyboardActions(
                                         onDone = {
-                                            val cleaned = manualOrHidCode.trim()
-                                            if (cleaned.isNotEmpty() && !alreadyEmitted) {
-                                                alreadyEmitted = true
-                                                onBarcodeDetected(cleaned)
-                                            }
+                                            emitDetectedCode(manualOrHidCode)
+                                        },
+                                        onSearch = {
+                                            emitDetectedCode(manualOrHidCode)
                                         }
                                     ),
                                     colors = OutlinedTextFieldDefaults.colors(
@@ -611,29 +822,39 @@ fun BarcodeScannerDialog(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .focusRequester(focusRequester)
+                                        .testTag("scanner_dialog_hid_input")
                                         .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyUp &&
-                                                (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
-                                            ) {
-                                                val cleaned = manualOrHidCode.trim()
-                                                if (cleaned.isNotEmpty() && !alreadyEmitted) {
-                                                    alreadyEmitted = true
-                                                    onBarcodeDetected(cleaned)
+                                            val isSubmitKey = keyEvent.key == Key.Enter ||
+                                                keyEvent.key == Key.NumPadEnter ||
+                                                keyEvent.key == Key.Tab
+                                            if (!isSubmitKey) return@onPreviewKeyEvent false
+
+                                            val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(manualOrHidCode, scannerSettings.stripWhitespace)
+                                            when (keyEvent.type) {
+                                                KeyEventType.KeyDown -> {
+                                                    if (cleaned.isNotEmpty()) {
+                                                        fieldPendingTerminator = keyEvent.key
+                                                        dialogHidBuffer.setLength(0)
+                                                        emitDetectedCode(cleaned)
+                                                        true
+                                                    } else false
                                                 }
-                                                true
-                                            } else {
-                                                false
+                                                KeyEventType.KeyUp -> {
+                                                    if (fieldPendingTerminator == keyEvent.key) {
+                                                        fieldPendingTerminator = null
+                                                        true
+                                                    } else if (cleaned.isNotEmpty() && keyEvent.key != Key.Tab) {
+                                                        dialogHidBuffer.setLength(0)
+                                                        emitDetectedCode(cleaned)
+                                                        true
+                                                    } else false
+                                                }
+                                                else -> false
                                             }
                                         }
                                 )
                                 Button(
-                                    onClick = {
-                                        val cleaned = manualOrHidCode.trim()
-                                        if (cleaned.isNotEmpty() && !alreadyEmitted) {
-                                            alreadyEmitted = true
-                                            onBarcodeDetected(cleaned)
-                                        }
-                                    },
+                                    onClick = { emitDetectedCode(manualOrHidCode) },
                                     enabled = manualOrHidCode.isNotBlank(),
                                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
                                     shape = RoundedCornerShape(10.dp),

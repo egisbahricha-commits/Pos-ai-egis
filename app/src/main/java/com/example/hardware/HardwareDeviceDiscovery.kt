@@ -20,16 +20,17 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.provider.Settings
 import android.view.InputDevice
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.util.UUID
 
 data class DetectedScannerDevice(
@@ -493,6 +494,106 @@ object HardwareDeviceDiscovery {
 }
 
 /**
+ * Utilities for cleaning, matching, and parsing barcode strings from HID keyboard
+ * and Bluetooth SPP hardware scanners.
+ */
+object BarcodeInputSanitizer {
+    private val CONTROL_AND_INVISIBLE_REGEX = Regex("[\\u0000-\\u001F\\u007F\\uFEFF\\u200B-\\u200D]")
+    private val IGNORED_SYSTEM_KEYCODES = setOf(
+        KeyEvent.KEYCODE_BACK,
+        KeyEvent.KEYCODE_HOME,
+        KeyEvent.KEYCODE_MENU,
+        KeyEvent.KEYCODE_POWER,
+        KeyEvent.KEYCODE_VOLUME_UP,
+        KeyEvent.KEYCODE_VOLUME_DOWN,
+        KeyEvent.KEYCODE_VOLUME_MUTE,
+        KeyEvent.KEYCODE_CAMERA,
+        KeyEvent.KEYCODE_APP_SWITCH,
+        KeyEvent.KEYCODE_HEADSETHOOK
+    )
+
+    fun cleanBarcodeValue(raw: String, stripWhitespace: Boolean = true): String {
+        val noCtrl = raw.replace(CONTROL_AND_INVISIBLE_REGEX, "")
+        return if (stripWhitespace) noCtrl.trim() else noCtrl
+    }
+
+    fun hasTerminatorChar(raw: String): Boolean =
+        raw.any { it == '\n' || it == '\r' || it == '\t' || it == '\u0003' }
+
+    /**
+     * Appends [incomingChunk] into [buffer] and extracts any complete barcode payloads
+     * terminated by '\r', '\n', '\t', or ETX (0x03). Any remaining unterminated suffix
+     * stays in [buffer].
+     */
+    fun extractTerminatedBarcodes(
+        buffer: StringBuilder,
+        incomingChunk: String,
+        stripWhitespace: Boolean = true
+    ): List<String> {
+        if (incomingChunk.isEmpty()) return emptyList()
+        val emitted = mutableListOf<String>()
+        for (ch in incomingChunk) {
+            when (ch) {
+                '\r', '\n', '\t', '\u0003' -> {
+                    val code = cleanBarcodeValue(buffer.toString(), stripWhitespace)
+                    buffer.setLength(0)
+                    if (code.isNotEmpty()) {
+                        emitted.add(code)
+                    }
+                }
+                '\u0002' -> Unit // STX prefix
+                else -> buffer.append(ch)
+            }
+        }
+        return emitted
+    }
+
+    fun matchesBarcodeCode(storedBarcode: String, scannedCode: String): Boolean {
+        val stored = cleanBarcodeValue(storedBarcode, stripWhitespace = true)
+        val scanned = cleanBarcodeValue(scannedCode, stripWhitespace = true)
+        if (stored.isEmpty() || scanned.isEmpty()) return false
+        if (stored.equals(scanned, ignoreCase = true)) return true
+
+        val compactStored = stored.replace(" ", "").replace("-", "")
+        val compactScanned = scanned.replace(" ", "").replace("-", "")
+        if (compactStored.isNotEmpty() && compactStored.equals(compactScanned, ignoreCase = true)) {
+            return true
+        }
+
+        // Handle UPC-A (12 digits) vs EAN-13 leading-zero (13 digits starting with '0') equivalence
+        val storedAllDigits = compactStored.all { it.isDigit() }
+        val scannedAllDigits = compactScanned.all { it.isDigit() }
+        if (storedAllDigits && scannedAllDigits) {
+            if (compactStored.length == 12 && compactScanned == "0$compactStored") return true
+            if (compactScanned.length == 12 && compactStored == "0$compactScanned") return true
+        }
+        return false
+    }
+
+    fun isTerminatorKeyCode(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            keyCode == KeyEvent.KEYCODE_TAB
+    }
+
+    fun isHardwareScannerKeyEvent(native: KeyEvent): Boolean {
+        if (native.keyCode in IGNORED_SYSTEM_KEYCODES) return false
+        if (native.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD && native.action != KeyEvent.ACTION_MULTIPLE) {
+            return false
+        }
+        val dev = native.device
+        if (dev != null && dev.isVirtual) return false
+        return true
+    }
+
+    fun extractPrintableChar(native: KeyEvent): Char? {
+        val codePoint = native.getUnicodeChar(native.metaState)
+        if (codePoint == 0 || (codePoint and KeyCharacterMap.COMBINING_ACCENT) != 0) return null
+        return if (codePoint >= 32) codePoint.toChar() else null
+    }
+}
+
+/**
  * Optional RFCOMM SPP reader for Bluetooth barcode scanners running in SPP (Serial Port) mode
  * instead of HID keyboard mode.
  */
@@ -532,13 +633,37 @@ class BluetoothSppScannerClient {
                 withContext(Dispatchers.Main) {
                     onStatusChanged(true, "Terhubung ke scanner ${device.name ?: macAddress}")
                 }
-                val reader = BufferedReader(InputStreamReader(sppSocket.inputStream))
+                val input = sppSocket.inputStream
+                val readBuffer = ByteArray(512)
+                val charBuffer = StringBuilder()
+                var lastByteAtMs = 0L
+
                 while (isActive) {
-                    val line = reader.readLine() ?: break
-                    val code = line.trim()
-                    if (code.isNotEmpty()) {
-                        withContext(Dispatchers.Main) {
-                            onBarcodeRead(code)
+                    val available = runCatching { input.available() }.getOrDefault(0)
+                    if (available > 0 || charBuffer.isEmpty()) {
+                        val toRead = if (available > 0) available.coerceAtMost(readBuffer.size) else 1
+                        val count = input.read(readBuffer, 0, toRead)
+                        if (count < 0) break
+                        if (count > 0) {
+                            lastByteAtMs = System.currentTimeMillis()
+                            val chunk = String(readBuffer, 0, count, Charsets.UTF_8)
+                            val readyCodes = BarcodeInputSanitizer.extractTerminatedBarcodes(charBuffer, chunk)
+                            for (code in readyCodes) {
+                                withContext(Dispatchers.Main) {
+                                    onBarcodeRead(code)
+                                }
+                            }
+                        }
+                    } else {
+                        delay(45)
+                        if (charBuffer.isNotEmpty() && System.currentTimeMillis() - lastByteAtMs >= 130L) {
+                            val fallbackCode = BarcodeInputSanitizer.cleanBarcodeValue(charBuffer.toString())
+                            charBuffer.setLength(0)
+                            if (fallbackCode.isNotEmpty()) {
+                                withContext(Dispatchers.Main) {
+                                    onBarcodeRead(fallbackCode)
+                                }
+                            }
                         }
                     }
                 }

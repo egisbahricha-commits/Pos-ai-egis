@@ -57,6 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.SaleItemEntity
 import com.example.data.repository.CartItem
+import com.example.hardware.BarcodeInputSanitizer
 import com.example.ui.components.BadgeType
 import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.DesignEmptyState
@@ -64,6 +65,7 @@ import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.KasLiteSearchBar
+import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.formatRupiah
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
@@ -78,6 +80,7 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
     val sales by viewModel.sales.collectAsStateWithLifecycle()
     val allSaleItems by viewModel.allSaleItems.collectAsStateWithLifecycle()
     val products by viewModel.products.collectAsStateWithLifecycle()
+    val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
     val coroutineScope = rememberCoroutineScope()
 
     var searchQuery by remember { mutableStateOf("") }
@@ -86,13 +89,17 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
     var saleItemsDetail by remember { mutableStateOf<List<SaleItemEntity>>(emptyList()) }
     var showRefundDialog by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
+    var showScannerSettingsDialog by remember { mutableStateOf(false) }
 
     val matchingSaleIdsByBarcode = remember(searchQuery, allSaleItems, products) {
-        val q = searchQuery.trim()
-        if (q.isBlank()) emptySet()
+        val q = BarcodeInputSanitizer.cleanBarcodeValue(searchQuery, true)
+        if (q.isEmpty()) emptySet()
         else {
             val matchedProductIds = products
-                .filter { it.barcode.equals(q, ignoreCase = true) || (q.length >= 4 && it.barcode.contains(q, ignoreCase = true)) }
+                .filter {
+                    BarcodeInputSanitizer.matchesBarcodeCode(it.barcode, q) ||
+                        (q.length >= 4 && it.barcode.contains(q, ignoreCase = true))
+                }
                 .map { it.id }
                 .toSet()
             if (matchedProductIds.isEmpty()) emptySet()
@@ -134,7 +141,8 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
                 placeholder = "Cari no. faktur, pelanggan, atau barcode...",
-                onBarcodeScanClick = { showBarcodeScanner = true }
+                onBarcodeScanClick = { showBarcodeScanner = true },
+                onBarcodeSubmit = { searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(it, scannerSettings.stripWhitespace) }
             )
 
             DesignSegmentedTabs(
@@ -478,11 +486,24 @@ fun SalesHistoryScreen(viewModel: PosViewModel) {
     if (showBarcodeScanner) {
         BarcodeScannerDialog(
             title = "Scan Barcode Faktur / Produk",
+            scannerSettings = scannerSettings,
+            onOpenScannerSettings = {
+                showBarcodeScanner = false
+                showScannerSettingsDialog = true
+            },
             onBarcodeDetected = { code ->
-                searchQuery = code
+                searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(code, scannerSettings.stripWhitespace)
                 showBarcodeScanner = false
             },
             onDismiss = { showBarcodeScanner = false }
+        )
+    }
+
+    if (showScannerSettingsDialog) {
+        ScannerSettingsDialog(
+            currentSettings = scannerSettings,
+            onSaveSettings = { updated -> viewModel.updateScannerSettings(updated) },
+            onDismiss = { showScannerSettingsDialog = false }
         )
     }
 }

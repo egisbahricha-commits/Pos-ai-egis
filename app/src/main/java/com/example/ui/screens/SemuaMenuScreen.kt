@@ -25,11 +25,13 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.LocalShipping
@@ -148,6 +150,8 @@ fun SemuaMenuScreen(viewModel: PosViewModel) {
             title = "SISTEM & PENGATURAN",
             items = listOf(
                 KasLiteMenuItem("Kontak Pelanggan & Grosir", "Buku alamat pelanggan", Icons.Default.People, Sapphire800, Screen.KONTAK),
+                KasLiteMenuItem("Donasi ke Pengembang", "Paket dukungan Rp 10rb, Rp 50rb, & Rp 250rb Selamanya", Icons.Default.Favorite, Emerald700, Screen.DONASI_PENGEMBANG),
+                KasLiteMenuItem("Laporan Bug", "Laporkan error atau kendala fitur ke pengembang", Icons.Default.BugReport, Rose500, Screen.LAPOR_BUG),
                 KasLiteMenuItem("Pengaturan & Hak Akses", "Profil toko, backup & role kasir", Icons.Default.Settings, Slate700, Screen.PENGATURAN)
             )
         )

@@ -40,6 +40,7 @@ import com.example.ui.viewmodel.Screen
 import com.example.ui.viewmodel.authenticateLocalUser
 import com.example.ui.viewmodel.evaluateLocalLicenseState
 import com.example.ui.viewmodel.isScreenAllowedWhenDemoLocked
+import com.example.ui.viewmodel.matchesProductSearchQuery
 import com.example.ui.viewmodel.resolveBarcodeToCartMatch
 import com.example.ui.viewmodel.validateAdminSetupInput
 import com.example.ui.viewmodel.validateManualProductInput
@@ -1259,5 +1260,220 @@ class ExampleRobolectricTest {
         assertTrue(uiState.isLockedToProductOnly)
         assertFalse(uiState.isFullActive)
         store.clearLicenseSnapshot()
+    }
+
+    @Test
+    fun `test hardware barcode sanitizer, SPP terminators, and product or variant search matching`() {
+        val sanitizer = com.example.hardware.BarcodeInputSanitizer
+
+        // 1. Clean control characters, BOM, CR/LF/Tab
+        assertEquals("8991002101234", sanitizer.cleanBarcodeValue("\u0002 8991002101234\r\n\u0003\t"))
+        assertTrue(sanitizer.hasTerminatorChar("8991002101234\t"))
+        assertTrue(sanitizer.hasTerminatorChar("8991002101234\r"))
+
+        // 2. Chunked stream extraction handles CR-only, LF, Tab, ETX, and leaves partial tokens buffered
+        val streamBuf = StringBuilder()
+        val firstChunk = sanitizer.extractTerminatedBarcodes(streamBuf, "\u0002899100210001\r89910021")
+        assertEquals(listOf("899100210001"), firstChunk)
+        assertEquals("89910021", streamBuf.toString())
+
+        val secondChunk = sanitizer.extractTerminatedBarcodes(streamBuf, "0002\t899100210003\u0003")
+        assertEquals(listOf("899100210002", "899100210003"), secondChunk)
+        assertEquals("", streamBuf.toString())
+
+        // 3. Barcode equality handles formatting hyphens/spaces and UPC-A <-> EAN-13 leading-zero equivalence
+        assertTrue(sanitizer.matchesBarcodeCode("899-1002-001", "8991002001\r\n"))
+        assertTrue(sanitizer.matchesBarcodeCode("896860109475", "0896860109475"))
+        assertTrue(sanitizer.matchesBarcodeCode("0896860109475", "896860109475"))
+        assertFalse(sanitizer.matchesBarcodeCode("8991002001", "8991002999"))
+
+        // 4. resolveBarcodeToCartMatch & matchesProductSearchQuery find products + variants reliably
+        val kopiProduct = ProductEntity(
+            id = 10L,
+            name = "Kopi Susu Arena",
+            barcode = "8992775001122",
+            category = "Minuman",
+            sellingPrice = 5000.0,
+            stock = 20.0,
+            hasVariants = true,
+            isActive = true
+        )
+        val kopiVariant = ProductVariantEntity(
+            id = 101L,
+            productId = 10L,
+            name = "Botol 250ml",
+            barcode = "8992775009988",
+            sellingPrice = 8500.0,
+            stock = 12.0,
+            isActive = true
+        )
+        val upcProduct = ProductEntity(
+            id = 20L,
+            name = "Biskuit Kaleng",
+            barcode = "896860109475", // 12-digit UPC-A
+            category = "Snack",
+            sellingPrice = 24000.0,
+            stock = 8.0,
+            isActive = true
+        )
+
+        val variantOutcome = resolveBarcodeToCartMatch(
+            rawCode = "8992775009988\t",
+            products = listOf(kopiProduct, upcProduct),
+            variants = listOf(kopiVariant),
+            conversions = emptyList()
+        )
+        assertTrue(variantOutcome is BarcodeLookupOutcome.AddedVariant)
+        assertEquals(101L, (variantOutcome as BarcodeLookupOutcome.AddedVariant).variant.id)
+
+        val upcOutcome = resolveBarcodeToCartMatch(
+            rawCode = "0896860109475\r",
+            products = listOf(kopiProduct, upcProduct),
+            variants = listOf(kopiVariant),
+            conversions = emptyList()
+        )
+        assertTrue(upcOutcome is BarcodeLookupOutcome.AddedProduct)
+        assertEquals(20L, (upcOutcome as BarcodeLookupOutcome.AddedProduct).product.id)
+
+        // Catalog search finds parent product even when scanned code belongs to a variant or UPC/EAN equivalent
+        assertTrue(matchesProductSearchQuery(kopiProduct, "8992775009988\t", listOf(kopiVariant)))
+        assertTrue(matchesProductSearchQuery(upcProduct, "0896860109475\r\n", listOf(kopiVariant)))
+        assertFalse(matchesProductSearchQuery(upcProduct, "999999999", listOf(kopiVariant)))
+    }
+
+    @Test
+    fun `test developer donation packages, manual transfer JSON roundtrip, license durations, and bug reports`() {
+        // 1. Verify exact 3 donation packages (10rb/month, 50rb/year, 250rb/lifetime) & flagship features
+        val packages = com.example.firebase.DonationPackage.entries
+        assertEquals(3, packages.size)
+
+        assertEquals(10_000L, com.example.firebase.DonationPackage.MONTHLY.amountRupiah)
+        assertEquals(30, com.example.firebase.DonationPackage.MONTHLY.durationDays)
+
+        assertEquals(50_000L, com.example.firebase.DonationPackage.YEARLY.amountRupiah)
+        assertEquals(365, com.example.firebase.DonationPackage.YEARLY.durationDays)
+
+        assertEquals(250_000L, com.example.firebase.DonationPackage.LIFETIME.amountRupiah)
+        assertEquals(0, com.example.firebase.DonationPackage.LIFETIME.durationDays)
+
+        packages.forEach { pkg ->
+            assertTrue("Flagship features must be populated for ${pkg.id}", pkg.features.size >= 5)
+            val allText = (listOf(pkg.title, pkg.priceLabel, pkg.summary) + pkg.features).joinToString(" ").lowercase(Locale.ROOT)
+            assertFalse("Must never refer to purchase/pembelian", allText.contains("pembelian lisensi"))
+            assertFalse("Must never refer to beli lisensi", allText.contains("beli lisensi"))
+        }
+
+        // 2. Demo lock still permits access to Donasi ke Pengembang & Laporan Bug
+        assertTrue(isScreenAllowedWhenDemoLocked(Screen.DONASI_PENGEMBANG))
+        assertTrue(isScreenAllowedWhenDemoLocked(Screen.LAPOR_BUG))
+
+        // 3. Time-limited FULL licenses (30d / 365d) vs Lifetime (0L)
+        val now = 1_750_000_000_000L
+        val monthlySnap = LocalLicenseSnapshot(
+            licenseKey = "KASLITE-BLN001",
+            deviceId = "dev-x",
+            planType = "FULL",
+            status = "ACTIVE",
+            expiresAtMillis = now + 30L * 86_400_000L
+        )
+        assertEquals(
+            LicenseAccessStatus.FULL_ACTIVE,
+            evaluateLocalLicenseState(monthlySnap, now + 5L * 86_400_000L, "dev-x").accessStatus
+        )
+        assertEquals(
+            LicenseAccessStatus.DEMO_EXPIRED,
+            evaluateLocalLicenseState(monthlySnap, now + 31L * 86_400_000L, "dev-x").accessStatus
+        )
+
+        val lifetimeSnap = monthlySnap.copy(expiresAtMillis = 0L)
+        assertEquals(
+            LicenseAccessStatus.FULL_ACTIVE,
+            evaluateLocalLicenseState(lifetimeSnap, now + 3_650L * 86_400_000L, "dev-x").accessStatus
+        )
+
+        // 4. DeveloperBankConfig JSON roundtrip
+        val bankCfg = com.example.firebase.DeveloperBankConfig(
+            bankName = "BCA",
+            accountNumber = "1234567890",
+            accountHolder = "Egis Bahricha",
+            whatsappNumber = "08123456789",
+            supportEmail = SUPER_ADMIN_EMAIL
+        )
+        assertTrue(bankCfg.isConfigured)
+        val parsedBank = com.example.supabase.SupabaseLicenseRepository.parseDeveloperBankConfigJson(
+            com.example.supabase.SupabaseLicenseRepository.developerBankConfigToJson(bankCfg)
+        )
+        assertEquals("BCA", parsedBank.bankName)
+        assertEquals("1234567890", parsedBank.accountNumber)
+        assertEquals("Egis Bahricha", parsedBank.accountHolder)
+
+        // 5. DonationRequestDoc & BugReportDoc JSON roundtrip + Email formatting
+        val donation = com.example.firebase.DonationRequestDoc(
+            userUid = "uid-donatur",
+            userEmail = "TOKO@GMAIL.COM",
+            ownerName = "Pak Budi",
+            storeName = "Toko Berkah",
+            packageId = com.example.firebase.DonationPackage.YEARLY.id,
+            packageTitle = com.example.firebase.DonationPackage.YEARLY.title,
+            amountRupiah = 50_000L,
+            durationDays = 365,
+            senderBankName = "BRI",
+            senderAccountName = "Budi Santoso",
+            transferNote = "Donasi KASLITE tahunan"
+        )
+        val donationJson = com.example.supabase.SupabaseLicenseRepository.donationRequestToInsertJson(donation).apply {
+            put("id", "don-uuid-1")
+            put("status", "PAID")
+            put("license_key", "KASLITE-THN999")
+        }
+        val parsedDonation = com.example.supabase.SupabaseLicenseRepository.parseDonationRequestJson(donationJson)
+        assertEquals("don-uuid-1", parsedDonation.id)
+        assertEquals("toko@gmail.com", parsedDonation.userEmail)
+        assertEquals(50_000L, parsedDonation.amountRupiah)
+        assertEquals(365, parsedDonation.durationDays)
+        assertEquals("PAID", parsedDonation.status)
+        assertEquals("KASLITE-THN999", parsedDonation.licenseKey)
+
+        val emailBody = com.example.firebase.KasLiteSupportEmailHelper.buildLicenseEmailBody(
+            ownerName = parsedDonation.ownerName,
+            storeName = parsedDonation.storeName,
+            recipientEmail = parsedDonation.userEmail,
+            licenseKey = parsedDonation.licenseKey,
+            packageTitle = parsedDonation.packageTitle,
+            amountRupiah = parsedDonation.amountRupiah,
+            expiresAtMillis = 0L
+        )
+        assertTrue(emailBody.contains("KASLITE-THN999"))
+        assertTrue(emailBody.contains("donasi dukungan"))
+        assertTrue(emailBody.contains("PERMANEN"))
+
+        val bug = com.example.firebase.BugReportDoc(
+            userUid = "uid-donatur",
+            userEmail = "toko@gmail.com",
+            reporterName = "Pak Budi",
+            storeName = "Toko Berkah",
+            category = "Scan Barcode",
+            severity = "TINGGI",
+            title = "Scanner HID tidak membaca enter",
+            description = "Setelah scan angka muncul di kotak tapi tidak masuk keranjang",
+            appVersion = "1.2 (3)",
+            deviceModel = "Samsung Tab A9",
+            androidVersion = "Android 14"
+        )
+        val parsedBug = com.example.supabase.SupabaseLicenseRepository.parseBugReportJson(
+            com.example.supabase.SupabaseLicenseRepository.bugReportToInsertJson(bug).apply {
+                put("id", "bug-uuid-1")
+                put("status", "SELESAI")
+                put("admin_notes", "Sudah diperbaiki di versi terbaru")
+            }
+        )
+        assertEquals("bug-uuid-1", parsedBug.id)
+        assertEquals("Scan Barcode", parsedBug.category)
+        assertEquals("SELESAI", parsedBug.status)
+        assertEquals("Sudah diperbaiki di versi terbaru", parsedBug.adminNotes)
+        assertTrue(
+            com.example.firebase.KasLiteSupportEmailHelper.buildBugReportEmailBody(parsedBug)
+                .contains("Samsung Tab A9")
+        )
     }
 }

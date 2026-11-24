@@ -77,6 +77,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -101,6 +102,8 @@ import com.example.data.entity.PromoEntity
 import com.example.data.entity.UnitConversionEntity
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
+import com.example.hardware.BarcodeInputSanitizer
+import com.example.hardware.ScannerFeedbackPlayer
 import com.example.ui.components.BadgeType
 import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.DesignEmptyState
@@ -112,9 +115,11 @@ import com.example.ui.components.KasLiteSearchBar
 import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.formatRupiah
+import com.example.ui.components.hardwareBarcodeCaptureModifier
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
+import com.example.ui.viewmodel.matchesProductSearchQuery
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToLong
@@ -141,12 +146,14 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     val bundles by viewModel.bundles.collectAsStateWithLifecycle()
     val promos by viewModel.promos.collectAsStateWithLifecycle()
     val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     val decimalProductIds = remember(products) {
         products.filter { it.allowDecimalQty }.map { it.id }.toSet()
     }
 
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchFocused by remember { mutableStateOf(false) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var selectedProductType by remember { mutableStateOf("SEMUA") } // SEMUA, FISIK, DIGITAL, PAKET
     var showBarcodeScanner by remember { mutableStateOf(false) }
@@ -192,38 +199,39 @@ fun PosCashierScreen(viewModel: PosViewModel) {
     }
 
     fun handleBarcodeScanned(rawCode: String) {
-        val code = rawCode.trim()
+        val code = BarcodeInputSanitizer.cleanBarcodeValue(rawCode, scannerSettings.stripWhitespace)
         if (code.isEmpty()) return
         val matchedVariant = productVariants.firstOrNull {
-            it.isActive && it.barcode.isNotBlank() && it.barcode.equals(code, ignoreCase = true)
+            it.isActive && it.barcode.isNotBlank() && BarcodeInputSanitizer.matchesBarcodeCode(it.barcode, code)
         }
         if (matchedVariant != null) {
             val parentProd = products.firstOrNull { it.id == matchedVariant.productId && it.isActive }
             if (parentProd != null) {
+                ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
                 viewModel.addToCart(parentProd, variant = matchedVariant)
                 searchQuery = ""
                 return
             }
         }
         val matchedProd = products.firstOrNull {
-            it.isActive && it.barcode.isNotBlank() && it.barcode.equals(code, ignoreCase = true)
+            it.isActive && it.barcode.isNotBlank() && BarcodeInputSanitizer.matchesBarcodeCode(it.barcode, code)
         }
         if (matchedProd != null) {
+            ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
             val convs = unitConversions.filter { it.productId == matchedProd.id }
             val vars = productVariants.filter { it.productId == matchedProd.id && it.isActive }
             handleProductClick(matchedProd, convs, vars)
             searchQuery = ""
         } else {
+            ScannerFeedbackPlayer.playWarning(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
             searchQuery = code
         }
     }
 
-    val filteredProducts = remember(products, searchQuery, selectedCategory, selectedProductType) {
+    val filteredProducts = remember(products, productVariants, searchQuery, selectedCategory, selectedProductType) {
         if (selectedProductType == "PAKET") emptyList()
         else products.filter { p ->
-            val matchQuery = searchQuery.isBlank() ||
-                    p.name.contains(searchQuery, ignoreCase = true) ||
-                    p.barcode.contains(searchQuery, ignoreCase = true)
+            val matchQuery = matchesProductSearchQuery(p, searchQuery, productVariants)
             val matchCat = selectedCategory == null || p.category.equals(selectedCategory, ignoreCase = true)
             val isDigital = p.productType == "DIGITAL" || p.isUnlimitedStock || p.hasNoStock || p.isFlexiblePrice
             val matchType = when (selectedProductType) {
@@ -252,12 +260,33 @@ fun PosCashierScreen(viewModel: PosViewModel) {
         (cartSubtotal + cartItemStoreAdmin - cartDiscount + cartTax).coerceAtLeast(0.0)
     }
 
+    val anyDialogOpen = showBarcodeScanner ||
+        showScannerSettingsDialog ||
+        isCartSheetOpen ||
+        isPaymentModalOpen ||
+        isCustomerPickerOpen ||
+        selectedProductForUnit != null ||
+        selectedProductForVariant != null ||
+        isHoldSaleDialogOpen ||
+        isPendingSalesDialogOpen ||
+        isStartShiftDialogOpen ||
+        isCloseShiftDialogOpen ||
+        isShiftCashDialogOpen ||
+        flexiblePriceProduct != null
+
+    val hardwareModifier = hardwareBarcodeCaptureModifier(
+        enabled = scannerSettings.autoCaptureHardwareInput && !isSearchFocused && !anyDialogOpen,
+        scannerSettings = scannerSettings,
+        onBarcodeScanned = { code, _ -> handleBarcodeScanned(code) }
+    )
+
     // Adaptive Layout: Dual-column on Tablet (maxWidth >= 720dp) vs Single column on Phone
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(BgCanvas)
             .testTag("pos_cashier_screen")
+            .then(hardwareModifier)
     ) {
         val isTablet = maxWidth >= 720.dp
 
@@ -294,6 +323,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                                 placeholder = "Cari produk atau scan barcode...",
                                 onBarcodeScanClick = { showBarcodeScanner = true },
                                 onBarcodeSubmit = { handleBarcodeScanned(it) },
+                                onFocusChanged = { isSearchFocused = it },
                                 modifier = Modifier.weight(1f)
                             )
                             Surface(
@@ -409,6 +439,7 @@ fun PosCashierScreen(viewModel: PosViewModel) {
                             placeholder = "Cari produk atau scan barcode...",
                             onBarcodeScanClick = { showBarcodeScanner = true },
                             onBarcodeSubmit = { handleBarcodeScanned(it) },
+                            onFocusChanged = { isSearchFocused = it },
                             modifier = Modifier.weight(1f)
                         )
                         Surface(

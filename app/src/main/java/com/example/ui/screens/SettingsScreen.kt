@@ -30,11 +30,13 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
@@ -290,6 +292,15 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         badgeText = "Masukkan Kode",
                         badgeType = BadgeType.NORMAL,
                         onClick = { showLicenseKeyDialog = true }
+                    )
+                    HorizontalDivider(color = BorderDefault)
+                    SettingsMenuRow(
+                        icon = Icons.Default.Favorite,
+                        title = "Donasi ke Pengembang",
+                        subtitle = "Dukung pengembangan KASLITE (Rp 10rb/bln, Rp 50rb/thn, Rp 250rb Selamanya)",
+                        badgeText = "Donasi",
+                        badgeType = BadgeType.SUCCESS,
+                        onClick = { viewModel.navigateTo(Screen.DONASI_PENGEMBANG) }
                     )
                     HorizontalDivider(color = BorderDefault)
                     SettingsMenuRow(
@@ -612,6 +623,36 @@ fun SettingsScreen(viewModel: PosViewModel) {
                         }
                     }
                 }
+            }
+        }
+
+        // Section: Bantuan & Laporan Bug
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                Icon(Icons.Default.BugReport, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    "Bantuan & Laporan Bug",
+                    style = MaterialTheme.typography.labelMedium.copy(color = AccentBlue, fontWeight = FontWeight.SemiBold)
+                )
+            }
+        }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                border = BorderStroke(1.dp, BorderDefault),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                SettingsMenuRow(
+                    icon = Icons.Default.BugReport,
+                    title = "Laporan Bug Aplikasi",
+                    subtitle = "Laporkan kendala, error printer/scanner, atau bug agar dapat diperbaiki pengembang",
+                    badgeText = "Laporkan",
+                    badgeType = BadgeType.INFO,
+                    onClick = { viewModel.navigateTo(Screen.LAPOR_BUG) }
+                )
             }
         }
 

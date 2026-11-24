@@ -68,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -89,6 +90,7 @@ import com.example.data.entity.PrinterEntity
 import com.example.data.entity.SaleEntity
 import com.example.data.entity.StoreProfileEntity
 import com.example.data.repository.CartItem
+import com.example.hardware.BarcodeInputSanitizer
 import com.example.ui.theme.*
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
@@ -666,20 +668,27 @@ fun KasLiteSearchBar(
     placeholder: String = "Cari...",
     onBarcodeScanClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    onBarcodeSubmit: ((String) -> Unit)? = null
+    onBarcodeSubmit: ((String) -> Unit)? = null,
+    onFocusChanged: ((Boolean) -> Unit)? = null
 ) {
+    var pendingTerminatorKey by remember { mutableStateOf<Key?>(null) }
+
     OutlinedTextField(
         value = query,
         onValueChange = { raw ->
-            if ((raw.contains('\n') || raw.contains('\r')) && onBarcodeSubmit != null) {
-                val cleaned = raw.replace("\r", "").replace("\n", "").trim()
+            if (BarcodeInputSanitizer.hasTerminatorChar(raw)) {
+                val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(raw, stripWhitespace = true)
                 if (cleaned.isNotEmpty()) {
-                    onBarcodeSubmit(cleaned)
+                    if (onBarcodeSubmit != null) {
+                        onBarcodeSubmit(cleaned)
+                    } else {
+                        onQueryChange(cleaned)
+                    }
                 } else {
                     onQueryChange("")
                 }
             } else {
-                onQueryChange(raw)
+                onQueryChange(BarcodeInputSanitizer.cleanBarcodeValue(raw, stripWhitespace = false))
             }
         },
         placeholder = { Text(placeholder, style = MaterialTheme.typography.bodyMedium.copy(color = Slate400)) },
@@ -724,12 +733,16 @@ fun KasLiteSearchBar(
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(
             onSearch = {
-                val cleaned = query.trim()
-                if (cleaned.isNotEmpty()) onBarcodeSubmit?.invoke(cleaned)
+                val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(query, stripWhitespace = true)
+                if (cleaned.isNotEmpty()) {
+                    if (onBarcodeSubmit != null) onBarcodeSubmit(cleaned) else onQueryChange(cleaned)
+                }
             },
             onDone = {
-                val cleaned = query.trim()
-                if (cleaned.isNotEmpty()) onBarcodeSubmit?.invoke(cleaned)
+                val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(query, stripWhitespace = true)
+                if (cleaned.isNotEmpty()) {
+                    if (onBarcodeSubmit != null) onBarcodeSubmit(cleaned) else onQueryChange(cleaned)
+                }
             }
         ),
         colors = OutlinedTextFieldDefaults.colors(
@@ -743,15 +756,36 @@ fun KasLiteSearchBar(
         shape = RoundedCornerShape(10.dp),
         modifier = modifier
             .fillMaxWidth()
+            .onFocusChanged { onFocusChanged?.invoke(it.isFocused) }
             .onPreviewKeyEvent { keyEvent ->
-                if (keyEvent.type == KeyEventType.KeyUp && keyEvent.key == Key.Enter && onBarcodeSubmit != null) {
-                    val cleaned = query.trim()
-                    if (cleaned.isNotEmpty()) {
-                        onBarcodeSubmit(cleaned)
-                        true
-                    } else false
-                } else {
-                    false
+                val isSubmitKey = keyEvent.key == Key.Enter ||
+                    keyEvent.key == Key.NumPadEnter ||
+                    keyEvent.key == Key.Tab
+                if (!isSubmitKey) return@onPreviewKeyEvent false
+
+                val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(query, stripWhitespace = true)
+                when (keyEvent.type) {
+                    KeyEventType.KeyDown -> {
+                        if (cleaned.isNotEmpty() && (onBarcodeSubmit != null || keyEvent.key == Key.Tab)) {
+                            pendingTerminatorKey = keyEvent.key
+                            if (onBarcodeSubmit != null) {
+                                onBarcodeSubmit(cleaned)
+                            } else {
+                                onQueryChange(cleaned)
+                            }
+                            true
+                        } else false
+                    }
+                    KeyEventType.KeyUp -> {
+                        if (pendingTerminatorKey == keyEvent.key) {
+                            pendingTerminatorKey = null
+                            true
+                        } else if (cleaned.isNotEmpty() && onBarcodeSubmit != null && keyEvent.key != Key.Tab) {
+                            onBarcodeSubmit(cleaned)
+                            true
+                        } else false
+                    }
+                    else -> false
                 }
             }
     )
@@ -1341,9 +1375,18 @@ fun BarcodeSearchBar(
     placeholder: String = "Cari produk atau scan barcode...",
     onBarcodeScanClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    onBarcodeSubmit: ((String) -> Unit)? = null
+    onBarcodeSubmit: ((String) -> Unit)? = null,
+    onFocusChanged: ((Boolean) -> Unit)? = null
 ) {
-    KasLiteSearchBar(query, onQueryChange, placeholder, onBarcodeScanClick, modifier, onBarcodeSubmit)
+    KasLiteSearchBar(
+        query = query,
+        onQueryChange = onQueryChange,
+        placeholder = placeholder,
+        onBarcodeScanClick = onBarcodeScanClick,
+        modifier = modifier,
+        onBarcodeSubmit = onBarcodeSubmit,
+        onFocusChanged = onFocusChanged
+    )
 }
 
 fun formatRupiah(amount: Double): String {

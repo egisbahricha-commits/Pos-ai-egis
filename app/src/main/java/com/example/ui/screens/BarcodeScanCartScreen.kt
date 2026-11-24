@@ -137,7 +137,7 @@ import com.example.data.entity.ProductVariantEntity
 import com.example.data.entity.UnitConversionEntity
 import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
-import com.example.hardware.BluetoothSppScannerClient
+import com.example.hardware.BarcodeInputSanitizer
 import com.example.hardware.DetectedScannerDevice
 import com.example.hardware.HardwareDeviceDiscovery
 import com.example.hardware.ScannerFeedbackPlayer
@@ -147,6 +147,7 @@ import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.formatRupiah
+import com.example.ui.components.hardwareBarcodeCaptureModifier
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.BarcodeLookupOutcome
 import com.example.ui.viewmodel.PosViewModel
@@ -220,8 +221,6 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
 
     var showScannerSettingsDialog by remember { mutableStateOf(false) }
     var detectedScanners by remember { mutableStateOf(HardwareDeviceDiscovery.detectConnectedScanners(context)) }
-    val hardwareKeyBuffer = remember { StringBuilder() }
-    var lastHardwareKeyAtMs by remember { mutableLongStateOf(0L) }
 
     var pendingSelection by remember { mutableStateOf<BarcodeLookupOutcome.NeedsSelection?>(null) }
     var quickRegisterBarcode by remember { mutableStateOf<String?>(null) }
@@ -247,7 +246,7 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
     }
 
     fun processScannedCode(rawCode: String, fromCameraFrame: Boolean, source: String = if (fromCameraFrame) "CAMERA" else "MANUAL") {
-        val cleaned = if (scannerSettings.stripWhitespace) rawCode.trim() else rawCode
+        val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(rawCode, scannerSettings.stripWhitespace)
         if (cleaned.isEmpty()) return
 
         if (fromCameraFrame) {
@@ -307,27 +306,6 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
         }
     }
 
-    // Listen to Bluetooth SPP scanner if explicitly selected in settings
-    DisposableEffect(scannerSettings.selectedScannerId) {
-        val selectedId = scannerSettings.selectedScannerId
-        if (selectedId.startsWith("BT:")) {
-            val mac = selectedId.removePrefix("BT:")
-            val client = BluetoothSppScannerClient()
-            client.startListening(
-                context = context,
-                macAddress = mac,
-                scope = coroutineScope,
-                onBarcodeRead = { code ->
-                    processScannedCode(code, fromCameraFrame = false, source = "BLUETOOTH_SPP")
-                },
-                onStatusChanged = { _, _ -> }
-            )
-            onDispose { client.stop() }
-        } else {
-            onDispose { }
-        }
-    }
-
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -372,54 +350,26 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
         cart.sumOf { ceil(it.quantity).toInt().coerceAtLeast(1) }
     }
 
+    val activeHardwareCapture = scannerSettings.autoCaptureHardwareInput &&
+        !isManualInputFocused &&
+        pendingSelection == null &&
+        quickRegisterBarcode == null &&
+        !showScannerSettingsDialog
+
+    val hardwareModifier = hardwareBarcodeCaptureModifier(
+        enabled = activeHardwareCapture,
+        scannerSettings = scannerSettings,
+        onBarcodeScanned = { code, source ->
+            processScannedCode(code, fromCameraFrame = false, source = source)
+        }
+    )
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(BgCanvas)
             .testTag("barcode_scan_cart_screen")
-            .onPreviewKeyEvent { event ->
-                val activeHardwareCapture = scannerSettings.autoCaptureHardwareInput &&
-                    !isManualInputFocused &&
-                    pendingSelection == null &&
-                    quickRegisterBarcode == null &&
-                    !showScannerSettingsDialog
-                if (!activeHardwareCapture) return@onPreviewKeyEvent false
-
-                val native = event.nativeKeyEvent
-                val dev = native.device
-                val isExternalHardware = dev != null && !dev.isVirtual && native.deviceId > 0
-                if (!isExternalHardware) return@onPreviewKeyEvent false
-
-                if (event.type == KeyEventType.KeyDown) {
-                    val now = SystemClock.elapsedRealtime()
-                    if (now - lastHardwareKeyAtMs > 1200L) {
-                        hardwareKeyBuffer.setLength(0)
-                    }
-                    lastHardwareKeyAtMs = now
-                    val keyCode = native.keyCode
-                    if (keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
-                        keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER ||
-                        keyCode == android.view.KeyEvent.KEYCODE_TAB
-                    ) {
-                        val code = hardwareKeyBuffer.toString().trim()
-                        hardwareKeyBuffer.setLength(0)
-                        if (code.isNotEmpty()) {
-                            processScannedCode(code, fromCameraFrame = false, source = "HID_SCANNER")
-                        }
-                        true
-                    } else {
-                        val ch = native.unicodeChar
-                        if (ch >= 32) {
-                            hardwareKeyBuffer.append(ch.toChar())
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
+            .then(hardwareModifier)
     ) {
         val isTablet = maxWidth >= 720.dp
         val isScannerSuspended = isPaused || pendingSelection != null || quickRegisterBarcode != null || showScannerSettingsDialog
@@ -1551,14 +1501,15 @@ private fun ScanCartDockPanel(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                var manualPendingTerminator by remember { mutableStateOf<Key?>(null) }
                 OutlinedTextField(
                     value = manualBarcode,
                     onValueChange = { raw ->
-                        if (raw.contains('\n') || raw.contains('\r')) {
-                            val cleaned = raw.replace("\r", "").replace("\n", "").trim()
+                        if (BarcodeInputSanitizer.hasTerminatorChar(raw)) {
+                            val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(raw, stripWhitespace = true)
                             if (cleaned.isNotEmpty()) onManualSubmit(cleaned) else onManualBarcodeChange("")
                         } else {
-                            onManualBarcodeChange(raw)
+                            onManualBarcodeChange(BarcodeInputSanitizer.cleanBarcodeValue(raw, stripWhitespace = false))
                         }
                     },
                     placeholder = {
@@ -1574,13 +1525,21 @@ private fun ScanCartDockPanel(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(
                         onDone = {
-                            if (manualBarcode.isNotBlank()) onManualSubmit(manualBarcode)
+                            val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(manualBarcode, stripWhitespace = true)
+                            if (cleaned.isNotEmpty()) onManualSubmit(cleaned)
+                        },
+                        onSearch = {
+                            val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(manualBarcode, stripWhitespace = true)
+                            if (cleaned.isNotEmpty()) onManualSubmit(cleaned)
                         }
                     ),
                     trailingIcon = {
                         if (manualBarcode.isNotBlank()) {
                             IconButton(
-                                onClick = { onManualSubmit(manualBarcode) },
+                                onClick = {
+                                    val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(manualBarcode, stripWhitespace = true)
+                                    if (cleaned.isNotEmpty()) onManualSubmit(cleaned)
+                                },
                                 modifier = Modifier.testTag("scanner_manual_submit_btn")
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = "Tambah Barcode", tint = AccentBlue)
@@ -1601,13 +1560,31 @@ private fun ScanCartDockPanel(
                         .onFocusChanged { onManualFocusChanged(it.isFocused) }
                         .testTag("scanner_manual_input")
                         .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyUp &&
-                                (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter) &&
-                                manualBarcode.isNotBlank()
-                            ) {
-                                onManualSubmit(manualBarcode)
-                                true
-                            } else false
+                            val isSubmitKey = keyEvent.key == Key.Enter ||
+                                keyEvent.key == Key.NumPadEnter ||
+                                keyEvent.key == Key.Tab
+                            if (!isSubmitKey) return@onPreviewKeyEvent false
+
+                            val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(manualBarcode, stripWhitespace = true)
+                            when (keyEvent.type) {
+                                KeyEventType.KeyDown -> {
+                                    if (cleaned.isNotEmpty()) {
+                                        manualPendingTerminator = keyEvent.key
+                                        onManualSubmit(cleaned)
+                                        true
+                                    } else false
+                                }
+                                KeyEventType.KeyUp -> {
+                                    if (manualPendingTerminator == keyEvent.key) {
+                                        manualPendingTerminator = null
+                                        true
+                                    } else if (cleaned.isNotEmpty() && keyEvent.key != Key.Tab) {
+                                        onManualSubmit(cleaned)
+                                        true
+                                    } else false
+                                }
+                                else -> false
+                            }
                         }
                 )
 

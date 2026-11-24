@@ -65,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -83,11 +84,16 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val licenses by viewModel.allLicenses.collectAsStateWithLifecycle()
+    val allDonations by viewModel.allDonationRequests.collectAsStateWithLifecycle()
+    val allBugReports by viewModel.allBugReports.collectAsStateWithLifecycle()
+    val bankConfig by viewModel.developerBankConfig.collectAsStateWithLifecycle()
     val superAdminError by viewModel.superAdminError.collectAsStateWithLifecycle()
     val isLoading by viewModel.isSuperAdminLoading.collectAsStateWithLifecycle()
 
+    var activeSectionTab by remember { mutableStateOf("LICENSES") } // LICENSES, DONATIONS, BUGS, BANK
     var searchQuery by remember { mutableStateOf("") }
     var filterTab by remember { mutableStateOf("ALL") } // ALL, DEMO, FULL, LOCKED
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -98,6 +104,9 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
     var newPlanType by remember { mutableStateOf("FULL") }
     var generatedKeyResult by remember { mutableStateOf<String?>(null) }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
+
+    val pendingDonationsCount = allDonations.count { it.status.equals("PENDING", ignoreCase = true) }
+    val newBugCount = allBugReports.count { it.status.equals("BARU", ignoreCase = true) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val nowMillis = System.currentTimeMillis()
@@ -113,6 +122,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
     LaunchedEffect(isSuperAdmin) {
         if (isSuperAdmin) {
             viewModel.loadSuperAdminLicenses()
+            viewModel.loadSuperAdminDonationsAndBugs()
         }
     }
 
@@ -181,7 +191,10 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.loadSuperAdminLicenses() }) {
+                    IconButton(onClick = {
+                        viewModel.loadSuperAdminLicenses()
+                        viewModel.loadSuperAdminDonationsAndBugs()
+                    }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Muat Ulang Supabase")
                     }
                 },
@@ -189,7 +202,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
             )
         },
         floatingActionButton = {
-            if (isSuperAdmin) {
+            if (isSuperAdmin && activeSectionTab == "LICENSES") {
                 FloatingActionButton(
                     onClick = { showCreateDialog = true },
                     containerColor = AccentBlue,
@@ -235,6 +248,67 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                     )
                 }
             } else {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item {
+                            DesignFilterChip(
+                                label = "Lisensi (${licenses.size})",
+                                selected = activeSectionTab == "LICENSES",
+                                onClick = { activeSectionTab = "LICENSES" }
+                            )
+                        }
+                        item {
+                            val donLabel = if (pendingDonationsCount > 0) "Donasi ($pendingDonationsCount Baru)" else "Donasi (${allDonations.size})"
+                            DesignFilterChip(
+                                label = donLabel,
+                                selected = activeSectionTab == "DONATIONS",
+                                onClick = { activeSectionTab = "DONATIONS" }
+                            )
+                        }
+                        item {
+                            val bugLabel = if (newBugCount > 0) "Laporan Bug ($newBugCount Baru)" else "Laporan Bug (${allBugReports.size})"
+                            DesignFilterChip(
+                                label = bugLabel,
+                                selected = activeSectionTab == "BUGS",
+                                onClick = { activeSectionTab = "BUGS" }
+                            )
+                        }
+                        item {
+                            DesignFilterChip(
+                                label = "Rekening & Email",
+                                selected = activeSectionTab == "BANK",
+                                onClick = { activeSectionTab = "BANK" }
+                            )
+                        }
+                    }
+
+                    when (activeSectionTab) {
+                        "DONATIONS" -> {
+                            SuperAdminDonationsTab(
+                                donations = allDonations,
+                                supportEmail = bankConfig.supportEmail.ifBlank { SUPER_ADMIN_EMAIL },
+                                viewModel = viewModel,
+                                onFeedback = { snackbarMessage = it }
+                            )
+                        }
+                        "BUGS" -> {
+                            SuperAdminBugReportsTab(
+                                reports = allBugReports,
+                                viewModel = viewModel,
+                                onFeedback = { snackbarMessage = it }
+                            )
+                        }
+                        "BANK" -> {
+                            SuperAdminPaymentConfigTab(
+                                currentConfig = bankConfig,
+                                viewModel = viewModel,
+                                onFeedback = { snackbarMessage = it }
+                            )
+                        }
+                        else -> {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),
@@ -544,6 +618,33 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                         if (license.ownerEmail.isNotBlank()) {
                                             OutlinedButton(
                                                 onClick = {
+                                                    val opened = launchPrefilledLicenseEmail(
+                                                        context = context,
+                                                        recipientEmail = license.ownerEmail,
+                                                        ownerName = license.ownerName,
+                                                        storeName = license.storeName,
+                                                        licenseKey = license.licenseKey,
+                                                        packageTitle = if (license.planType.equals("FULL", true)) "Lisensi Penuh KASLITE" else "Mode Demo",
+                                                        amountRupiah = 0L,
+                                                        expiresAtMillis = license.expiresAtMillis,
+                                                        supportEmail = bankConfig.supportEmail.ifBlank { SUPER_ADMIN_EMAIL }
+                                                    )
+                                                    snackbarMessage = if (opened) {
+                                                        "Membuka email untuk kirim kunci ${license.licenseKey} ke ${license.ownerEmail}"
+                                                    } else {
+                                                        "Aplikasi email tidak tersedia di perangkat ini."
+                                                    }
+                                                },
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Emerald700),
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                            ) {
+                                                Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Kirim Kunci Email", fontSize = 12.sp)
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
                                                     viewModel.superAdminSendResetPassword(license.ownerEmail) { _, msg ->
                                                         snackbarMessage = msg
                                                     }
@@ -564,6 +665,9 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                     }
 
                     item { Spacer(modifier = Modifier.height(72.dp)) }
+                }
+                        }
+                    }
                 }
             }
         }

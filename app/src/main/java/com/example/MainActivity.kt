@@ -37,6 +37,7 @@ import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Lock
@@ -118,9 +120,11 @@ import com.example.ui.components.ReceiptDialog
 import com.example.ui.components.formatRupiah
 import com.example.ui.screens.AIChatScreen
 import com.example.ui.screens.BarcodeScanCartScreen
+import com.example.ui.screens.BugReportScreen
 import com.example.ui.screens.ContactsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DebtReceivableScreen
+import com.example.ui.screens.DeveloperDonationScreen
 import com.example.ui.screens.ExpensesIncomesScreen
 import com.example.ui.screens.FinanceScreen
 import com.example.ui.screens.LoginScreen
@@ -279,6 +283,8 @@ fun MainAppContent(viewModel: PosViewModel) {
             DrawerMenuItem(Screen.WHATSAPP, "WhatsApp Integration", Icons.Default.Sms),
             DrawerMenuItem(Screen.SEMUA_MENU, "Semua Menu", Icons.Default.MoreHoriz, "NAVIGASI"),
             DrawerMenuItem(Screen.KONTAK, "Pelanggan & Pemasok", Icons.Default.Contacts),
+            DrawerMenuItem(Screen.DONASI_PENGEMBANG, "Donasi ke Pengembang", Icons.Default.Favorite),
+            DrawerMenuItem(Screen.LAPOR_BUG, "Laporan Bug", Icons.Default.BugReport),
             DrawerMenuItem(Screen.PENGATURAN, "Pengaturan & Backup", Icons.Default.Settings)
         )
     }
@@ -303,6 +309,8 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.KONTAK -> "Pelanggan & Pemasok"
         Screen.PENGATURAN -> "Pengaturan"
         Screen.SEMUA_MENU -> "Semua Menu"
+        Screen.DONASI_PENGEMBANG -> "Donasi ke Pengembang"
+        Screen.LAPOR_BUG -> "Laporan Bug"
         Screen.SUPER_ADMIN -> "Admin Pusat"
     }
 
@@ -315,6 +323,8 @@ fun MainAppContent(viewModel: PosViewModel) {
         Screen.MULTI_KAS -> ModuleKas to Icons.Default.AccountBalanceWallet
         Screen.TARIF_ADMIN -> ModuleKasir to Icons.Default.CreditCard
         Screen.AI_CHAT, Screen.WHATSAPP -> ModuleKasir to Icons.Default.AutoAwesome
+        Screen.DONASI_PENGEMBANG -> ModuleKas to Icons.Default.Favorite
+        Screen.LAPOR_BUG -> ModulePengaturan to Icons.Default.BugReport
         Screen.KEUANGAN, Screen.PENGELUARAN, Screen.PENDAPATAN,
         Screen.UTANG_PIUTANG, Screen.KONTAK, Screen.PENGATURAN, Screen.SEMUA_MENU -> ModulePengaturan to Icons.Default.Settings
         Screen.SUPER_ADMIN -> ModulePengaturan to Icons.Default.AdminPanelSettings
@@ -950,7 +960,9 @@ fun MainAppContent(viewModel: PosViewModel) {
                                     licenseUiState = licenseUiState,
                                     onOpenProducts = { viewModel.navigateTo(Screen.PRODUK) },
                                     onOpenManualProducts = { viewModel.navigateTo(Screen.MANAJEMEN_PRODUK) },
-                                    onOpenSettings = { viewModel.navigateTo(Screen.PENGATURAN) }
+                                    onOpenSettings = { viewModel.navigateTo(Screen.PENGATURAN) },
+                                    onOpenDonation = { viewModel.navigateTo(Screen.DONASI_PENGEMBANG) },
+                                    onOpenBugReport = { viewModel.navigateTo(Screen.LAPOR_BUG) }
                                 )
                             } else {
                                 when (currentScreen) {
@@ -973,6 +985,8 @@ fun MainAppContent(viewModel: PosViewModel) {
                                     Screen.WHATSAPP -> WhatsAppScreen(viewModel)
                                     Screen.KONTAK -> ContactsScreen(viewModel)
                                     Screen.PENGATURAN -> SettingsScreen(viewModel)
+                                    Screen.DONASI_PENGEMBANG -> DeveloperDonationScreen(viewModel)
+                                    Screen.LAPOR_BUG -> BugReportScreen(viewModel)
                                     Screen.SUPER_ADMIN -> SuperAdminScreen(viewModel) { viewModel.navigateTo(Screen.PENGATURAN) }
                                 }
                             }
@@ -1111,7 +1125,9 @@ private fun DemoExpiredLockView(
     licenseUiState: LicenseUiState,
     onOpenProducts: () -> Unit,
     onOpenManualProducts: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenDonation: () -> Unit,
+    onOpenBugReport: () -> Unit
 ) {
     val reasonTitle = when (licenseUiState.accessStatus) {
         LicenseAccessStatus.SUSPENDED -> "Akun Dinonaktifkan Admin Pusat"
@@ -1134,7 +1150,7 @@ private fun DemoExpiredLockView(
             Column(
                 modifier = Modifier.padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Box(
                     modifier = Modifier
@@ -1159,10 +1175,20 @@ private fun DemoExpiredLockView(
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = "Selama masa demo habis, menu Kasir, Laporan, Keuangan, dan lainnya dikunci. Anda tetap dapat menambah/mengelola produk serta melakukan backup data atau aktivasi lisensi penuh melalui Pengaturan.\n\nHubungi Admin Pusat: $SUPER_ADMIN_EMAIL",
+                    text = "Selama masa demo habis, menu Kasir, Laporan, Keuangan, dan lainnya dikunci. Anda tetap dapat mengelola produk, berdonasi ke pengembang untuk mendapatkan kunci akses penuh via email, melaporkan bug, atau melakukan backup data.\n\nKontak Pengembang: $SUPER_ADMIN_EMAIL",
                     style = MaterialTheme.typography.bodySmall.copy(color = Slate600, lineHeight = 19.sp),
                     textAlign = TextAlign.Center
                 )
+                Button(
+                    onClick = onOpenDonation,
+                    colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Donasi ke Pengembang", fontWeight = FontWeight.Bold)
+                }
                 Button(
                     onClick = onOpenProducts,
                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
@@ -1184,6 +1210,14 @@ private fun DemoExpiredLockView(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Aktivasi Lisensi & Backup (.kaslite)")
+                }
+                TextButton(
+                    onClick = onOpenBugReport,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Laporan Bug Aplikasi")
                 }
             }
         }

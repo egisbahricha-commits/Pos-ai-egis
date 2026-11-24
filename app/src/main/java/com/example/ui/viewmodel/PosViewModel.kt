@@ -3,8 +3,10 @@ package com.example.ui.viewmodel
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.ai.AIIntent
 import com.example.ai.AIParseResult
 import com.example.ai.GeraiUnaAIEngine
@@ -20,12 +22,18 @@ import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
 import com.example.data.repository.PosRepository
 import com.example.data.repository.PurchaseItemDraft
+import com.example.firebase.BugReportDoc
+import com.example.firebase.DeveloperBankConfig
+import com.example.firebase.DonationApprovalOutcome
+import com.example.firebase.DonationPackage
+import com.example.firebase.DonationRequestDoc
 import com.example.firebase.FirebaseAuthUiState
 import com.example.firebase.FirebaseSessionStore
 import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseDoc
 import com.example.firebase.LicenseUiState
 import com.example.firebase.LocalLicenseSnapshot
+import com.example.hardware.BarcodeInputSanitizer
 import com.example.hardware.HardwareDevicePreferences
 import com.example.hardware.ScannerSettings
 import com.example.hardware.ThermalPrinterEngine
@@ -76,6 +84,8 @@ enum class Screen {
     TARIF_ADMIN,
     SCAN_BARCODE,
     MANAJEMEN_PRODUK,
+    DONASI_PENGEMBANG,
+    LAPOR_BUG,
     SUPER_ADMIN
 }
 
@@ -83,7 +93,9 @@ fun isScreenAllowedWhenDemoLocked(screen: Screen): Boolean =
     screen == Screen.PRODUK ||
         screen == Screen.MANAJEMEN_PRODUK ||
         screen == Screen.SCAN_BARCODE ||
-        screen == Screen.PENGATURAN
+        screen == Screen.PENGATURAN ||
+        screen == Screen.DONASI_PENGEMBANG ||
+        screen == Screen.LAPOR_BUG
 
 fun evaluateLocalLicenseState(
     snapshot: LocalLicenseSnapshot?,
@@ -277,13 +289,13 @@ fun resolveBarcodeToCartMatch(
     variants: List<ProductVariantEntity>,
     conversions: List<UnitConversionEntity>
 ): BarcodeLookupOutcome {
-    val code = rawCode.trim()
+    val code = BarcodeInputSanitizer.cleanBarcodeValue(rawCode, stripWhitespace = true)
     if (code.isEmpty()) return BarcodeLookupOutcome.NotFound("")
 
     val matchedVariant = variants.firstOrNull { variant ->
         variant.isActive &&
             variant.barcode.isNotBlank() &&
-            variant.barcode.trim().equals(code, ignoreCase = true)
+            BarcodeInputSanitizer.matchesBarcodeCode(variant.barcode, code)
     }
     if (matchedVariant != null) {
         val parentProduct = products.firstOrNull { it.id == matchedVariant.productId && it.isActive }
@@ -295,7 +307,7 @@ fun resolveBarcodeToCartMatch(
     val matchedProduct = products.firstOrNull { product ->
         product.isActive &&
             product.barcode.isNotBlank() &&
-            product.barcode.trim().equals(code, ignoreCase = true)
+            BarcodeInputSanitizer.matchesBarcodeCode(product.barcode, code)
     } ?: return BarcodeLookupOutcome.NotFound(code)
 
     val productConversions = conversions.filter { it.productId == matchedProduct.id }
@@ -311,6 +323,28 @@ fun resolveBarcodeToCartMatch(
         )
     } else {
         BarcodeLookupOutcome.AddedProduct(matchedProduct)
+    }
+}
+
+fun matchesProductSearchQuery(
+    product: ProductEntity,
+    rawQuery: String,
+    variants: List<ProductVariantEntity> = emptyList()
+): Boolean {
+    val q = BarcodeInputSanitizer.cleanBarcodeValue(rawQuery, stripWhitespace = true)
+    if (q.isEmpty()) return true
+    if (product.name.contains(q, ignoreCase = true) ||
+        product.barcode.contains(q, ignoreCase = true) ||
+        product.category.contains(q, ignoreCase = true) ||
+        BarcodeInputSanitizer.matchesBarcodeCode(product.barcode, q)
+    ) {
+        return true
+    }
+    return variants.any { variant ->
+        variant.productId == product.id &&
+            variant.barcode.isNotBlank() &&
+            (variant.barcode.contains(q, ignoreCase = true) ||
+                BarcodeInputSanitizer.matchesBarcodeCode(variant.barcode, q))
     }
 }
 
@@ -904,7 +938,12 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         if (_activeRole.value.equals("Owner", ignoreCase = true) || _activeRole.value.equals("Admin", ignoreCase = true)) {
             return true
         }
-        if (screen == Screen.DASHBOARD || screen == Screen.SEMUA_MENU || screen == Screen.PENGATURAN) return true
+        if (screen == Screen.DASHBOARD ||
+            screen == Screen.SEMUA_MENU ||
+            screen == Screen.PENGATURAN ||
+            screen == Screen.DONASI_PENGEMBANG ||
+            screen == Screen.LAPOR_BUG
+        ) return true
         val perms = menuPermissions.value.filter { it.userId == _activeUserId.value }
         if (perms.isEmpty()) return true
         val matched = perms.find { it.menuKey == screen.name }
@@ -1800,13 +1839,13 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun scanBarcodeAndAddToCart(rawCode: String, source: String = "CAMERA"): BarcodeLookupOutcome {
+        val cleaned = BarcodeInputSanitizer.cleanBarcodeValue(rawCode, stripWhitespace = true)
         val outcome = resolveBarcodeToCartMatch(
-            rawCode = rawCode,
+            rawCode = cleaned,
             products = products.value,
             variants = productVariants.value,
             conversions = unitConversions.value
         )
-        val cleaned = rawCode.trim()
         when (outcome) {
             is BarcodeLookupOutcome.AddedVariant -> {
                 addToCart(product = outcome.product, variant = outcome.variant)
@@ -3366,6 +3405,348 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         KasLiteBackupManager.cleanupTemp(_kasLiteBackupState.value.inspectResult)
         _kasLiteBackupState.update {
             it.copy(isInspecting = false, isRestoring = false, inspectResult = null, errorMessage = null)
+        }
+    }
+
+    // --- Donasi Pengembang & Laporan Bug ---
+    private val _developerBankConfig = MutableStateFlow(DeveloperBankConfig())
+    val developerBankConfig: StateFlow<DeveloperBankConfig> = _developerBankConfig.asStateFlow()
+
+    private val _myDonationRequests = MutableStateFlow<List<DonationRequestDoc>>(emptyList())
+    val myDonationRequests: StateFlow<List<DonationRequestDoc>> = _myDonationRequests.asStateFlow()
+
+    private val _allDonationRequests = MutableStateFlow<List<DonationRequestDoc>>(emptyList())
+    val allDonationRequests: StateFlow<List<DonationRequestDoc>> = _allDonationRequests.asStateFlow()
+
+    private val _myBugReports = MutableStateFlow<List<BugReportDoc>>(emptyList())
+    val myBugReports: StateFlow<List<BugReportDoc>> = _myBugReports.asStateFlow()
+
+    private val _allBugReports = MutableStateFlow<List<BugReportDoc>>(emptyList())
+    val allBugReports: StateFlow<List<BugReportDoc>> = _allBugReports.asStateFlow()
+
+    private val _isSupportSyncLoading = MutableStateFlow(false)
+    val isSupportSyncLoading: StateFlow<Boolean> = _isSupportSyncLoading.asStateFlow()
+
+    private val _supportError = MutableStateFlow<String?>(null)
+    val supportError: StateFlow<String?> = _supportError.asStateFlow()
+
+    fun clearSupportError() {
+        _supportError.value = null
+    }
+
+    fun loadCustomerSupportData() {
+        if (!supabaseRepository.isConfigured()) {
+            _supportError.value = "Supabase belum dikonfigurasi pada build ini."
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _isSupportSyncLoading.value = true
+            _supportError.value = null
+            try {
+                val cfg = supabaseRepository.fetchDeveloperBankConfig()
+                _developerBankConfig.value = cfg
+                if (firebaseSessionStore.hasSupabaseSession()) {
+                    val uid = firebaseSessionStore.getSupabaseUid()
+                    val email = firebaseSessionStore.getSupabaseEmail()
+                    runCatching { supabaseRepository.fetchMyDonationRequests(uid, email) }
+                        .onSuccess { _myDonationRequests.value = it }
+                        .onFailure { err -> _supportError.value = err.localizedMessage }
+                    runCatching { supabaseRepository.fetchMyBugReports(uid, email) }
+                        .onSuccess { _myBugReports.value = it }
+                        .onFailure { err ->
+                            if (_supportError.value == null) _supportError.value = err.localizedMessage
+                        }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _supportError.value = e.localizedMessage ?: "Gagal memuat data pengembang."
+            } finally {
+                _isSupportSyncLoading.value = false
+            }
+        }
+    }
+
+    fun submitCustomerDonationRequest(
+        pkg: DonationPackage,
+        recipientEmail: String,
+        ownerName: String,
+        storeName: String,
+        phone: String,
+        senderBankName: String,
+        senderAccountName: String,
+        transferNote: String,
+        onRequireAuth: () -> Unit = {},
+        onResult: (Boolean, String, DonationRequestDoc?) -> Unit = { _, _, _ -> }
+    ) {
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi pada build ini.", null)
+            return
+        }
+        if (!firebaseSessionStore.hasSupabaseSession()) {
+            onRequireAuth()
+            onResult(false, "Silakan verifikasi akun Email & Password Supabase terlebih dahulu.", null)
+            return
+        }
+        val cleanEmail = recipientEmail.trim().lowercase(Locale.ROOT)
+        if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
+            onResult(false, "Masukkan alamat email penerima lisensi yang valid.", null)
+            return
+        }
+        if (senderBankName.isBlank() || senderAccountName.isBlank()) {
+            onResult(false, "Isi nama bank pengirim dan nama pemilik rekening pengirim.", null)
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _isSupportSyncLoading.value = true
+            _supportError.value = null
+            try {
+                val uid = firebaseSessionStore.getSupabaseUid()
+                val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+                val req = DonationRequestDoc(
+                    userUid = uid,
+                    userEmail = cleanEmail,
+                    ownerName = ownerName.trim().ifBlank { _activeUserName.value },
+                    storeName = storeName.trim().ifBlank { storeProfile.value?.name.orEmpty() },
+                    phone = phone.trim().ifBlank { storeProfile.value?.phone.orEmpty() },
+                    deviceId = deviceId,
+                    packageId = pkg.id,
+                    packageTitle = pkg.title,
+                    amountRupiah = pkg.amountRupiah,
+                    durationDays = pkg.durationDays,
+                    senderBankName = senderBankName.trim(),
+                    senderAccountName = senderAccountName.trim(),
+                    transferNote = transferNote.trim()
+                )
+                val saved = supabaseRepository.submitDonationRequest(req)
+                val updatedList = supabaseRepository.fetchMyDonationRequests(uid, cleanEmail)
+                _myDonationRequests.value = updatedList
+                withContext(Dispatchers.Main) {
+                    val msg = "Konfirmasi donasi terkirim! Admin ($SUPER_ADMIN_EMAIL) akan verifikasi dan mengirim kunci lisensi ke $cleanEmail."
+                    _userMessage.value = msg
+                    onResult(true, msg, saved)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = e.localizedMessage ?: "Gagal mengirim konfirmasi donasi."
+                _supportError.value = msg
+                withContext(Dispatchers.Main) {
+                    onResult(false, msg, null)
+                }
+            } finally {
+                _isSupportSyncLoading.value = false
+            }
+        }
+    }
+
+    fun submitCustomerBugReport(
+        category: String,
+        severity: String,
+        title: String,
+        description: String,
+        contactEmail: String,
+        onRequireAuth: () -> Unit = {},
+        onResult: (Boolean, String, BugReportDoc?) -> Unit = { _, _, _ -> }
+    ) {
+        if (title.isBlank()) {
+            onResult(false, "Judul laporan bug wajib diisi.", null)
+            return
+        }
+        if (description.trim().length < 10) {
+            onResult(false, "Jelaskan kronologi bug minimal 10 karakter.", null)
+            return
+        }
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi. Gunakan tombol Kirim via Email.", null)
+            return
+        }
+        if (!firebaseSessionStore.hasSupabaseSession()) {
+            onRequireAuth()
+            onResult(false, "Masuk dengan Email & Password Supabase dulu atau gunakan Kirim via Email.", null)
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _isSupportSyncLoading.value = true
+            _supportError.value = null
+            try {
+                val uid = firebaseSessionStore.getSupabaseUid()
+                val email = contactEmail.trim().ifBlank { firebaseSessionStore.getSupabaseEmail() }
+                val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+                val report = BugReportDoc(
+                    userUid = uid,
+                    userEmail = email,
+                    reporterName = _activeUserName.value.ifBlank { firebaseSessionStore.getSupabaseFullName() },
+                    storeName = storeProfile.value?.name.orEmpty(),
+                    deviceId = deviceId,
+                    category = category,
+                    severity = severity,
+                    title = title.trim(),
+                    description = description.trim(),
+                    appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                    deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
+                    androidVersion = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
+                )
+                val saved = supabaseRepository.submitBugReport(report)
+                val updated = supabaseRepository.fetchMyBugReports(uid, email)
+                _myBugReports.value = updated
+                withContext(Dispatchers.Main) {
+                    val msg = "Laporan bug berhasil dikirim ke tim pengembang!"
+                    _userMessage.value = msg
+                    onResult(true, msg, saved)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = e.localizedMessage ?: "Gagal mengirim laporan bug."
+                _supportError.value = msg
+                withContext(Dispatchers.Main) {
+                    onResult(false, msg, null)
+                }
+            } finally {
+                _isSupportSyncLoading.value = false
+            }
+        }
+    }
+
+    fun buildCurrentDeviceBugDiagnosticSummary(): String {
+        val deviceId = firebaseSessionStore.getOrCreateDeviceId()
+        return "Versi ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) • ${Build.MANUFACTURER} ${Build.MODEL} • Android ${Build.VERSION.RELEASE} • ID: $deviceId"
+    }
+
+    fun loadSuperAdminDonationsAndBugs() {
+        val sessionEmail = firebaseSessionStore.getSupabaseEmail()
+        if (!supabaseRepository.isConfigured() ||
+            !_authUiState.value.isSuperAdmin ||
+            !firebaseSessionStore.hasSupabaseSession() ||
+            !sessionEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
+        ) {
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                runCatching { supabaseRepository.fetchDeveloperBankConfig() }
+                    .onSuccess { _developerBankConfig.value = it }
+                runCatching { supabaseRepository.getAllDonationRequests() }
+                    .onSuccess { _allDonationRequests.value = it }
+                runCatching { supabaseRepository.getAllBugReports() }
+                    .onSuccess { _allBugReports.value = it }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun saveSuperAdminBankConfig(
+        config: DeveloperBankConfig,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
+            return
+        }
+        if (config.bankName.isBlank() || config.accountNumber.isBlank() || config.accountHolder.isBlank()) {
+            onResult(false, "Nama Bank, Nomor Rekening, dan Atas Nama wajib diisi.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val saved = supabaseRepository.saveDeveloperBankConfig(config)
+                _developerBankConfig.value = saved
+                withContext(Dispatchers.Main) {
+                    val msg = "Rekening donasi pengembang berhasil disimpan!"
+                    _userMessage.value = msg
+                    onResult(true, msg)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal menyimpan rekening: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun superAdminApproveDonationAndIssueLicense(
+        donation: DonationRequestDoc,
+        onResult: (Boolean, String, DonationApprovalOutcome?) -> Unit
+    ) {
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.", null)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val supportEmail = _developerBankConfig.value.supportEmail.ifBlank { SUPER_ADMIN_EMAIL }
+                val outcome = supabaseRepository.approveDonationAndIssueLicense(donation, supportEmail)
+                runCatching { supabaseRepository.getAllLicenses() }.onSuccess { _allLicenses.value = it }
+                runCatching { supabaseRepository.getAllDonationRequests() }.onSuccess { _allDonationRequests.value = it }
+                withContext(Dispatchers.Main) {
+                    val msg = if (outcome.emailDispatchedAutomatically) {
+                        "Sudah dibayar & kunci ${outcome.license.licenseKey} otomatis dikirim ke ${donation.userEmail}!"
+                    } else {
+                        "Sudah dibayar! Kunci ${outcome.license.licenseKey} dibuat — lanjutkan kirim email ke ${donation.userEmail}."
+                    }
+                    _userMessage.value = msg
+                    onResult(true, msg, outcome)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal memproses donasi: ${e.localizedMessage}", null)
+                }
+            }
+        }
+    }
+
+    fun superAdminMarkDonationEmailSent(donationId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { supabaseRepository.markDonationEmailSent(donationId) }
+            runCatching { supabaseRepository.getAllDonationRequests() }.onSuccess { _allDonationRequests.value = it }
+        }
+    }
+
+    fun superAdminRejectDonation(
+        donationId: String,
+        reason: String,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                supabaseRepository.rejectDonationRequest(donationId, reason)
+                runCatching { supabaseRepository.getAllDonationRequests() }.onSuccess { _allDonationRequests.value = it }
+                withContext(Dispatchers.Main) {
+                    val msg = "Konfirmasi donasi ditandai ditolak."
+                    _userMessage.value = msg
+                    onResult(true, msg)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal menolak donasi: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun superAdminUpdateBugReportStatus(
+        reportId: String,
+        status: String,
+        adminNotes: String,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                supabaseRepository.updateBugReportStatus(reportId, status, adminNotes)
+                runCatching { supabaseRepository.getAllBugReports() }.onSuccess { _allBugReports.value = it }
+                withContext(Dispatchers.Main) {
+                    val msg = "Status laporan bug diperbarui ke $status"
+                    _userMessage.value = msg
+                    onResult(true, msg)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal memperbarui laporan bug: ${e.localizedMessage}")
+                }
+            }
         }
     }
 

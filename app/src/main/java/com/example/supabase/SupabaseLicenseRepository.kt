@@ -3,7 +3,13 @@ package com.example.supabase
 import android.content.Context
 import android.util.Log
 import com.example.BuildConfig
+import com.example.firebase.BugReportDoc
+import com.example.firebase.DeveloperBankConfig
+import com.example.firebase.DonationApprovalOutcome
+import com.example.firebase.DonationPackage
+import com.example.firebase.DonationRequestDoc
 import com.example.firebase.FirebaseSessionStore
+import com.example.firebase.KasLiteSupportEmailHelper
 import com.example.firebase.LicenseDoc
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -189,9 +195,109 @@ class SupabaseLicenseRepository(
                     "Sesi login berakhir. Silakan login ulang dengan Email & Password."
                 msgLower.contains("row-level security") || statusCode == 403 ->
                     "Izin database ditolak oleh aturan keamanan Supabase."
+                msgLower.contains("does not exist") || msgLower.contains("pgrst205") || msgLower.contains("42p01") || msgLower.contains("could not find the table") ->
+                    "Tabel Supabase belum dibuat. Buka Admin Pusat -> Rekening & Email -> Salin SQL dan jalankan di SQL Editor Supabase."
                 jsonMsg.isNotBlank() -> jsonMsg
                 else -> "Permintaan Supabase gagal (HTTP $statusCode)."
             }
+        }
+
+        fun parseDeveloperBankConfigJson(obj: JSONObject): DeveloperBankConfig = DeveloperBankConfig(
+            id = obj.optString("id", "payment_config").ifBlank { "payment_config" },
+            bankName = obj.optString("bank_name", ""),
+            accountNumber = obj.optString("account_number", ""),
+            accountHolder = obj.optString("account_holder", ""),
+            whatsappNumber = obj.optString("whatsapp_number", ""),
+            supportEmail = obj.optString("support_email", "egisbahricha@gmail.com").ifBlank { "egisbahricha@gmail.com" },
+            notes = obj.optString("notes", ""),
+            updatedAtMillis = isoToMillis(obj.optString("updated_at", ""))
+        )
+
+        fun developerBankConfigToJson(cfg: DeveloperBankConfig): JSONObject = JSONObject().apply {
+            put("id", cfg.id.ifBlank { "payment_config" })
+            put("bank_name", cfg.bankName.trim())
+            put("account_number", cfg.accountNumber.trim())
+            put("account_holder", cfg.accountHolder.trim())
+            put("whatsapp_number", cfg.whatsappNumber.trim())
+            put("support_email", cfg.supportEmail.trim().ifBlank { "egisbahricha@gmail.com" })
+            put("notes", cfg.notes.trim())
+        }
+
+        fun parseDonationRequestJson(obj: JSONObject): DonationRequestDoc = DonationRequestDoc(
+            id = obj.optString("id", ""),
+            userUid = obj.optString("user_uid", ""),
+            userEmail = obj.optString("user_email", ""),
+            ownerName = obj.optString("owner_name", ""),
+            storeName = obj.optString("store_name", ""),
+            phone = obj.optString("phone", ""),
+            deviceId = obj.optString("device_id", ""),
+            packageId = obj.optString("package_id", DonationPackage.MONTHLY.id),
+            packageTitle = obj.optString("package_title", ""),
+            amountRupiah = obj.optLong("amount_rupiah", 0L),
+            durationDays = obj.optInt("duration_days", 30),
+            senderBankName = obj.optString("sender_bank_name", ""),
+            senderAccountName = obj.optString("sender_account_name", ""),
+            transferNote = obj.optString("transfer_note", ""),
+            status = obj.optString("status", "PENDING"),
+            licenseKey = obj.optString("license_key", ""),
+            adminNotes = obj.optString("admin_notes", ""),
+            approvedAtMillis = obj.optLong("approved_at_millis", 0L),
+            emailSentAtMillis = obj.optLong("email_sent_at_millis", 0L),
+            createdAtMillis = isoToMillis(obj.optString("created_at", "")),
+            updatedAtMillis = isoToMillis(obj.optString("updated_at", ""))
+        )
+
+        fun donationRequestToInsertJson(doc: DonationRequestDoc): JSONObject = JSONObject().apply {
+            put("user_uid", doc.userUid)
+            put("user_email", doc.userEmail.trim().lowercase(Locale.ROOT))
+            put("owner_name", doc.ownerName.trim())
+            put("store_name", doc.storeName.trim())
+            put("phone", doc.phone.trim())
+            put("device_id", doc.deviceId.trim())
+            put("package_id", doc.packageId)
+            put("package_title", doc.packageTitle.trim())
+            put("amount_rupiah", doc.amountRupiah)
+            put("duration_days", doc.durationDays)
+            put("sender_bank_name", doc.senderBankName.trim())
+            put("sender_account_name", doc.senderAccountName.trim())
+            put("transfer_note", doc.transferNote.trim())
+            put("status", "PENDING")
+        }
+
+        fun parseBugReportJson(obj: JSONObject): BugReportDoc = BugReportDoc(
+            id = obj.optString("id", ""),
+            userUid = obj.optString("user_uid", ""),
+            userEmail = obj.optString("user_email", ""),
+            reporterName = obj.optString("reporter_name", ""),
+            storeName = obj.optString("store_name", ""),
+            deviceId = obj.optString("device_id", ""),
+            category = obj.optString("category", "Kasir POS"),
+            severity = obj.optString("severity", "SEDANG"),
+            title = obj.optString("title", ""),
+            description = obj.optString("description", ""),
+            appVersion = obj.optString("app_version", ""),
+            deviceModel = obj.optString("device_model", ""),
+            androidVersion = obj.optString("android_version", ""),
+            status = obj.optString("status", "BARU"),
+            adminNotes = obj.optString("admin_notes", ""),
+            createdAtMillis = isoToMillis(obj.optString("created_at", "")),
+            updatedAtMillis = isoToMillis(obj.optString("updated_at", ""))
+        )
+
+        fun bugReportToInsertJson(doc: BugReportDoc): JSONObject = JSONObject().apply {
+            put("user_uid", doc.userUid)
+            put("user_email", doc.userEmail.trim().lowercase(Locale.ROOT))
+            put("reporter_name", doc.reporterName.trim())
+            put("store_name", doc.storeName.trim())
+            put("device_id", doc.deviceId.trim())
+            put("category", doc.category.trim())
+            put("severity", doc.severity.trim().uppercase(Locale.ROOT))
+            put("title", doc.title.trim())
+            put("description", doc.description.trim())
+            put("app_version", doc.appVersion.trim())
+            put("device_model", doc.deviceModel.trim())
+            put("android_version", doc.androidVersion.trim())
+            put("status", "BARU")
         }
 
         fun resolveAuthoritativeCustomerLicense(
@@ -751,5 +857,351 @@ class SupabaseLicenseRepository(
         }
         return patchLicenseByQuery("license_key=eq.${urlEncode(licenseKey.trim())}", patch)
             ?: throw IllegalStateException("Lisensi $licenseKey tidak ditemukan.")
+    }
+
+    // ========================================================================
+    // PENGATURAN REKENING DONASI PENGEMBANG
+    // ========================================================================
+    suspend fun fetchDeveloperBankConfig(): DeveloperBankConfig {
+        requireConfigured()
+        val path = "/rest/v1/developer_settings?id=eq.payment_config&select=*&limit=1"
+        val res = if (sessionStore.hasSupabaseSession()) {
+            runCatching { executeRestWithRetry("GET", path) }
+                .getOrElse { executeHttp("GET", path, bearerToken = anonKey) }
+        } else {
+            executeHttp("GET", path, bearerToken = anonKey)
+        }
+        if (res.code == 404) {
+            return DeveloperBankConfig()
+        }
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return if (array.length() > 0) parseDeveloperBankConfigJson(array.getJSONObject(0)) else DeveloperBankConfig()
+    }
+
+    suspend fun saveDeveloperBankConfig(config: DeveloperBankConfig): DeveloperBankConfig {
+        val normalized = config.copy(id = "payment_config")
+        val payload = developerBankConfigToJson(normalized).apply {
+            put("updated_at", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(java.util.Date()))
+        }
+        val res = executeRestWithRetry(
+            method = "POST",
+            pathAndQuery = "/rest/v1/developer_settings?on_conflict=id",
+            bodyJson = payload.toString(),
+            extraHeaders = mapOf("Prefer" to "resolution=merge-duplicates,return=representation")
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return if (array.length() > 0) parseDeveloperBankConfigJson(array.getJSONObject(0)) else normalized
+    }
+
+    // ========================================================================
+    // DONASI KE PENGEMBANG & VERIFIKASI LISENSI MANUAL
+    // ========================================================================
+    suspend fun submitDonationRequest(doc: DonationRequestDoc): DonationRequestDoc {
+        val res = executeRestWithRetry(
+            method = "POST",
+            pathAndQuery = "/rest/v1/donation_requests",
+            bodyJson = donationRequestToInsertJson(doc).toString(),
+            extraHeaders = mapOf("Prefer" to "return=representation")
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return if (array.length() > 0) parseDonationRequestJson(array.getJSONObject(0)) else doc
+    }
+
+    suspend fun fetchMyDonationRequests(uid: String, email: String): List<DonationRequestDoc> {
+        val filter = when {
+            uid.isNotBlank() && email.isNotBlank() ->
+                "or=(user_uid.eq.${urlEncode(uid)},user_email.eq.${urlEncode(email.trim().lowercase(Locale.ROOT))})"
+            uid.isNotBlank() -> "user_uid=eq.${urlEncode(uid)}"
+            email.isNotBlank() -> "user_email=eq.${urlEncode(email.trim().lowercase(Locale.ROOT))}"
+            else -> return emptyList()
+        }
+        val res = executeRestWithRetry(
+            method = "GET",
+            pathAndQuery = "/rest/v1/donation_requests?$filter&select=*&order=created_at.desc&limit=30"
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return buildList {
+            for (i in 0 until array.length()) add(parseDonationRequestJson(array.getJSONObject(i)))
+        }
+    }
+
+    suspend fun getAllDonationRequests(): List<DonationRequestDoc> {
+        val res = executeRestWithRetry(
+            method = "GET",
+            pathAndQuery = "/rest/v1/donation_requests?select=*&order=created_at.desc&limit=100"
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return buildList {
+            for (i in 0 until array.length()) add(parseDonationRequestJson(array.getJSONObject(i)))
+        }
+    }
+
+    suspend fun approveDonationAndIssueLicense(
+        donation: DonationRequestDoc,
+        supportEmail: String = "egisbahricha@gmail.com"
+    ): DonationApprovalOutcome {
+        val now = System.currentTimeMillis()
+        val pkg = DonationPackage.fromId(donation.packageId)
+        val effectiveDuration = if (donation.packageId.equals(DonationPackage.LIFETIME.id, ignoreCase = true)) {
+            0
+        } else {
+            donation.durationDays.takeIf { it > 0 } ?: pkg.durationDays
+        }
+
+        // Reuse already issued license key if admin clicks resend/reapprove on the same PAID donation
+        val existingIssuedKey = donation.licenseKey.trim().takeIf {
+            donation.status.equals("PAID", ignoreCase = true) && it.isNotBlank()
+        }
+        val issuedLicense: LicenseDoc = if (existingIssuedKey != null) {
+            getLicenseByKey(existingIssuedKey)
+                ?: createSuperAdminLicense(
+                    storeName = donation.storeName.ifBlank { "Toko Mitra KASLITE" },
+                    ownerName = donation.ownerName,
+                    ownerEmail = donation.userEmail,
+                    phone = donation.phone,
+                    planType = "FULL",
+                    durationDays = effectiveDuration
+                )
+        } else {
+            createSuperAdminLicense(
+                storeName = donation.storeName.ifBlank { "Toko Mitra KASLITE" },
+                ownerName = donation.ownerName,
+                ownerEmail = donation.userEmail,
+                phone = donation.phone,
+                planType = "FULL",
+                durationDays = effectiveDuration
+            )
+        }
+
+        val edgeResult = tryDispatchLicenseEmailEdgeFunction(
+            recipientEmail = donation.userEmail,
+            ownerName = donation.ownerName,
+            storeName = donation.storeName,
+            licenseKey = issuedLicense.licenseKey,
+            packageTitle = donation.packageTitle.ifBlank { pkg.title },
+            amountRupiah = donation.amountRupiah.takeIf { it > 0L } ?: pkg.amountRupiah,
+            expiresAtMillis = issuedLicense.expiresAtMillis,
+            supportEmail = supportEmail
+        )
+
+        val patch = JSONObject().apply {
+            put("status", "PAID")
+            put("license_key", issuedLicense.licenseKey)
+            put("approved_at_millis", if (donation.approvedAtMillis > 0L) donation.approvedAtMillis else now)
+            if (edgeResult.first) {
+                put("email_sent_at_millis", now)
+            }
+        }
+        val patchRes = executeRestWithRetry(
+            method = "PATCH",
+            pathAndQuery = "/rest/v1/donation_requests?id=eq.${urlEncode(donation.id)}",
+            bodyJson = patch.toString(),
+            extraHeaders = mapOf("Prefer" to "return=representation")
+        )
+        if (patchRes.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(patchRes.code, patchRes.body))
+        }
+        val array = JSONArray(patchRes.body.ifBlank { "[]" })
+        val updatedDonation = if (array.length() > 0) {
+            parseDonationRequestJson(array.getJSONObject(0))
+        } else {
+            donation.copy(
+                status = "PAID",
+                licenseKey = issuedLicense.licenseKey,
+                approvedAtMillis = now,
+                emailSentAtMillis = if (edgeResult.first) now else donation.emailSentAtMillis
+            )
+        }
+
+        return DonationApprovalOutcome(
+            donation = updatedDonation,
+            license = issuedLicense,
+            emailDispatchedAutomatically = edgeResult.first,
+            emailDispatchMessage = edgeResult.second
+        )
+    }
+
+    suspend fun tryDispatchLicenseEmailEdgeFunction(
+        recipientEmail: String,
+        ownerName: String,
+        storeName: String,
+        licenseKey: String,
+        packageTitle: String,
+        amountRupiah: Long,
+        expiresAtMillis: Long,
+        supportEmail: String = "egisbahricha@gmail.com"
+    ): Pair<Boolean, String> {
+        val cleanTo = recipientEmail.trim()
+        if (cleanTo.isBlank() || !cleanTo.contains("@")) {
+            return false to "Email tujuan tidak valid."
+        }
+        val expiryLabel = if (expiresAtMillis > 0L) {
+            SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("id", "ID")).format(java.util.Date(expiresAtMillis))
+        } else {
+            "PERMANEN (Selamanya)"
+        }
+        val payload = JSONObject().apply {
+            put("to", cleanTo)
+            put("ownerName", ownerName)
+            put("storeName", storeName)
+            put("licenseKey", licenseKey)
+            put("packageTitle", packageTitle)
+            put("amountRupiah", amountRupiah)
+            put("expiresAtMillis", expiresAtMillis)
+            put("expiresLabel", expiryLabel)
+            put("supportEmail", supportEmail)
+            put("subject", KasLiteSupportEmailHelper.buildLicenseEmailSubject(storeName, licenseKey))
+            put(
+                "text",
+                KasLiteSupportEmailHelper.buildLicenseEmailBody(
+                    ownerName = ownerName,
+                    storeName = storeName,
+                    recipientEmail = cleanTo,
+                    licenseKey = licenseKey,
+                    packageTitle = packageTitle,
+                    amountRupiah = amountRupiah,
+                    expiresAtMillis = expiresAtMillis,
+                    supportEmail = supportEmail
+                )
+            )
+        }
+        return runCatching {
+            val token = ensureValidAccessToken()
+            val res = executeHttp(
+                method = "POST",
+                pathAndQuery = "/functions/v1/send-license-email",
+                bodyJson = payload.toString(),
+                bearerToken = token
+            )
+            if (res.code in 200..299) {
+                true to "Email lisensi otomatis terkirim ke $cleanTo!"
+            } else {
+                false to "Auto-email Edge Function belum aktif (HTTP ${res.code}); membuka aplikasi email untuk kirim ke $cleanTo."
+            }
+        }.getOrElse { err ->
+            false to "Server email belum aktif (${err.localizedMessage}); membuka aplikasi email untuk kirim ke $cleanTo."
+        }
+    }
+
+    suspend fun markDonationEmailSent(donationId: String): DonationRequestDoc? {
+        if (donationId.isBlank()) return null
+        val now = System.currentTimeMillis()
+        val patch = JSONObject().apply { put("email_sent_at_millis", now) }
+        val res = executeRestWithRetry(
+            method = "PATCH",
+            pathAndQuery = "/rest/v1/donation_requests?id=eq.${urlEncode(donationId)}",
+            bodyJson = patch.toString(),
+            extraHeaders = mapOf("Prefer" to "return=representation")
+        )
+        if (res.code !in 200..299) return null
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return if (array.length() > 0) parseDonationRequestJson(array.getJSONObject(0)) else null
+    }
+
+    suspend fun rejectDonationRequest(donationId: String, adminNotes: String): DonationRequestDoc {
+        val patch = JSONObject().apply {
+            put("status", "REJECTED")
+            put("admin_notes", adminNotes.trim())
+        }
+        val res = executeRestWithRetry(
+            method = "PATCH",
+            pathAndQuery = "/rest/v1/donation_requests?id=eq.${urlEncode(donationId)}",
+            bodyJson = patch.toString(),
+            extraHeaders = mapOf("Prefer" to "return=representation")
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        if (array.length() == 0) throw IllegalStateException("Data donasi tidak ditemukan.")
+        return parseDonationRequestJson(array.getJSONObject(0))
+    }
+
+    // ========================================================================
+    // LAPORAN BUG PELANGGAN
+    // ========================================================================
+    suspend fun submitBugReport(doc: BugReportDoc): BugReportDoc {
+        val res = executeRestWithRetry(
+            method = "POST",
+            pathAndQuery = "/rest/v1/bug_reports",
+            bodyJson = bugReportToInsertJson(doc).toString(),
+            extraHeaders = mapOf("Prefer" to "return=representation")
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return if (array.length() > 0) parseBugReportJson(array.getJSONObject(0)) else doc
+    }
+
+    suspend fun fetchMyBugReports(uid: String, email: String): List<BugReportDoc> {
+        val filter = when {
+            uid.isNotBlank() && email.isNotBlank() ->
+                "or=(user_uid.eq.${urlEncode(uid)},user_email.eq.${urlEncode(email.trim().lowercase(Locale.ROOT))})"
+            uid.isNotBlank() -> "user_uid=eq.${urlEncode(uid)}"
+            email.isNotBlank() -> "user_email=eq.${urlEncode(email.trim().lowercase(Locale.ROOT))}"
+            else -> return emptyList()
+        }
+        val res = executeRestWithRetry(
+            method = "GET",
+            pathAndQuery = "/rest/v1/bug_reports?$filter&select=*&order=created_at.desc&limit=30"
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return buildList {
+            for (i in 0 until array.length()) add(parseBugReportJson(array.getJSONObject(i)))
+        }
+    }
+
+    suspend fun getAllBugReports(): List<BugReportDoc> {
+        val res = executeRestWithRetry(
+            method = "GET",
+            pathAndQuery = "/rest/v1/bug_reports?select=*&order=created_at.desc&limit=100"
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        return buildList {
+            for (i in 0 until array.length()) add(parseBugReportJson(array.getJSONObject(i)))
+        }
+    }
+
+    suspend fun updateBugReportStatus(reportId: String, status: String, adminNotes: String): BugReportDoc {
+        val patch = JSONObject().apply {
+            put("status", status.trim().uppercase(Locale.ROOT))
+            put("admin_notes", adminNotes.trim())
+        }
+        val res = executeRestWithRetry(
+            method = "PATCH",
+            pathAndQuery = "/rest/v1/bug_reports?id=eq.${urlEncode(reportId)}",
+            bodyJson = patch.toString(),
+            extraHeaders = mapOf("Prefer" to "return=representation")
+        )
+        if (res.code !in 200..299) {
+            throw IllegalStateException(translateErrorMessage(res.code, res.body))
+        }
+        val array = JSONArray(res.body.ifBlank { "[]" })
+        if (array.length() == 0) throw IllegalStateException("Laporan bug tidak ditemukan.")
+        return parseBugReportJson(array.getJSONObject(0))
     }
 }

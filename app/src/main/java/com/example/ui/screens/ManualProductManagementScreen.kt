@@ -79,6 +79,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.entity.ProductEntity
+import com.example.hardware.BarcodeInputSanitizer
+import com.example.hardware.ScannerSettings
 import com.example.ui.components.BadgeType
 import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.BarcodeSearchBar
@@ -87,17 +89,22 @@ import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.ProductThumbnail
+import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.formatRupiah
+import com.example.ui.components.hardwareBarcodeCaptureModifier
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.Screen
+import com.example.ui.viewmodel.matchesProductSearchQuery
 import com.example.ui.viewmodel.validateManualProductInput
 import kotlin.math.roundToInt
 
 @Composable
 fun ManualProductManagementScreen(viewModel: PosViewModel) {
     val products by viewModel.products.collectAsStateWithLifecycle()
+    val productVariants by viewModel.productVariants.collectAsStateWithLifecycle()
     val excelImportState by viewModel.excelImportState.collectAsStateWithLifecycle()
+    val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
 
     val excelImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -115,10 +122,12 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
     }
 
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchFocused by remember { mutableStateOf(false) }
     var activeFilter by remember { mutableStateOf("ALL") } // ALL, LOW, OUT, BARCODE
     var selectedProduct by remember { mutableStateOf<ProductEntity?>(null) }
     var showFormDialog by remember { mutableStateOf(false) }
     var showSearchScanner by remember { mutableStateOf(false) }
+    var showScannerSettingsDialog by remember { mutableStateOf(false) }
     var productToDelete by remember { mutableStateOf<ProductEntity?>(null) }
 
     // Keep selectedProduct synced with live Room updates (or clear if deleted)
@@ -146,7 +155,7 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
         physicalProducts.sumOf { (it.sellingPrice * it.stock.coerceAtLeast(0.0)) }
     }
 
-    val filteredProducts = remember(products, searchQuery, activeFilter) {
+    val filteredProducts = remember(products, productVariants, searchQuery, activeFilter) {
         products.filter { product ->
             val isDigital = product.productType == "DIGITAL" || product.isUnlimitedStock || product.hasNoStock
             val matchesFilter = when (activeFilter) {
@@ -155,20 +164,26 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                 "BARCODE" -> product.barcode.isNotBlank()
                 else -> true
             }
-            val q = searchQuery.trim()
-            val matchesSearch = q.isEmpty() ||
-                product.name.contains(q, ignoreCase = true) ||
-                product.barcode.contains(q, ignoreCase = true) ||
-                product.category.contains(q, ignoreCase = true)
+            val matchesSearch = matchesProductSearchQuery(product, searchQuery, productVariants)
             matchesFilter && matchesSearch
         }
     }
+
+    val anyDialogOpen = showFormDialog || showSearchScanner || showScannerSettingsDialog || productToDelete != null
+    val hardwareModifier = hardwareBarcodeCaptureModifier(
+        enabled = scannerSettings.autoCaptureHardwareInput && !isSearchFocused && !anyDialogOpen,
+        scannerSettings = scannerSettings,
+        onBarcodeScanned = { code, _ ->
+            searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(code, scannerSettings.stripWhitespace)
+        }
+    )
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(BgCanvas)
             .testTag("manual_product_management_screen")
+            .then(hardwareModifier)
     ) {
         val isTablet = maxWidth >= 720.dp
 
@@ -209,6 +224,7 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                         searchQuery = searchQuery,
                         activeFilter = activeFilter,
                         onSearchQueryChange = { searchQuery = it },
+                        onSearchFocusChanged = { isSearchFocused = it },
                         onOpenSearchScanner = { showSearchScanner = true },
                         onSelectFilter = { activeFilter = it },
                         onOpenBarcodeCart = { viewModel.navigateTo(Screen.SCAN_BARCODE) },
@@ -280,6 +296,7 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                     searchQuery = searchQuery,
                     activeFilter = activeFilter,
                     onSearchQueryChange = { searchQuery = it },
+                    onSearchFocusChanged = { isSearchFocused = it },
                     onOpenSearchScanner = { showSearchScanner = true },
                     onSelectFilter = { activeFilter = it },
                     onOpenBarcodeCart = { viewModel.navigateTo(Screen.SCAN_BARCODE) },
@@ -370,11 +387,24 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
     if (showSearchScanner) {
         BarcodeScannerDialog(
             title = "Cari Produk via Barcode",
+            scannerSettings = scannerSettings,
+            onOpenScannerSettings = {
+                showSearchScanner = false
+                showScannerSettingsDialog = true
+            },
             onBarcodeDetected = { code ->
                 showSearchScanner = false
-                searchQuery = code
+                searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(code, scannerSettings.stripWhitespace)
             },
             onDismiss = { showSearchScanner = false }
+        )
+    }
+
+    if (showScannerSettingsDialog) {
+        ScannerSettingsDialog(
+            currentSettings = scannerSettings,
+            onSaveSettings = { updated -> viewModel.updateScannerSettings(updated) },
+            onDismiss = { showScannerSettingsDialog = false }
         )
     }
 
@@ -405,6 +435,7 @@ private fun ManualCatalogPane(
     searchQuery: String,
     activeFilter: String,
     onSearchQueryChange: (String) -> Unit,
+    onSearchFocusChanged: (Boolean) -> Unit,
     onOpenSearchScanner: () -> Unit,
     onSelectFilter: (String) -> Unit,
     onOpenBarcodeCart: () -> Unit,
@@ -530,7 +561,8 @@ private fun ManualCatalogPane(
                 onQueryChange = onSearchQueryChange,
                 placeholder = "Cari nama item, kategori, atau barcode...",
                 onBarcodeScanClick = onOpenSearchScanner,
-                onBarcodeSubmit = onSearchQueryChange
+                onBarcodeSubmit = { onSearchQueryChange(BarcodeInputSanitizer.cleanBarcodeValue(it, true)) },
+                onFocusChanged = onSearchFocusChanged
             )
 
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

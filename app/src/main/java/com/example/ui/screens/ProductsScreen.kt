@@ -96,6 +96,8 @@ import com.example.data.entity.PromoEntity
 import com.example.data.entity.UnitConversionEntity
 import com.example.data.entity.WholesaleTierEntity
 import com.example.data.pricing.TierPricingResolver
+import com.example.hardware.BarcodeInputSanitizer
+import com.example.hardware.ScannerSettings
 import com.example.ui.components.BadgeType
 import com.example.ui.components.BarcodeScannerDialog
 import com.example.ui.components.BarcodeSearchBar
@@ -105,11 +107,14 @@ import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.ProductThumbnail
+import com.example.ui.components.ScannerSettingsDialog
 import com.example.ui.components.copyUriToInternalProductImage
 import com.example.ui.components.formatRupiah
+import com.example.ui.components.hardwareBarcodeCaptureModifier
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.ExcelImportUiState
 import com.example.ui.viewmodel.PosViewModel
+import com.example.ui.viewmodel.matchesProductSearchQuery
 
 @Composable
 fun ProductsScreen(viewModel: PosViewModel) {
@@ -125,6 +130,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
     val adminTiers by viewModel.adminTiers.collectAsStateWithLifecycle()
     val cashAccounts by viewModel.cashAccounts.collectAsStateWithLifecycle()
     val excelImportState by viewModel.excelImportState.collectAsStateWithLifecycle()
+    val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
 
     val excelImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -143,6 +149,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
 
     var activeModuleTab by remember { mutableStateOf("PRODUK") } // PRODUK, PAKET, PROMO
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchFocused by remember { mutableStateOf(false) }
     var selectedTypeTab by remember { mutableStateOf("SEMUA") } // SEMUA, FISIK, DIGITAL
     var selectedStatusChip by remember { mutableStateOf("SEMUA") } // SEMUA, MENIPIS, HABIS, MINUS
 
@@ -151,11 +158,12 @@ fun ProductsScreen(viewModel: PosViewModel) {
     var productToDelete by remember { mutableStateOf<ProductEntity?>(null) }
     var showTierManagerDialog by remember { mutableStateOf(false) }
     var showSearchScanner by remember { mutableStateOf(false) }
+    var showScannerSettingsDialog by remember { mutableStateOf(false) }
 
     var showAddBundleDialog by remember { mutableStateOf(false) }
     var showAddPromoDialog by remember { mutableStateOf(false) }
 
-    val filtered = remember(products, searchQuery, selectedTypeTab, selectedStatusChip) {
+    val filtered = remember(products, productVariants, searchQuery, selectedTypeTab, selectedStatusChip) {
         products.filter { p ->
             val isDigital = p.productType == "DIGITAL" || p.isUnlimitedStock || p.hasNoStock
             val matchesTab = when (selectedTypeTab) {
@@ -169,13 +177,29 @@ fun ProductsScreen(viewModel: PosViewModel) {
                 "MINUS" -> !isDigital && p.stock < 0.0
                 else -> true
             }
-            val matchesQuery = searchQuery.isBlank() ||
-                    p.name.contains(searchQuery, ignoreCase = true) ||
-                    p.barcode.contains(searchQuery, ignoreCase = true) ||
-                    p.category.contains(searchQuery, ignoreCase = true)
+            val matchesQuery = matchesProductSearchQuery(p, searchQuery, productVariants)
             matchesTab && matchesStatus && matchesQuery
         }
     }
+
+    val anyDialogOpen = showAddEditDialog ||
+        productToDelete != null ||
+        showTierManagerDialog ||
+        showSearchScanner ||
+        showScannerSettingsDialog ||
+        showAddBundleDialog ||
+        showAddPromoDialog
+
+    val hardwareModifier = hardwareBarcodeCaptureModifier(
+        enabled = activeModuleTab == "PRODUK" &&
+            scannerSettings.autoCaptureHardwareInput &&
+            !isSearchFocused &&
+            !anyDialogOpen,
+        scannerSettings = scannerSettings,
+        onBarcodeScanned = { code, _ ->
+            searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(code, scannerSettings.stripWhitespace)
+        }
+    )
 
     Scaffold(
         containerColor = BgCanvas,
@@ -205,6 +229,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
                 .fillMaxSize()
                 .padding(innerPadding)
                 .testTag("products_screen")
+                .then(hardwareModifier)
         ) {
             // Top Module Tabs + Search
             Column(
@@ -230,7 +255,10 @@ fun ProductsScreen(viewModel: PosViewModel) {
                         onQueryChange = { searchQuery = it },
                         placeholder = "Cari nama produk atau barcode...",
                         onBarcodeScanClick = { showSearchScanner = true },
-                        onBarcodeSubmit = { searchQuery = it }
+                        onBarcodeSubmit = {
+                            searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(it, scannerSettings.stripWhitespace)
+                        },
+                        onFocusChanged = { isSearchFocused = it }
                     )
 
                     DesignSegmentedTabs(
@@ -705,6 +733,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
             adminTiers = adminTiers,
             cashAccounts = cashAccounts,
             defaultDigital = productToEdit == null && selectedTypeTab == "DIGITAL",
+            scannerSettings = scannerSettings,
             onOpenTierManager = { showTierManagerDialog = true },
             onGenerateBarcode = { viewModel.generateRandomBarcode() },
             onDismiss = { showAddEditDialog = false },
@@ -883,11 +912,24 @@ fun ProductsScreen(viewModel: PosViewModel) {
     if (showSearchScanner) {
         BarcodeScannerDialog(
             title = "Cari Produk via Barcode",
+            scannerSettings = scannerSettings,
+            onOpenScannerSettings = {
+                showSearchScanner = false
+                showScannerSettingsDialog = true
+            },
             onBarcodeDetected = { code ->
                 showSearchScanner = false
-                searchQuery = code
+                searchQuery = BarcodeInputSanitizer.cleanBarcodeValue(code, scannerSettings.stripWhitespace)
             },
             onDismiss = { showSearchScanner = false }
+        )
+    }
+
+    if (showScannerSettingsDialog) {
+        ScannerSettingsDialog(
+            currentSettings = scannerSettings,
+            onSaveSettings = { updated -> viewModel.updateScannerSettings(updated) },
+            onDismiss = { showScannerSettingsDialog = false }
         )
     }
 
@@ -1110,6 +1152,7 @@ fun AddEditProductDialog(
     adminTiers: List<AdminTierWithRanges> = emptyList(),
     cashAccounts: List<CashAccountEntity> = emptyList(),
     defaultDigital: Boolean = false,
+    scannerSettings: ScannerSettings = ScannerSettings(),
     onOpenTierManager: (() -> Unit)? = null,
     onGenerateBarcode: () -> String,
     onDismiss: () -> Unit,
@@ -1443,8 +1486,9 @@ fun AddEditProductDialog(
     if (showBarcodeScanner) {
         BarcodeScannerDialog(
             title = "Scan Barcode Produk",
+            scannerSettings = scannerSettings,
             onBarcodeDetected = { code ->
-                barcode = code
+                barcode = BarcodeInputSanitizer.cleanBarcodeValue(code, scannerSettings.stripWhitespace)
                 autoBarcode = false
                 showBarcodeScanner = false
             },
