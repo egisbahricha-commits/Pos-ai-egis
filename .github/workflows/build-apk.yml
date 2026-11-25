@@ -72,15 +72,22 @@ jobs:
 
       - name: Prepare debug keystore
         if: steps.check-apk.outputs.use_prebuilt != 'true'
+        env:
+          SECRET_DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ -f debug.keystore.base64 ]; then
+          if [ -n "$SECRET_DEBUG_KEYSTORE_B64" ]; then
+            printf '%s' "$SECRET_DEBUG_KEYSTORE_B64" | tr -d '\r\n' | base64 -d > debug.keystore
+            echo "Menggunakan debug.keystore dari GitHub Secret DEBUG_KEYSTORE_BASE64."
+          elif [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
+            echo "Menggunakan debug.keystore dari file debug.keystore.base64."
           elif [ ! -f debug.keystore ]; then
-            echo "ERROR: File debug.keystore.base64 tidak ditemukan di repository!"
-            echo "Tanpa debug.keystore.base64 yang sama, APK hasil build akan memakai tanda tangan acak dan bentrok saat update."
-            exit 1
+            cat << 'EOF' | tr -d '\r\n' | base64 -d > debug.keystore
+          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
+          EOF
+            echo "Menggunakan debug.keystore bawaan AI Studio."
           fi
-          keytool -list -v -keystore debug.keystore -storepass android | grep -E "Alias name|SHA256" || true
+          keytool -list -v -keystore debug.keystore -storepass android | grep -E "Alias name|SHA256"
 
       - name: Install Gradle 9.3.1
         if: steps.check-apk.outputs.use_prebuilt != 'true'
