@@ -71,9 +71,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.firebase.AdminLicensePlanOption
 import com.example.firebase.LicenseDoc
+import com.example.supabase.SupabaseLicenseRepository
 import com.example.ui.components.DesignFilterChip
-import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.PosViewModel
 import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
@@ -90,6 +91,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
     val allDonations by viewModel.allDonationRequests.collectAsStateWithLifecycle()
     val allBugReports by viewModel.allBugReports.collectAsStateWithLifecycle()
     val bankConfig by viewModel.developerBankConfig.collectAsStateWithLifecycle()
+    val promoStatus by viewModel.freeLifetimePromoStatus.collectAsStateWithLifecycle()
     val superAdminError by viewModel.superAdminError.collectAsStateWithLifecycle()
     val isLoading by viewModel.isSuperAdminLoading.collectAsStateWithLifecycle()
 
@@ -101,7 +103,9 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
     var newOwnerName by remember { mutableStateOf("") }
     var newOwnerEmail by remember { mutableStateOf("") }
     var newPhone by remember { mutableStateOf("") }
-    var newPlanType by remember { mutableStateOf("FULL") }
+    var newPlanOption by remember { mutableStateOf(AdminLicensePlanOption.MONTHLY_30) }
+    var managingLicense by remember { mutableStateOf<LicenseDoc?>(null) }
+    var selectedManagePlan by remember { mutableStateOf(AdminLicensePlanOption.MONTHLY_30) }
     var generatedKeyResult by remember { mutableStateOf<String?>(null) }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
 
@@ -304,6 +308,10 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                         "BANK" -> {
                             SuperAdminPaymentConfigTab(
                                 currentConfig = bankConfig,
+                                promoStatus = promoStatus,
+                                registeredCustomerCount = licenses.count {
+                                    !it.ownerEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
+                                },
                                 viewModel = viewModel,
                                 onFeedback = { snackbarMessage = it }
                             )
@@ -342,6 +350,52 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                             SummaryMetricChip("Demo", "$demoActiveCount", Sapphire800, Modifier.weight(1f))
                             SummaryMetricChip("Full", "$fullActiveCount", Emerald700, Modifier.weight(1f))
                             SummaryMetricChip("Expired", "$lockedCount", Rose500, Modifier.weight(1f))
+                        }
+                    }
+
+                    if (promoStatus.quota > 0 || promoStatus.yearlyQuota > 0) {
+                        item {
+                            val hasOpenSlots = promoStatus.isActiveWithSlots
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (hasOpenSlots) Emerald50 else AmberWarningBg,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (hasOpenSlots) Emerald200 else AmberWarningBorder
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(
+                                            text = "Promo Pendaftar Pertama (Terdaftar: ${promoStatus.used} akun)",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (hasOpenSlots) Emerald800 else Slate900
+                                            )
+                                        )
+                                        if (promoStatus.quota > 0) {
+                                            Text(
+                                                text = "• Gratis Selamanya: Sisa ${promoStatus.remaining} dari ${promoStatus.quota} slot",
+                                                style = MaterialTheme.typography.bodySmall.copy(color = Slate700, fontSize = 11.sp)
+                                            )
+                                        }
+                                        if (promoStatus.yearlyQuota > 0) {
+                                            Text(
+                                                text = "• Gratis 1 Tahun: Sisa ${promoStatus.yearlyRemaining} dari ${promoStatus.yearlyQuota} slot",
+                                                style = MaterialTheme.typography.bodySmall.copy(color = Slate700, fontSize = 11.sp)
+                                            )
+                                        }
+                                    }
+                                    TextButton(onClick = { activeSectionTab = "BANK" }) {
+                                        Text("Atur Kuota", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -428,9 +482,12 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
 
                             val expirySummary = when {
                                 isSuspended -> "Dinonaktifkan oleh Admin Pusat"
-                                isFullActive && license.expiresAtMillis > 0L ->
-                                    "Aktif s/d ${dateFormat.format(Date(license.expiresAtMillis))}"
-                                isFullActive -> "Lisensi Penuh Permanen"
+                                isFullActive && license.expiresAtMillis > 0L -> {
+                                    val diff = license.expiresAtMillis - nowMillis
+                                    val daysLeft = ((diff.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L)
+                                    "Aktif s/d ${dateFormat.format(Date(license.expiresAtMillis))} (Sisa $daysLeft hari)"
+                                }
+                                isFullActive -> "Lisensi Penuh Permanen (Selamanya)"
                                 license.demoExpiresAtMillis > 0L -> {
                                     val diff = license.demoExpiresAtMillis - nowMillis
                                     if (diff > 0L) {
@@ -546,21 +603,30 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                         verticalArrangement = Arrangement.spacedBy(8.dp),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        if (!isFullActive || isSuspended) {
-                                            Button(
-                                                onClick = {
-                                                    viewModel.superAdminActivateFull(license.licenseKey) { _, msg ->
-                                                        snackbarMessage = msg
-                                                    }
-                                                },
-                                                colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
-                                                shape = RoundedCornerShape(10.dp),
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                                            ) {
-                                                Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(15.dp))
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Aktifkan FULL", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                            }
+                                        Button(
+                                            onClick = {
+                                                managingLicense = license
+                                                selectedManagePlan = when {
+                                                    !isFullActive -> AdminLicensePlanOption.MONTHLY_30
+                                                    license.expiresAtMillis > 0L -> AdminLicensePlanOption.MONTHLY_30
+                                                    else -> AdminLicensePlanOption.LIFETIME
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (isFullActive && !isSuspended) AccentBlue else Emerald700,
+                                                contentColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier.testTag("manage_license_btn_${license.licenseKey}")
+                                        ) {
+                                            Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = if (isFullActive && !isSuspended) "Perpanjang / Paket" else "Aktifkan / Pilih Paket",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
                                         }
 
                                         OutlinedButton(
@@ -687,16 +753,39 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                 value = generatedKeyResult ?: "",
                                 onValueChange = {},
                                 readOnly = true,
-                                label = { Text("Kunci Lisensi") },
+                                label = { Text("Kunci Lisensi (${newPlanOption.shortLabel})") },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Text("Kirim kunci ini kepada pelanggan untuk aktivasi pada menu Pengaturan KASLITE.", style = MaterialTheme.typography.bodySmall)
                         } else {
-                            DesignSegmentedTabs(
-                                options = listOf("FULL" to "Lisensi FULL", "DEMO" to "Demo 3 Hari"),
-                                selectedKey = newPlanType,
-                                onSelect = { newPlanType = it }
+                            Text(
+                                text = "Pilih Paket Masa Aktif:",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate800)
                             )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                AdminLicensePlanOption.entries.forEach { option ->
+                                    DesignFilterChip(
+                                        label = option.shortLabel,
+                                        selected = newPlanOption == option,
+                                        onClick = { newPlanOption = option }
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Sapphire50,
+                                border = BorderStroke(1.dp, Sapphire200),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Paket dipilih: ${newPlanOption.label}",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = Sapphire800, fontWeight = FontWeight.SemiBold),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
                             OutlinedTextField(
                                 value = newStoreName,
                                 onValueChange = { newStoreName = it },
@@ -749,7 +838,7 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                                         ownerName = newOwnerName,
                                         ownerEmail = newOwnerEmail,
                                         phone = newPhone,
-                                        planType = newPlanType
+                                        planOption = newPlanOption
                                     ) { key ->
                                         if (key != null) {
                                             generatedKeyResult = key
@@ -769,6 +858,121 @@ fun SuperAdminScreen(viewModel: PosViewModel, onBack: () -> Unit) {
                         TextButton(onClick = { showCreateDialog = false }) {
                             Text("Batal")
                         }
+                    }
+                }
+            )
+        }
+
+        managingLicense?.let { target ->
+            val previewExpiryMillis = if (selectedManagePlan == AdminLicensePlanOption.DEMO_3) {
+                maxOf(nowMillis, target.demoExpiresAtMillis) + 3L * 86_400_000L
+            } else {
+                SupabaseLicenseRepository.computeExtendedLicenseExpiryMillis(
+                    nowMillis = nowMillis,
+                    currentPlanType = target.planType,
+                    currentStatus = target.status,
+                    currentExpiresAtMillis = target.expiresAtMillis,
+                    durationDays = selectedManagePlan.durationDays
+                )
+            }
+            val previewExpiryText = when {
+                selectedManagePlan == AdminLicensePlanOption.LIFETIME -> "PERMANEN (Selamanya)"
+                else -> dateFormat.format(Date(previewExpiryMillis))
+            }
+            val isExtendingCurrent = selectedManagePlan != AdminLicensePlanOption.DEMO_3 &&
+                selectedManagePlan.durationDays > 0 &&
+                (target.planType.equals("FULL", true) || target.status.equals("ACTIVE", true)) &&
+                !target.status.equals("SUSPENDED", true) &&
+                target.expiresAtMillis > nowMillis
+
+            AlertDialog(
+                onDismissRequest = { managingLicense = null },
+                title = {
+                    Text(
+                        text = "Kelola & Perpanjang Lisensi",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = target.storeName.ifBlank { "Toko Pelanggan" },
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                            )
+                            Text(
+                                text = "${target.licenseKey} • ${target.ownerEmail}",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                            )
+                        }
+
+                        Text(
+                            text = "Pilih Paket Aktivasi / Perpanjangan:",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Slate800)
+                        )
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AdminLicensePlanOption.entries.forEach { option ->
+                                DesignFilterChip(
+                                    label = option.shortLabel,
+                                    selected = selectedManagePlan == option,
+                                    onClick = { selectedManagePlan = option }
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Emerald50,
+                            border = BorderStroke(1.dp, Emerald200),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text(
+                                    text = selectedManagePlan.label,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Emerald800)
+                                )
+                                Text(
+                                    text = "Berlaku s/d: $previewExpiryText",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = Slate800, fontWeight = FontWeight.SemiBold)
+                                )
+                                if (isExtendingCurrent) {
+                                    Text(
+                                        text = "Durasi ditambahkan ke sisa masa aktif saat ini agar tidak hangus.",
+                                        style = MaterialTheme.typography.labelSmall.copy(color = Emerald700)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.superAdminApplyLicensePackage(
+                                licenseKey = target.licenseKey,
+                                option = selectedManagePlan,
+                                extendExisting = true
+                            ) { _, msg ->
+                                snackbarMessage = msg
+                            }
+                            managingLicense = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Emerald700, contentColor = Color.White),
+                        modifier = Modifier.testTag("confirm_manage_license_btn")
+                    ) {
+                        Text("Terapkan Paket", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { managingLicense = null }) {
+                        Text("Batal")
                     }
                 }
             )

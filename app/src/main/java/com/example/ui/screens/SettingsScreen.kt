@@ -237,15 +237,22 @@ fun SettingsScreen(viewModel: PosViewModel) {
 
         item {
             val daysLeft = ((licenseUiState.remainingMillis.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L)
+            val isLifetime = licenseUiState.accessStatus == LicenseAccessStatus.FULL_ACTIVE && licenseUiState.expiresAtMillis <= 0L
             val (badgeLabel, badgeType) = when (licenseUiState.accessStatus) {
-                LicenseAccessStatus.FULL_ACTIVE -> "FULL AKTIF" to BadgeType.SUCCESS
+                LicenseAccessStatus.FULL_ACTIVE -> (if (isLifetime) "SELAMANYA" else "FULL ($daysLeft hr)") to BadgeType.SUCCESS
                 LicenseAccessStatus.DEMO_ACTIVE -> "DEMO ($daysLeft hr)" to BadgeType.INFO
-                LicenseAccessStatus.DEMO_EXPIRED -> "DEMO HABIS" to BadgeType.DANGER
+                LicenseAccessStatus.DEMO_EXPIRED -> "EXPIRED" to BadgeType.DANGER
                 LicenseAccessStatus.SUSPENDED -> "SUSPEND" to BadgeType.DANGER
                 LicenseAccessStatus.DEVICE_MISMATCH -> "BEDA HP" to BadgeType.DANGER
                 LicenseAccessStatus.UNREGISTERED -> "BELUM AKTIF" to BadgeType.WARNING
             }
             val registeredEmail = licenseUiState.ownerEmail.ifBlank { authUiState.lastEmail }.ifBlank { "-" }
+            val expiryNote = if (licenseUiState.accessStatus == LicenseAccessStatus.FULL_ACTIVE && licenseUiState.expiresAtMillis > 0L) {
+                val fmt = java.text.SimpleDateFormat("dd MMM yyyy", Locale("id", "ID"))
+                " • s/d ${fmt.format(java.util.Date(licenseUiState.expiresAtMillis))}"
+            } else if (isLifetime) {
+                " • Permanen Selamanya"
+            } else ""
 
             Card(
                 shape = RoundedCornerShape(14.dp),
@@ -257,14 +264,18 @@ fun SettingsScreen(viewModel: PosViewModel) {
                     SettingsMenuRow(
                         icon = Icons.Default.VerifiedUser,
                         title = when (licenseUiState.accessStatus) {
-                            LicenseAccessStatus.FULL_ACTIVE -> "Lisensi Penuh Aktif"
+                            LicenseAccessStatus.FULL_ACTIVE -> if (isLifetime) {
+                                "Lisensi Penuh Selamanya"
+                            } else {
+                                "Lisensi Penuh Aktif (Sisa $daysLeft hari)"
+                            }
                             LicenseAccessStatus.DEMO_ACTIVE -> "Mode Demo 3 Hari (Sisa $daysLeft hari)"
-                            LicenseAccessStatus.DEMO_EXPIRED -> "Masa Demo Berakhir (Hanya Produk)"
+                            LicenseAccessStatus.DEMO_EXPIRED -> "Masa Aktif Berakhir (Hanya Produk)"
                             LicenseAccessStatus.SUSPENDED -> "Lisensi Dinonaktifkan"
                             LicenseAccessStatus.DEVICE_MISMATCH -> "Terikat Perangkat Lain"
                             LicenseAccessStatus.UNREGISTERED -> "Status Lokal"
                         },
-                        subtitle = "Email: $registeredEmail • Paket: ${licenseUiState.planType.ifBlank { "DEMO" }}\nAktivasi / bantuan hubungi: $SUPER_ADMIN_EMAIL",
+                        subtitle = "Email: $registeredEmail • Paket: ${licenseUiState.planType.ifBlank { "DEMO" }}$expiryNote\nAktivasi / perpanjangan hubungi: $SUPER_ADMIN_EMAIL",
                         badgeText = badgeLabel,
                         badgeType = badgeType,
                         onClick = { showLicenseKeyDialog = true }

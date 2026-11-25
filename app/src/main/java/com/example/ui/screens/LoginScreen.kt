@@ -91,7 +91,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.filled.CardGiftcard
 import com.example.data.entity.UserAccountEntity
+import com.example.firebase.FreeLifetimePromoStatus
 import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseUiState
 import com.example.ui.components.DesignSegmentedTabs
@@ -103,6 +105,7 @@ import com.example.ui.viewmodel.SUPER_ADMIN_EMAIL
 fun LoginScreen(viewModel: PosViewModel) {
     val authState by viewModel.authUiState.collectAsStateWithLifecycle()
     val licenseUiState by viewModel.licenseUiState.collectAsStateWithLifecycle()
+    val promoStatus by viewModel.freeLifetimePromoStatus.collectAsStateWithLifecycle()
     val userAccounts by viewModel.userAccounts.collectAsStateWithLifecycle()
     val storeProfile by viewModel.storeProfile.collectAsStateWithLifecycle()
 
@@ -111,6 +114,7 @@ fun LoginScreen(viewModel: PosViewModel) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.syncCustomerLicenseSilently()
+                viewModel.refreshFreeLifetimePromoStatus()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -390,6 +394,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                     viewModel.loginWithLocalCredentials(loginUsername, loginPin)
                                 },
                                 licenseUiState = licenseUiState,
+                                promoStatus = promoStatus,
                                 onRefreshLicenseClick = handleRefreshLicenseOnline,
                                 isLoading = authState.isAuthLoading,
                                 lastEmail = authState.lastEmail,
@@ -570,6 +575,7 @@ fun LoginScreen(viewModel: PosViewModel) {
                                 viewModel.loginWithLocalCredentials(loginUsername, loginPin)
                             },
                             licenseUiState = licenseUiState,
+                            promoStatus = promoStatus,
                             onRefreshLicenseClick = handleRefreshLicenseOnline,
                             isLoading = authState.isAuthLoading,
                             lastEmail = authState.lastEmail,
@@ -916,6 +922,7 @@ private fun AuthContentCard(
     onLoginPinChange: (String) -> Unit,
     onSubmitLogin: () -> Unit,
     licenseUiState: LicenseUiState,
+    promoStatus: FreeLifetimePromoStatus,
     onRefreshLicenseClick: () -> Unit,
     isLoading: Boolean,
     lastEmail: String,
@@ -938,6 +945,86 @@ private fun AuthContentCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (isFirstTimeSetup) {
+                if (promoStatus.isLifetimeActiveWithSlots) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Emerald50,
+                        border = BorderStroke(1.dp, Emerald200),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("promo_free_lifetime_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CardGiftcard,
+                                contentDescription = null,
+                                tint = Emerald700,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "PROMO GRATIS SELAMANYA!",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Emerald800
+                                    )
+                                )
+                                val nextTierHint = if (promoStatus.yearlyQuota > 0) {
+                                    " Setelah kuota selamanya penuh, tersedia juga ${promoStatus.yearlyQuota} slot Gratis 1 Tahun."
+                                } else ""
+                                Text(
+                                    text = "Gratis Lisensi Penuh Selamanya untuk ${promoStatus.quota} pendaftar pertama (Sisa ${promoStatus.remaining} slot lagi)!$nextTierHint",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = Slate800,
+                                        fontSize = 11.sp
+                                    )
+                                )
+                            }
+                        }
+                    }
+                } else if (promoStatus.isYearlyActiveWithSlots) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Emerald50,
+                        border = BorderStroke(1.dp, Emerald200),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("promo_free_yearly_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CardGiftcard,
+                                contentDescription = null,
+                                tint = Emerald700,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "PROMO GRATIS 1 TAHUN!",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Emerald800
+                                    )
+                                )
+                                Text(
+                                    text = "Gratis Lisensi Penuh 1 Tahun (365 Hari) untuk ${promoStatus.yearlyQuota} pendaftar promo (Sisa ${promoStatus.yearlyRemaining} slot lagi)!",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = Slate800,
+                                        fontSize = 11.sp
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
                 // Step 1: Mandatory Online Supabase Email + Password Verification Banner
                 val isEmailVerified = verifiedEmail.isNotBlank()
                 Surface(
@@ -1075,7 +1162,11 @@ private fun AuthContentCard(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Siap aktifkan Demo 3 Hari",
+                                    text = when {
+                                        promoStatus.isLifetimeActiveWithSlots -> "Siap klaim Promo Gratis Selamanya"
+                                        promoStatus.isYearlyActiveWithSlots -> "Siap klaim Promo Gratis 1 Tahun"
+                                        else -> "Siap aktifkan Demo 3 Hari"
+                                    },
                                     style = MaterialTheme.typography.labelSmall.copy(color = Emerald700, fontWeight = FontWeight.Bold)
                                 )
                                 TextButton(
@@ -1228,7 +1319,15 @@ private fun AuthContentCard(
                     } else {
                         Icon(Icons.Default.AdminPanelSettings, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Daftar Trial 3 Hari & Masuk", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(
+                            text = when {
+                                promoStatus.isLifetimeActiveWithSlots -> "Daftar & Klaim Gratis Selamanya"
+                                promoStatus.isYearlyActiveWithSlots -> "Daftar & Klaim Gratis 1 Tahun"
+                                else -> "Daftar Trial 3 Hari & Masuk"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
                     }
                 }
             } else {
@@ -1385,9 +1484,13 @@ private fun LicenseStatusCard(licenseUiState: LicenseUiState, lastEmail: String)
 
     val daysRemaining = ((licenseUiState.remainingMillis.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L)
     val title = when (licenseUiState.accessStatus) {
-        LicenseAccessStatus.FULL_ACTIVE -> "Lisensi KASLITE Penuh Aktif"
+        LicenseAccessStatus.FULL_ACTIVE -> if (licenseUiState.expiresAtMillis > 0L) {
+            "Lisensi Penuh Aktif • Sisa $daysRemaining hari"
+        } else {
+            "Lisensi KASLITE Penuh Selamanya"
+        }
         LicenseAccessStatus.DEMO_ACTIVE -> "Mode Demo 3 Hari • Sisa $daysRemaining hari"
-        LicenseAccessStatus.DEMO_EXPIRED -> "Masa Demo Berakhir (Hanya Menu Produk)"
+        LicenseAccessStatus.DEMO_EXPIRED -> "Masa Lisensi / Demo Berakhir"
         LicenseAccessStatus.SUSPENDED -> "Lisensi Dinonaktifkan Admin Pusat"
         LicenseAccessStatus.DEVICE_MISMATCH -> "Lisensi Terikat Perangkat Lain"
         LicenseAccessStatus.UNREGISTERED -> "Mode Lokal • Belum Sinkron Lisensi"

@@ -1739,4 +1739,142 @@ class ExampleRobolectricTest {
         val (hasNewerSame, _) = vm.parseReleaseToUpdateInfo(multiAssetRelease, "1.4", 5)
         assertFalse("Same version and code must not prompt update", hasNewerSame)
     }
+
+    @Test
+    fun `test PIN brute-force cooldown lockout and backup Zip Slip protection`(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = com.example.firebase.FirebaseSessionStore(context)
+        store.clearFailedPinAttempts()
+
+        val now = 1_750_000_000_000L
+        assertEquals(0, store.getPinLockoutRemainingSeconds(now))
+        repeat(4) {
+            assertEquals(0, store.recordFailedPinAttempt(now))
+        }
+        val lockSec = store.recordFailedPinAttempt(now)
+        assertEquals(30, lockSec)
+        assertTrue(store.getPinLockoutRemainingSeconds(now + 10_000L) in 19..20)
+        assertEquals(0, store.getPinLockoutRemainingSeconds(now + 31_000L))
+        store.clearFailedPinAttempts()
+
+        // Craft a malicious ZIP containing a Zip Slip traversal entry plus valid database_backup.json
+        val zipFile = java.io.File(context.cacheDir, "malicious_backup_test.kaslite")
+        val escapedTarget = java.io.File(context.cacheDir, "escaped_evil.txt")
+        escapedTarget.delete()
+        java.util.zip.ZipOutputStream(zipFile.outputStream()).use { zos ->
+            zos.putNextEntry(java.util.zip.ZipEntry("../../escaped_evil.txt"))
+            zos.write("PWNED".toByteArray())
+            zos.closeEntry()
+
+            zos.putNextEntry(java.util.zip.ZipEntry("database_backup.json"))
+            zos.write("{\"products\":[],\"store_profiles\":[{\"id\":1,\"name\":\"Toko Aman\"}]}".toByteArray())
+            zos.closeEntry()
+        }
+
+        val inspected = com.example.data.backup.KasLiteBackupManager.inspectBackupZip(
+            context = context,
+            uri = android.net.Uri.fromFile(zipFile)
+        )
+        assertFalse("Zip Slip entry must never write outside temp dir", escapedTarget.exists())
+        assertEquals("Toko Aman", inspected.storeName)
+        com.example.data.backup.KasLiteBackupManager.cleanupTemp(inspected)
+        zipFile.delete()
+    }
+
+    @Test
+    fun `test 1-month 1-year lifetime license extension and first-N free promo JSON parsing`() {
+        val now = 1_760_000_000_000L
+        val oneDayMillis = 24L * 60L * 60L * 1000L
+
+        // 1. Fresh 1-month (30d) activation from DEMO or EXPIRED
+        val fromDemo30 = com.example.supabase.SupabaseLicenseRepository.computeExtendedLicenseExpiryMillis(
+            nowMillis = now,
+            currentPlanType = "DEMO",
+            currentStatus = "DEMO",
+            currentExpiresAtMillis = 0L,
+            durationDays = com.example.firebase.AdminLicensePlanOption.MONTHLY_30.durationDays
+        )
+        assertEquals(now + 30L * oneDayMillis, fromDemo30)
+
+        // 2. Extending an active 1-month license by 1 year (365d) adds onto remaining expiry
+        val existingExpiry = now + 12L * oneDayMillis
+        val extended365 = com.example.supabase.SupabaseLicenseRepository.computeExtendedLicenseExpiryMillis(
+            nowMillis = now,
+            currentPlanType = "FULL",
+            currentStatus = "ACTIVE",
+            currentExpiresAtMillis = existingExpiry,
+            durationDays = com.example.firebase.AdminLicensePlanOption.YEARLY_365.durationDays
+        )
+        assertEquals(existingExpiry + 365L * oneDayMillis, extended365)
+
+        // 3. Extending an already expired FULL license starts fresh from now
+        val expiredExpiry = now - 5L * oneDayMillis
+        val renewed30 = com.example.supabase.SupabaseLicenseRepository.computeExtendedLicenseExpiryMillis(
+            nowMillis = now,
+            currentPlanType = "FULL",
+            currentStatus = "ACTIVE",
+            currentExpiresAtMillis = expiredExpiry,
+            durationDays = 30
+        )
+        assertEquals(now + 30L * oneDayMillis, renewed30)
+
+        // 4. Lifetime option always resolves to 0L (permanent)
+        val lifetimeExp = com.example.supabase.SupabaseLicenseRepository.computeExtendedLicenseExpiryMillis(
+            nowMillis = now,
+            currentPlanType = "FULL",
+            currentStatus = "ACTIVE",
+            currentExpiresAtMillis = existingExpiry,
+            durationDays = com.example.firebase.AdminLicensePlanOption.LIFETIME.durationDays
+        )
+        assertEquals(0L, lifetimeExp)
+
+        // 5. DeveloperBankConfig free_lifetime_quota & free_yearly_quota JSON roundtrip & negative clamp
+        val cfg = com.example.firebase.DeveloperBankConfig(
+            bankName = "BCA",
+            accountNumber = "1234567890",
+            accountHolder = "Egis",
+            freeLifetimeQuota = 15,
+            freeYearlyQuota = 25
+        )
+        val cfgJson = com.example.supabase.SupabaseLicenseRepository.developerBankConfigToJson(cfg)
+        assertEquals(15, cfgJson.getInt("free_lifetime_quota"))
+        assertEquals(25, cfgJson.getInt("free_yearly_quota"))
+        val parsedCfg = com.example.supabase.SupabaseLicenseRepository.parseDeveloperBankConfigJson(cfgJson)
+        assertEquals(15, parsedCfg.freeLifetimeQuota)
+        assertEquals(25, parsedCfg.freeYearlyQuota)
+
+        val negativeQuotaJson = org.json.JSONObject("""{"id":"payment_config","free_lifetime_quota":-5,"free_yearly_quota":-2}""")
+        val parsedNeg = com.example.supabase.SupabaseLicenseRepository.parseDeveloperBankConfigJson(negativeQuotaJson)
+        assertEquals(0, parsedNeg.freeLifetimeQuota)
+        assertEquals(0, parsedNeg.freeYearlyQuota)
+
+        // 6. FreeLifetimePromoStatus RPC response parsing (Lifetime + 1-Year tiers)
+        val promoJson = org.json.JSONObject("""{"quota":10,"used":4,"remaining":6,"yearly_quota":15,"yearly_remaining":15}""")
+        val promo = com.example.supabase.SupabaseLicenseRepository.parseFreeLifetimePromoStatusJson(promoJson)
+        assertEquals(10, promo.quota)
+        assertEquals(4, promo.used)
+        assertEquals(6, promo.remaining)
+        assertEquals(15, promo.yearlyQuota)
+        assertEquals(15, promo.yearlyRemaining)
+        assertTrue(promo.isLifetimeActiveWithSlots)
+        assertTrue(promo.isYearlyActiveWithSlots)
+        assertTrue(promo.isActiveWithSlots)
+
+        // Tier 1 exhausted (used = 12 of 10), Tier 2 (1-Year quota = 10) still has 8 slots left
+        val yearlyFallbackPromo = com.example.supabase.SupabaseLicenseRepository.parseFreeLifetimePromoStatusJson(
+            org.json.JSONObject("""{"quota":10,"used":12,"yearly_quota":10}""")
+        )
+        assertEquals(0, yearlyFallbackPromo.remaining)
+        assertEquals(8, yearlyFallbackPromo.yearlyRemaining)
+        assertFalse(yearlyFallbackPromo.isLifetimeActiveWithSlots)
+        assertTrue(yearlyFallbackPromo.isYearlyActiveWithSlots)
+        assertTrue(yearlyFallbackPromo.isActiveWithSlots)
+
+        val fullPromo = com.example.supabase.SupabaseLicenseRepository.parseFreeLifetimePromoStatusJson(
+            org.json.JSONObject("""{"quota":10,"used":12,"yearly_quota":0}""")
+        )
+        assertEquals(0, fullPromo.remaining)
+        assertEquals(0, fullPromo.yearlyRemaining)
+        assertFalse(fullPromo.isActiveWithSlots)
+    }
 }

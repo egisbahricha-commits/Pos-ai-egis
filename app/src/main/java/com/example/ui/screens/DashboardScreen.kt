@@ -189,12 +189,15 @@ fun DashboardScreen(viewModel: PosViewModel) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = when (licenseUiState.accessStatus) {
-                                LicenseAccessStatus.FULL_ACTIVE ->
-                                    "KASLITE Lisensi Penuh • Data 100% Lokal & Backup Siap"
+                                LicenseAccessStatus.FULL_ACTIVE -> if (licenseUiState.expiresAtMillis > 0L) {
+                                    "KASLITE Lisensi Penuh (Sisa $remainingDays hari) • Ketuk untuk Perpanjang / Backup"
+                                } else {
+                                    "KASLITE Lisensi Penuh Selamanya • Data 100% Lokal & Backup Siap"
+                                }
                                 LicenseAccessStatus.DEMO_ACTIVE ->
                                     "Mode Demo KASLITE (Sisa $remainingDays hari) • Ketuk untuk Aktivasi / Backup"
                                 else ->
-                                    "Demo Habis / Terkunci • Hubungi Super Admin atau Ketuk Pengaturan"
+                                    "Lisensi Berakhir / Terkunci • Hubungi Super Admin atau Ketuk Pengaturan"
                             },
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = when {

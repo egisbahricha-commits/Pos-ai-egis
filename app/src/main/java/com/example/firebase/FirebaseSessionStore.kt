@@ -203,4 +203,31 @@ class FirebaseSessionStore(context: Context) {
             .remove("lic_max_clock")
             .apply()
     }
+
+    fun getPinLockoutRemainingSeconds(nowMillis: Long = System.currentTimeMillis()): Int {
+        val until = prefs.getLong("pin_lockout_until", 0L)
+        if (until <= nowMillis) return 0
+        return (((until - nowMillis) + 999L) / 1000L).toInt().coerceAtLeast(1)
+    }
+
+    fun recordFailedPinAttempt(nowMillis: Long = System.currentTimeMillis()): Int {
+        val attempts = prefs.getInt("pin_failed_attempts", 0) + 1
+        val editor = prefs.edit().putInt("pin_failed_attempts", attempts)
+        var lockoutSec = 0
+        if (attempts >= 5) {
+            val lockoutDurationMs = 30_000L
+            editor.putLong("pin_lockout_until", nowMillis + lockoutDurationMs)
+            editor.putInt("pin_failed_attempts", 0)
+            lockoutSec = 30
+        }
+        editor.apply()
+        return lockoutSec
+    }
+
+    fun clearFailedPinAttempts() {
+        prefs.edit()
+            .remove("pin_failed_attempts")
+            .remove("pin_lockout_until")
+            .apply()
+    }
 }

@@ -3,12 +3,14 @@ package com.example.supabase
 import android.content.Context
 import android.util.Log
 import com.example.BuildConfig
+import com.example.firebase.AdminLicensePlanOption
 import com.example.firebase.BugReportDoc
 import com.example.firebase.DeveloperBankConfig
 import com.example.firebase.DonationApprovalOutcome
 import com.example.firebase.DonationPackage
 import com.example.firebase.DonationRequestDoc
 import com.example.firebase.FirebaseSessionStore
+import com.example.firebase.FreeLifetimePromoStatus
 import com.example.firebase.KasLiteSupportEmailHelper
 import com.example.firebase.LicenseDoc
 import kotlinx.coroutines.Dispatchers
@@ -210,10 +212,15 @@ class SupabaseLicenseRepository(
             whatsappNumber = obj.optString("whatsapp_number", ""),
             supportEmail = obj.optString("support_email", "egisbahricha@gmail.com").ifBlank { "egisbahricha@gmail.com" },
             notes = obj.optString("notes", ""),
+            freeLifetimeQuota = obj.optInt("free_lifetime_quota", 0).coerceAtLeast(0),
+            freeYearlyQuota = obj.optInt("free_yearly_quota", 0).coerceAtLeast(0),
             updatedAtMillis = isoToMillis(obj.optString("updated_at", ""))
         )
 
-        fun developerBankConfigToJson(cfg: DeveloperBankConfig): JSONObject = JSONObject().apply {
+        fun developerBankConfigToJson(
+            cfg: DeveloperBankConfig,
+            includePromoQuota: Boolean = true
+        ): JSONObject = JSONObject().apply {
             put("id", cfg.id.ifBlank { "payment_config" })
             put("bank_name", cfg.bankName.trim())
             put("account_number", cfg.accountNumber.trim())
@@ -221,6 +228,57 @@ class SupabaseLicenseRepository(
             put("whatsapp_number", cfg.whatsappNumber.trim())
             put("support_email", cfg.supportEmail.trim().ifBlank { "egisbahricha@gmail.com" })
             put("notes", cfg.notes.trim())
+            if (includePromoQuota) {
+                put("free_lifetime_quota", cfg.freeLifetimeQuota.coerceAtLeast(0))
+                put("free_yearly_quota", cfg.freeYearlyQuota.coerceAtLeast(0))
+            }
+        }
+
+        fun parseFreeLifetimePromoStatusJson(obj: JSONObject): FreeLifetimePromoStatus {
+            val quota = obj.optInt("quota", 0).coerceAtLeast(0)
+            val used = obj.optInt("used", 0).coerceAtLeast(0)
+            val remaining = if (obj.has("remaining")) {
+                obj.optInt("remaining", 0).coerceAtLeast(0)
+            } else {
+                (quota - used).coerceAtLeast(0)
+            }
+            val yearlyQuota = obj.optInt("yearly_quota", 0).coerceAtLeast(0)
+            val yearlyRemaining = if (obj.has("yearly_remaining")) {
+                obj.optInt("yearly_remaining", 0).coerceAtLeast(0)
+            } else {
+                ((quota + yearlyQuota) - maxOf(used, quota)).coerceAtLeast(0)
+            }
+            return FreeLifetimePromoStatus(
+                quota = quota,
+                used = used,
+                remaining = remaining,
+                yearlyQuota = yearlyQuota,
+                yearlyRemaining = yearlyRemaining
+            )
+        }
+
+        /**
+         * Menghitung masa berlaku lisensi FULL berikutnya (1 bulan / 1 tahun / selamanya).
+         * Jika lisensi saat ini masih FULL AKTIF berbatas waktu, durasi perpanjangan ditambahkan dari sisa masa aktif.
+         */
+        fun computeExtendedLicenseExpiryMillis(
+            nowMillis: Long,
+            currentPlanType: String,
+            currentStatus: String,
+            currentExpiresAtMillis: Long,
+            durationDays: Int
+        ): Long {
+            if (durationDays <= 0) return 0L
+            val isCurrentlyActiveFull = (currentPlanType.equals("FULL", ignoreCase = true) ||
+                currentStatus.equals("ACTIVE", ignoreCase = true)) &&
+                !currentStatus.equals("SUSPENDED", ignoreCase = true) &&
+                !currentStatus.equals("EXPIRED", ignoreCase = true)
+            val baseMillis = if (isCurrentlyActiveFull && currentExpiresAtMillis > nowMillis) {
+                currentExpiresAtMillis
+            } else {
+                nowMillis
+            }
+            return baseMillis + durationDays.toLong() * ONE_DAY_MILLIS
         }
 
         fun parseDonationRequestJson(obj: JSONObject): DonationRequestDoc = DonationRequestDoc(
@@ -679,6 +737,40 @@ class SupabaseLicenseRepository(
         phone: String,
         deviceId: String
     ): LicenseDoc {
+        val generatedKey = generateLicenseKey()
+        // Gunakan RPC server-side terlebih dahulu agar Promo Gratis Selamanya (N pendaftar pertama)
+        // tervalidasi atomik & aman terhadap manipulasi klien.
+        val rpcPayload = JSONObject().apply {
+            put("p_license_key", generatedKey)
+            put("p_store_name", storeName.trim())
+            put("p_owner_name", ownerName.trim())
+            put("p_phone", phone.trim())
+            put("p_device_id", deviceId)
+        }
+        val rpcRes = executeRestWithRetry(
+            method = "POST",
+            pathAndQuery = "/rest/v1/rpc/kaslite_register_customer_license",
+            bodyJson = rpcPayload.toString()
+        )
+        if (rpcRes.code in 200..299) {
+            val trimmed = rpcRes.body.trim()
+            if (trimmed.startsWith("[")) {
+                val arr = JSONArray(trimmed)
+                if (arr.length() > 0) return parseLicenseDocJson(arr.getJSONObject(0))
+            } else if (trimmed.startsWith("{")) {
+                return parseLicenseDocJson(JSONObject(trimmed))
+            }
+        } else {
+            val lowerBody = rpcRes.body.lowercase(Locale.ROOT)
+            val isMissingRpc = rpcRes.code == 404 ||
+                lowerBody.contains("pgrst202") ||
+                lowerBody.contains("could not find the function") ||
+                lowerBody.contains("42883")
+            if (!isMissingRpc) {
+                throw IllegalStateException(translateErrorMessage(rpcRes.code, rpcRes.body))
+            }
+        }
+
         val cleanEmail = ownerEmail.trim().lowercase(Locale.ROOT)
         val existingByUid = fetchLicensesByOwnerUid(ownerUid).let { rows ->
             resolveAuthoritativeCustomerLicense(null, rows, deviceId)
@@ -713,7 +805,6 @@ class SupabaseLicenseRepository(
 
         val now = System.currentTimeMillis()
         val demoEnd = now + DEMO_DURATION_MILLIS
-        val generatedKey = generateLicenseKey()
         val newDoc = LicenseDoc(
             licenseKey = generatedKey,
             storeName = storeName.trim(),
@@ -783,7 +874,7 @@ class SupabaseLicenseRepository(
         ownerEmail: String,
         phone: String = "",
         planType: String = "FULL",
-        durationDays: Int = 3650
+        durationDays: Int = 0
     ): LicenseDoc {
         val now = System.currentTimeMillis()
         val isFull = planType.equals("FULL", ignoreCase = true)
@@ -801,14 +892,14 @@ class SupabaseLicenseRepository(
             demoStartedAtMillis = if (isFull) 0L else now,
             demoExpiresAtMillis = if (isFull) 0L else now + DEMO_DURATION_MILLIS,
             activatedAtMillis = if (isFull) now else 0L,
-            expiresAtMillis = if (isFull && durationDays > 0) now + durationDays * ONE_DAY_MILLIS else 0L
+            expiresAtMillis = if (isFull && durationDays > 0) now + durationDays.toLong() * ONE_DAY_MILLIS else 0L
         )
         return insertLicenseRow(doc)
     }
 
-    suspend fun superAdminActivateFull(licenseKey: String, durationDays: Int = 3650): LicenseDoc {
+    suspend fun superAdminActivateFull(licenseKey: String, durationDays: Int = 0): LicenseDoc {
         val now = System.currentTimeMillis()
-        val exp = if (durationDays > 0) now + durationDays * ONE_DAY_MILLIS else 0L
+        val exp = if (durationDays > 0) now + durationDays.toLong() * ONE_DAY_MILLIS else 0L
         val patch = JSONObject().apply {
             put("plan_type", "FULL")
             put("status", "ACTIVE")
@@ -819,12 +910,50 @@ class SupabaseLicenseRepository(
             ?: throw IllegalStateException("Lisensi $licenseKey tidak ditemukan.")
     }
 
+    suspend fun superAdminApplyLicensePackage(
+        licenseKey: String,
+        option: AdminLicensePlanOption,
+        extendExisting: Boolean = true
+    ): LicenseDoc {
+        if (option == AdminLicensePlanOption.DEMO_3) {
+            return superAdminExtendDemo(licenseKey, option.durationDays)
+        }
+        val cleanKey = licenseKey.trim()
+        val current = getLicenseByKey(cleanKey)
+            ?: throw IllegalStateException("Lisensi $cleanKey tidak ditemukan.")
+        val now = System.currentTimeMillis()
+        val newExpiry = if (extendExisting) {
+            computeExtendedLicenseExpiryMillis(
+                nowMillis = now,
+                currentPlanType = current.planType,
+                currentStatus = current.status,
+                currentExpiresAtMillis = current.expiresAtMillis,
+                durationDays = option.durationDays
+            )
+        } else {
+            if (option.durationDays > 0) now + option.durationDays.toLong() * ONE_DAY_MILLIS else 0L
+        }
+        val activatedAt = if (current.activatedAtMillis > 0L && current.planType.equals("FULL", ignoreCase = true)) {
+            current.activatedAtMillis
+        } else {
+            now
+        }
+        val patch = JSONObject().apply {
+            put("plan_type", "FULL")
+            put("status", "ACTIVE")
+            put("activated_at_millis", activatedAt)
+            put("expires_at_millis", newExpiry)
+        }
+        return patchLicenseByQuery("license_key=eq.${urlEncode(cleanKey)}", patch)
+            ?: throw IllegalStateException("Lisensi $cleanKey tidak ditemukan.")
+    }
+
     suspend fun superAdminExtendDemo(licenseKey: String, days: Int = 3): LicenseDoc {
         val current = getLicenseByKey(licenseKey.trim())
             ?: throw IllegalStateException("Lisensi $licenseKey tidak ditemukan.")
         val now = System.currentTimeMillis()
         val base = maxOf(now, current.demoExpiresAtMillis)
-        val newDemoExp = base + days * ONE_DAY_MILLIS
+        val newDemoExp = base + days.toLong() * ONE_DAY_MILLIS
         val patch = JSONObject().apply {
             put("plan_type", "DEMO")
             put("status", "DEMO")
@@ -881,12 +1010,37 @@ class SupabaseLicenseRepository(
         return if (array.length() > 0) parseDeveloperBankConfigJson(array.getJSONObject(0)) else DeveloperBankConfig()
     }
 
+    suspend fun fetchFreeLifetimePromoStatus(): FreeLifetimePromoStatus {
+        if (!isConfigured()) return FreeLifetimePromoStatus()
+        val path = "/rest/v1/rpc/kaslite_get_promo_status"
+        val res = runCatching {
+            if (sessionStore.hasSupabaseSession()) {
+                executeRestWithRetry("POST", path, "{}")
+            } else {
+                executeHttp("POST", path, "{}", bearerToken = anonKey)
+            }
+        }.getOrElse {
+            return FreeLifetimePromoStatus()
+        }
+        if (res.code !in 200..299) {
+            return FreeLifetimePromoStatus()
+        }
+        return runCatching {
+            parseFreeLifetimePromoStatusJson(JSONObject(res.body.ifBlank { "{}" }))
+        }.getOrDefault(FreeLifetimePromoStatus())
+    }
+
     suspend fun saveDeveloperBankConfig(config: DeveloperBankConfig): DeveloperBankConfig {
-        val normalized = config.copy(id = "payment_config")
-        val payload = developerBankConfigToJson(normalized).apply {
-            put("updated_at", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }.format(java.util.Date()))
+        val normalized = config.copy(
+            id = "payment_config",
+            freeLifetimeQuota = config.freeLifetimeQuota.coerceAtLeast(0),
+            freeYearlyQuota = config.freeYearlyQuota.coerceAtLeast(0)
+        )
+        val updatedIso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date())
+        val payload = developerBankConfigToJson(normalized, includePromoQuota = true).apply {
+            put("updated_at", updatedIso)
         }
         val res = executeRestWithRetry(
             method = "POST",
@@ -895,6 +1049,30 @@ class SupabaseLicenseRepository(
             extraHeaders = mapOf("Prefer" to "resolution=merge-duplicates,return=representation")
         )
         if (res.code !in 200..299) {
+            val lower = res.body.lowercase(Locale.ROOT)
+            val missingPromoCol = (lower.contains("free_lifetime_quota") || lower.contains("free_yearly_quota")) &&
+                (lower.contains("pgrst204") || lower.contains("42703") || lower.contains("column") || lower.contains("schema cache"))
+            if (missingPromoCol) {
+                if (normalized.freeLifetimeQuota > 0 || normalized.freeYearlyQuota > 0) {
+                    throw IllegalStateException(
+                        "Kolom promo belum lengkap di Supabase (free_lifetime_quota / free_yearly_quota). Tekan 'Lihat & Salin SQL Promo Supabase' lalu jalankan di SQL Editor Supabase."
+                    )
+                }
+                val fallbackPayload = developerBankConfigToJson(normalized, includePromoQuota = false).apply {
+                    put("updated_at", updatedIso)
+                }
+                val fallbackRes = executeRestWithRetry(
+                    method = "POST",
+                    pathAndQuery = "/rest/v1/developer_settings?on_conflict=id",
+                    bodyJson = fallbackPayload.toString(),
+                    extraHeaders = mapOf("Prefer" to "resolution=merge-duplicates,return=representation")
+                )
+                if (fallbackRes.code !in 200..299) {
+                    throw IllegalStateException(translateErrorMessage(fallbackRes.code, fallbackRes.body))
+                }
+                val arr = JSONArray(fallbackRes.body.ifBlank { "[]" })
+                return if (arr.length() > 0) parseDeveloperBankConfigJson(arr.getJSONObject(0)) else normalized
+            }
             throw IllegalStateException(translateErrorMessage(res.code, res.body))
         }
         val array = JSONArray(res.body.ifBlank { "[]" })

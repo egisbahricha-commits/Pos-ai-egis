@@ -318,8 +318,11 @@ object KasLiteBackupManager {
                             zis.closeEntry()
                             continue
                         }
+                        val tempRootCanonical = tempDir.canonicalPath.let {
+                            if (it.endsWith(File.separator)) it else it + File.separator
+                        }
                         val outFile = File(tempDir, safeName)
-                        if (!outFile.canonicalPath.startsWith(tempDir.canonicalPath)) {
+                        if (!outFile.canonicalPath.startsWith(tempRootCanonical)) {
                             zis.closeEntry()
                             continue
                         }

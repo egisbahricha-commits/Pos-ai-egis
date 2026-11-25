@@ -116,7 +116,7 @@ create policy "licenses_delete_admin_only"
   using (public.kaslite_is_super_admin());
 
 -- ============================================================================
--- 2. PENGATURAN REKENING DONASI PENGEMBANG (Bisa diubah langsung di Super Admin)
+-- 2. PENGATURAN REKENING DONASI & KUOTA PROMO GRATIS (SELAMANYA / 1 TAHUN)
 -- ============================================================================
 create table if not exists public.developer_settings (
   id text primary key,
@@ -126,8 +126,16 @@ create table if not exists public.developer_settings (
   whatsapp_number text not null default '',
   support_email text not null default 'egisbahricha@gmail.com',
   notes text not null default 'Cantumkan email akun KASLITE atau nama toko pada berita transfer.',
+  free_lifetime_quota integer not null default 0 check (free_lifetime_quota >= 0),
+  free_yearly_quota integer not null default 0 check (free_yearly_quota >= 0),
   updated_at timestamptz not null default now()
 );
+
+alter table public.developer_settings
+  add column if not exists free_lifetime_quota integer not null default 0;
+
+alter table public.developer_settings
+  add column if not exists free_yearly_quota integer not null default 0;
 
 alter table public.developer_settings enable row level security;
 
@@ -145,6 +153,186 @@ create policy "dev_settings_write_admin_only"
   to authenticated
   using (public.kaslite_is_super_admin())
   with check (public.kaslite_is_super_admin());
+
+-- ============================================================================
+-- 2B. PROMO GRATIS SELAMANYA & GRATIS 1 TAHUN UNTUK N PENDAFTAR PERTAMA
+-- ============================================================================
+create or replace function public.kaslite_get_promo_status()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_lifetime_quota integer := 0;
+  v_yearly_quota integer := 0;
+  v_used integer := 0;
+  v_lifetime_remaining integer := 0;
+  v_yearly_remaining integer := 0;
+begin
+  select coalesce(free_lifetime_quota, 0),
+         coalesce(free_yearly_quota, 0)
+    into v_lifetime_quota, v_yearly_quota
+    from public.developer_settings
+   where id = 'payment_config'
+   limit 1;
+
+  v_lifetime_quota := greatest(0, coalesce(v_lifetime_quota, 0));
+  v_yearly_quota := greatest(0, coalesce(v_yearly_quota, 0));
+
+  select count(*)::integer
+    into v_used
+    from public.licenses
+   where lower(coalesce(owner_email, '')) <> 'egisbahricha@gmail.com';
+
+  v_lifetime_remaining := greatest(0, v_lifetime_quota - v_used);
+  v_yearly_remaining := greatest(0, (v_lifetime_quota + v_yearly_quota) - greatest(v_used, v_lifetime_quota));
+
+  return jsonb_build_object(
+    'quota', v_lifetime_quota,
+    'used', v_used,
+    'remaining', v_lifetime_remaining,
+    'yearly_quota', v_yearly_quota,
+    'yearly_remaining', v_yearly_remaining
+  );
+end;
+$$;
+
+revoke all on function public.kaslite_get_promo_status() from public;
+grant execute on function public.kaslite_get_promo_status() to anon, authenticated;
+
+create or replace function public.kaslite_register_customer_license(
+  p_license_key text,
+  p_store_name text,
+  p_owner_name text,
+  p_phone text,
+  p_device_id text
+)
+returns setof public.licenses
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid text := coalesce(auth.uid()::text, '');
+  v_email text := lower(trim(coalesce(auth.jwt() ->> 'email', '')));
+  v_existing public.licenses%rowtype;
+  v_inserted public.licenses%rowtype;
+  v_lifetime_quota integer := 0;
+  v_yearly_quota integer := 0;
+  v_used integer := 0;
+  v_now_millis bigint := (extract(epoch from now()) * 1000)::bigint;
+  v_demo_end_millis bigint := ((extract(epoch from now()) * 1000)::bigint) + 259200000;
+  v_yearly_end_millis bigint := ((extract(epoch from now()) * 1000)::bigint) + 31536000000;
+  v_promo_tier text := 'NONE';
+  v_clean_key text := nullif(trim(coalesce(p_license_key, '')), '');
+begin
+  if v_uid = '' or v_email = '' then
+    raise exception 'Sesi login Supabase diperlukan untuk registrasi lisensi.';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('kaslite_free_lifetime_promo_lock'));
+
+  -- Cek apakah user sudah punya lisensi atas UID atau DEMO yang belum diklaim dengan email sama
+  select *
+    into v_existing
+    from public.licenses
+   where owner_uid = v_uid
+      or (lower(owner_email) = v_email and (coalesce(owner_uid, '') = '' and plan_type = 'DEMO'))
+   order by
+     case when plan_type = 'FULL' or status = 'ACTIVE' then 0 else 1 end,
+     updated_at desc,
+     created_at desc
+   limit 1;
+
+  if found then
+    if coalesce(v_existing.device_id, '') <> ''
+       and coalesce(trim(p_device_id), '') <> ''
+       and v_existing.device_id <> trim(p_device_id) then
+      return next v_existing;
+      return;
+    end if;
+
+    if coalesce(v_existing.owner_uid, '') = '' or coalesce(v_existing.device_id, '') = '' then
+      update public.licenses
+         set owner_uid = case when coalesce(owner_uid, '') = '' then v_uid else owner_uid end,
+             owner_email = case when coalesce(owner_email, '') = '' then v_email else owner_email end,
+             owner_name = case when coalesce(owner_name, '') = '' and trim(coalesce(p_owner_name, '')) <> '' then trim(p_owner_name) else owner_name end,
+             store_name = case when coalesce(store_name, '') = '' and trim(coalesce(p_store_name, '')) <> '' then trim(p_store_name) else store_name end,
+             phone = case when coalesce(phone, '') = '' and trim(coalesce(p_phone, '')) <> '' then trim(p_phone) else phone end,
+             device_id = case when coalesce(device_id, '') = '' and trim(coalesce(p_device_id, '')) <> '' then trim(p_device_id) else device_id end,
+             updated_at = now()
+       where id = v_existing.id
+       returning * into v_existing;
+    end if;
+    return next v_existing;
+    return;
+  end if;
+
+  if v_clean_key is null then
+    v_clean_key := 'KASLITE-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 6));
+  end if;
+
+  select coalesce(free_lifetime_quota, 0),
+         coalesce(free_yearly_quota, 0)
+    into v_lifetime_quota, v_yearly_quota
+    from public.developer_settings
+   where id = 'payment_config'
+   limit 1;
+
+  v_lifetime_quota := greatest(0, coalesce(v_lifetime_quota, 0));
+  v_yearly_quota := greatest(0, coalesce(v_yearly_quota, 0));
+
+  if (v_lifetime_quota > 0 or v_yearly_quota > 0) and v_email <> 'egisbahricha@gmail.com' then
+    select count(*)::integer
+      into v_used
+      from public.licenses
+     where lower(coalesce(owner_email, '')) <> 'egisbahricha@gmail.com';
+    if v_lifetime_quota > 0 and v_used < v_lifetime_quota then
+      v_promo_tier := 'LIFETIME';
+    elsif v_yearly_quota > 0 and v_used < (v_lifetime_quota + v_yearly_quota) then
+      v_promo_tier := 'YEARLY';
+    end if;
+  end if;
+
+  insert into public.licenses (
+    license_key,
+    store_name,
+    owner_name,
+    owner_email,
+    owner_uid,
+    phone,
+    device_id,
+    plan_type,
+    status,
+    demo_started_at_millis,
+    demo_expires_at_millis,
+    activated_at_millis,
+    expires_at_millis
+  ) values (
+    v_clean_key,
+    trim(coalesce(p_store_name, '')),
+    trim(coalesce(p_owner_name, '')),
+    v_email,
+    v_uid,
+    trim(coalesce(p_phone, '')),
+    trim(coalesce(p_device_id, '')),
+    case when v_promo_tier <> 'NONE' then 'FULL' else 'DEMO' end,
+    case when v_promo_tier <> 'NONE' then 'ACTIVE' else 'DEMO' end,
+    case when v_promo_tier <> 'NONE' then 0 else v_now_millis end,
+    case when v_promo_tier <> 'NONE' then 0 else v_demo_end_millis end,
+    case when v_promo_tier <> 'NONE' then v_now_millis else 0 end,
+    case when v_promo_tier = 'YEARLY' then v_yearly_end_millis else 0 end
+  )
+  returning * into v_inserted;
+
+  return next v_inserted;
+  return;
+end;
+$$;
+
+revoke all on function public.kaslite_register_customer_license(text, text, text, text, text) from public, anon;
+grant execute on function public.kaslite_register_customer_license(text, text, text, text, text) to authenticated;
 
 -- ============================================================================
 -- 3. KONFIRMASI DONASI KE PENGEMBANG (Manual Transfer -> Verifikasi Super Admin)

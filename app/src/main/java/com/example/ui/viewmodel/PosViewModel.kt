@@ -23,6 +23,7 @@ import com.example.data.pricing.TierPricingResolver
 import com.example.data.repository.CartItem
 import com.example.data.repository.PosRepository
 import com.example.data.repository.PurchaseItemDraft
+import com.example.firebase.AdminLicensePlanOption
 import com.example.firebase.BugReportDoc
 import com.example.firebase.DeveloperBankConfig
 import com.example.firebase.DonationApprovalOutcome
@@ -30,6 +31,7 @@ import com.example.firebase.DonationPackage
 import com.example.firebase.DonationRequestDoc
 import com.example.firebase.FirebaseAuthUiState
 import com.example.firebase.FirebaseSessionStore
+import com.example.firebase.FreeLifetimePromoStatus
 import com.example.firebase.LicenseAccessStatus
 import com.example.firebase.LicenseDoc
 import com.example.firebase.LicenseUiState
@@ -530,6 +532,9 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     private val _allLicenses = MutableStateFlow<List<LicenseDoc>>(emptyList())
     val allLicenses: StateFlow<List<LicenseDoc>> = _allLicenses.asStateFlow()
 
+    private val _freeLifetimePromoStatus = MutableStateFlow(FreeLifetimePromoStatus())
+    val freeLifetimePromoStatus: StateFlow<FreeLifetimePromoStatus> = _freeLifetimePromoStatus.asStateFlow()
+
     private val _superAdminError = MutableStateFlow<String?>(null)
     val superAdminError: StateFlow<String?> = _superAdminError.asStateFlow()
 
@@ -541,6 +546,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     @Volatile
     private var lastSilentLicenseSyncMillis: Long = 0L
+
+    fun refreshFreeLifetimePromoStatus() {
+        if (!supabaseRepository.isConfigured()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { supabaseRepository.fetchFreeLifetimePromoStatus() }
+                .onSuccess { _freeLifetimePromoStatus.value = it }
+        }
+    }
 
     private fun refreshLicenseStateFromStore() {
         val deviceId = firebaseSessionStore.getOrCreateDeviceId()
@@ -625,6 +638,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val list = supabaseRepository.getAllLicenses()
                 _allLicenses.value = list
+                runCatching { supabaseRepository.fetchFreeLifetimePromoStatus() }
+                    .onSuccess { _freeLifetimePromoStatus.value = it }
             } catch (e: Exception) {
                 val msg = "Gagal memuat database pelanggan Supabase: ${e.localizedMessage ?: e.message}"
                 _superAdminError.value = msg
@@ -662,7 +677,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         ownerName: String,
         ownerEmail: String,
         phone: String = "",
-        planType: String = "FULL",
+        planOption: AdminLicensePlanOption = AdminLicensePlanOption.LIFETIME,
         onResult: (String?) -> Unit
     ) {
         if (!supabaseRepository.isConfigured()) {
@@ -676,11 +691,14 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     ownerName = ownerName,
                     ownerEmail = ownerEmail,
                     phone = phone,
-                    planType = planType
+                    planType = planOption.planType,
+                    durationDays = planOption.durationDays
                 )
                 _allLicenses.value = supabaseRepository.getAllLicenses()
+                runCatching { supabaseRepository.fetchFreeLifetimePromoStatus() }
+                    .onSuccess { _freeLifetimePromoStatus.value = it }
                 withContext(Dispatchers.Main) {
-                    _userMessage.value = "Lisensi ${created.licenseKey} berhasil dibuat!"
+                    _userMessage.value = "Lisensi ${created.licenseKey} (${planOption.shortLabel}) berhasil dibuat!"
                     onResult(created.licenseKey)
                 }
             } catch (e: Exception) {
@@ -694,7 +712,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
     fun superAdminActivateFull(
         licenseKey: String,
-        durationDays: Int = 3650,
+        durationDays: Int = 0,
         onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
         if (!supabaseRepository.isConfigured()) {
@@ -712,6 +730,45 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     onResult(false, "Gagal aktivasi FULL: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun superAdminApplyLicensePackage(
+        licenseKey: String,
+        option: AdminLicensePlanOption,
+        extendExisting: Boolean = true,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val updated = supabaseRepository.superAdminApplyLicensePackage(
+                    licenseKey = licenseKey,
+                    option = option,
+                    extendExisting = extendExisting
+                )
+                _allLicenses.value = supabaseRepository.getAllLicenses()
+                val expiryLabel = when {
+                    option == AdminLicensePlanOption.DEMO_3 -> "Demo +3 hari"
+                    updated.expiresAtMillis <= 0L -> "Aktif PERMANEN (Selamanya)"
+                    else -> {
+                        val fmt = java.text.SimpleDateFormat("dd MMM yyyy", Locale("id", "ID"))
+                        "Berlaku s/d ${fmt.format(java.util.Date(updated.expiresAtMillis))}"
+                    }
+                }
+                val msg = "Lisensi $licenseKey diperbarui ke ${option.shortLabel} ($expiryLabel)."
+                withContext(Dispatchers.Main) {
+                    _userMessage.value = msg
+                    onResult(true, msg)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Gagal memperbarui lisensi: ${e.localizedMessage}")
                 }
             }
         }
@@ -928,17 +985,32 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun verifyPin(pin: String): Boolean {
+        val remainingLock = firebaseSessionStore.getPinLockoutRemainingSeconds()
+        if (remainingLock > 0) {
+            _userMessage.value = "Terlalu banyak percobaan PIN salah. Tunggu $remainingLock detik."
+            return false
+        }
         val cleanPin = pin.trim()
         if (cleanPin.length != 6 || !cleanPin.all { it.isDigit() }) return false
         val hash = GeraiUnaDatabase.hashPin(cleanPin)
         val activeUser = userAccounts.value.find { it.id == _activeUserId.value && it.isActive }
-        if (activeUser != null) {
-            return activeUser.pinHash == hash
+        val matched = if (activeUser != null) {
+            activeUser.pinHash == hash
+        } else {
+            // If signed in via Google Cloud without selecting a local user, match against any active Owner account
+            userAccounts.value.any {
+                it.isActive && it.role.equals("owner", ignoreCase = true) && it.pinHash == hash
+            }
         }
-        // If signed in via Google Cloud without selecting a local user, match against any active Owner account
-        return userAccounts.value.any {
-            it.isActive && it.role.equals("owner", ignoreCase = true) && it.pinHash == hash
+        if (matched) {
+            firebaseSessionStore.clearFailedPinAttempts()
+        } else {
+            val lockoutSec = firebaseSessionStore.recordFailedPinAttempt()
+            if (lockoutSec > 0) {
+                _userMessage.value = "Terlalu banyak percobaan PIN salah. Coba lagi dalam $lockoutSec detik."
+            }
         }
+        return matched
     }
 
     fun hasMenuPermission(screen: Screen): Boolean {
@@ -1033,6 +1105,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 refreshLicenseStateFromStore()
                 syncCustomerLicenseSilently(force = true)
+                refreshFreeLifetimePromoStatus()
             } catch (_: Exception) {
             }
         }
@@ -1287,10 +1360,20 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                         authInfoMessage = null
                     )
                 }
-                _userMessage.value = if (_licenseUiState.value.isLockedToProductOnly) {
-                    "Akun lokal dibuat. Status lisensi: ${_licenseUiState.value.accessStatus.name}."
-                } else {
-                    "Pendaftaran sukses! Mode Demo 3 Hari aktif untuk $cleanStore."
+                refreshFreeLifetimePromoStatus()
+                val isFullActive = licenseDoc.planType.equals("FULL", ignoreCase = true) &&
+                    licenseDoc.status.equals("ACTIVE", ignoreCase = true)
+                val grantedLifetimePromo = isFullActive && licenseDoc.expiresAtMillis == 0L
+                val grantedYearlyPromo = isFullActive && licenseDoc.expiresAtMillis > 0L
+                _userMessage.value = when {
+                    _licenseUiState.value.isLockedToProductOnly ->
+                        "Akun lokal dibuat. Status lisensi: ${_licenseUiState.value.accessStatus.name}."
+                    grantedLifetimePromo ->
+                        "Selamat! Anda mendapat PROMO GRATIS SELAMANYA — Lisensi Penuh Permanen aktif untuk $cleanStore!"
+                    grantedYearlyPromo ->
+                        "Selamat! Anda mendapat PROMO GRATIS 1 TAHUN — Lisensi Penuh 365 Hari aktif untuk $cleanStore!"
+                    else ->
+                        "Pendaftaran sukses! Mode Demo 3 Hari aktif untuk $cleanStore."
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1306,6 +1389,16 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loginWithLocalCredentials(username: String, pin: String) {
+        val remainingLock = firebaseSessionStore.getPinLockoutRemainingSeconds()
+        if (remainingLock > 0) {
+            _authUiState.update {
+                it.copy(
+                    isAuthLoading = false,
+                    authError = "Terlalu banyak percobaan PIN salah. Tunggu $remainingLock detik lalu coba lagi."
+                )
+            }
+            return
+        }
         viewModelScope.launch {
             _authUiState.update { it.copy(isAuthLoading = true, authError = null, authInfoMessage = null) }
             try {
@@ -1314,11 +1407,18 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 when (val result = authenticateLocalUser(username, pin, allUsers)) {
                     is LocalAuthResult.Error -> {
+                        val lockoutSec = firebaseSessionStore.recordFailedPinAttempt()
+                        val msg = if (lockoutSec > 0) {
+                            "${result.message} Terlalu banyak percobaan gagal, dikunci sementara $lockoutSec detik."
+                        } else {
+                            result.message
+                        }
                         _authUiState.update {
-                            it.copy(isAuthLoading = false, authError = result.message)
+                            it.copy(isAuthLoading = false, authError = msg)
                         }
                     }
                     is LocalAuthResult.Success -> {
+                        firebaseSessionStore.clearFailedPinAttempts()
                         refreshLicenseStateFromStore()
                         val user = result.user
                         val roleDisplay = if (user.role.equals("owner", ignoreCase = true)) "Owner" else "Kasir"
@@ -3715,6 +3815,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 runCatching { supabaseRepository.fetchDeveloperBankConfig() }
                     .onSuccess { _developerBankConfig.value = it }
+                runCatching { supabaseRepository.fetchFreeLifetimePromoStatus() }
+                    .onSuccess { _freeLifetimePromoStatus.value = it }
                 runCatching { supabaseRepository.getAllDonationRequests() }
                     .onSuccess { _allDonationRequests.value = it }
                 runCatching { supabaseRepository.getAllBugReports() }
@@ -3740,6 +3842,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val saved = supabaseRepository.saveDeveloperBankConfig(config)
                 _developerBankConfig.value = saved
+                runCatching { supabaseRepository.fetchFreeLifetimePromoStatus() }
+                    .onSuccess { _freeLifetimePromoStatus.value = it }
                 withContext(Dispatchers.Main) {
                     val msg = "Rekening donasi pengembang berhasil disimpan!"
                     _userMessage.value = msg
@@ -3748,6 +3852,62 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     onResult(false, "Gagal menyimpan rekening: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun saveSuperAdminFreeLifetimeQuota(
+        quota: Int,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        saveSuperAdminPromoQuotas(
+            lifetimeQuota = quota,
+            yearlyQuota = _developerBankConfig.value.freeYearlyQuota,
+            onResult = onResult
+        )
+    }
+
+    fun saveSuperAdminPromoQuotas(
+        lifetimeQuota: Int,
+        yearlyQuota: Int,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        if (!supabaseRepository.isConfigured()) {
+            onResult(false, "Supabase belum dikonfigurasi.")
+            return
+        }
+        val cleanLifetime = lifetimeQuota.coerceAtLeast(0)
+        val cleanYearly = yearlyQuota.coerceAtLeast(0)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val latest = runCatching { supabaseRepository.fetchDeveloperBankConfig() }
+                    .getOrDefault(_developerBankConfig.value)
+                val updated = latest.copy(
+                    freeLifetimeQuota = cleanLifetime,
+                    freeYearlyQuota = cleanYearly
+                )
+                val saved = supabaseRepository.saveDeveloperBankConfig(updated)
+                _developerBankConfig.value = saved
+                runCatching { supabaseRepository.fetchFreeLifetimePromoStatus() }
+                    .onSuccess { _freeLifetimePromoStatus.value = it }
+                withContext(Dispatchers.Main) {
+                    val msg = when {
+                        cleanLifetime > 0 && cleanYearly > 0 ->
+                            "Promo disimpan: $cleanLifetime Gratis Selamanya + $cleanYearly Gratis 1 Tahun!"
+                        cleanLifetime > 0 ->
+                            "Promo Gratis Selamanya diset untuk $cleanLifetime pendaftar pertama!"
+                        cleanYearly > 0 ->
+                            "Promo Gratis 1 Tahun diset untuk $cleanYearly pendaftar pertama!"
+                        else ->
+                            "Semua promo lisensi gratis dinonaktifkan (0)."
+                    }
+                    _userMessage.value = msg
+                    onResult(true, msg)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, e.localizedMessage ?: "Gagal menyimpan kuota promo.")
                 }
             }
         }

@@ -60,10 +60,14 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.ui.text.input.KeyboardType
 import com.example.firebase.BugReportDoc
 import com.example.firebase.DeveloperBankConfig
 import com.example.firebase.DonationPackage
 import com.example.firebase.DonationRequestDoc
+import com.example.firebase.FreeLifetimePromoStatus
 import com.example.firebase.KasLiteSupportEmailHelper
 import com.example.ui.components.BadgeType
 import com.example.ui.components.DesignFilterChip
@@ -595,9 +599,12 @@ fun SuperAdminBugReportsTab(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SuperAdminPaymentConfigTab(
     currentConfig: DeveloperBankConfig,
+    promoStatus: FreeLifetimePromoStatus,
+    registeredCustomerCount: Int,
     viewModel: PosViewModel,
     onFeedback: (String) -> Unit
 ) {
@@ -610,12 +617,194 @@ fun SuperAdminPaymentConfigTab(
     var whatsappNumber by remember(currentConfig) { mutableStateOf(currentConfig.whatsappNumber) }
     var supportEmail by remember(currentConfig) { mutableStateOf(currentConfig.supportEmail.ifBlank { SUPER_ADMIN_EMAIL }) }
     var notes by remember(currentConfig) { mutableStateOf(currentConfig.notes) }
+    var promoQuotaText by remember(currentConfig.freeLifetimeQuota, promoStatus.quota) {
+        val initial = maxOf(currentConfig.freeLifetimeQuota, promoStatus.quota)
+        mutableStateOf(initial.toString())
+    }
+    var promoYearlyQuotaText by remember(currentConfig.freeYearlyQuota, promoStatus.yearlyQuota) {
+        val initial = maxOf(currentConfig.freeYearlyQuota, promoStatus.yearlyQuota)
+        mutableStateOf(initial.toString())
+    }
     var showEdgeGuideDialog by remember { mutableStateOf(false) }
+    var showPromoSqlDialog by remember { mutableStateOf(false) }
+
+    val parsedQuota = promoQuotaText.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+    val parsedYearlyQuota = promoYearlyQuotaText.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+    val effectiveUsed = maxOf(promoStatus.used, registeredCustomerCount)
+    val previewRemaining = (parsedQuota - effectiveUsed).coerceAtLeast(0)
+    val previewYearlyRemaining = ((parsedQuota + parsedYearlyQuota) - maxOf(effectiveUsed, parsedQuota)).coerceAtLeast(0)
+    val anyPromoAvailable = previewRemaining > 0 || previewYearlyRemaining > 0
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Card 1: Promo Gratis Selamanya & Gratis 1 Tahun untuk N Pendaftar Pertama
+        item {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                border = BorderStroke(1.dp, Emerald200),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CardGiftcard, contentDescription = null, tint = Emerald700)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Promo Pendaftar Pertama (Selamanya & 1 Tahun)",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                        )
+                    }
+                    Text(
+                        text = "Pelanggan urutan awal mendapat Promo Gratis Selamanya (jika kuota > 0), lalu pendaftar berikutnya mendapat Promo Gratis 1 Tahun (365 hari) yang tervalidasi aman di server Supabase.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = Slate600)
+                    )
+
+                    Text(
+                        text = "1. Kuota Gratis Selamanya (Permanen)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = Emerald800)
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            0 to "Nonaktif (0)",
+                            5 to "5 Pertama",
+                            10 to "10 Pertama",
+                            15 to "15 Pertama",
+                            25 to "25 Pertama"
+                        ).forEach { (preset, label) ->
+                            DesignFilterChip(
+                                label = label,
+                                selected = parsedQuota == preset,
+                                onClick = { promoQuotaText = preset.toString() }
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = promoQuotaText,
+                        onValueChange = { input ->
+                            promoQuotaText = input.filter { ch -> ch.isDigit() }.take(5)
+                        },
+                        label = { Text("Kuota Gratis Selamanya (0 = Nonaktif)") },
+                        placeholder = { Text("Contoh: 5, 10, atau 15") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_promo_quota_input")
+                    )
+
+                    HorizontalDivider(color = BorderDefault)
+
+                    Text(
+                        text = "2. Kuota Gratis 1 Tahun (365 Hari)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = AccentBlue)
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            0 to "Nonaktif (0)",
+                            5 to "5 Akun",
+                            10 to "10 Akun",
+                            15 to "15 Akun",
+                            25 to "25 Akun"
+                        ).forEach { (preset, label) ->
+                            DesignFilterChip(
+                                label = label,
+                                selected = parsedYearlyQuota == preset,
+                                onClick = { promoYearlyQuotaText = preset.toString() }
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = promoYearlyQuotaText,
+                        onValueChange = { input ->
+                            promoYearlyQuotaText = input.filter { ch -> ch.isDigit() }.take(5)
+                        },
+                        label = { Text("Kuota Gratis 1 Tahun (0 = Nonaktif)") },
+                        placeholder = { Text("Contoh: 5, 10, atau 25") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_promo_yearly_quota_input")
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (anyPromoAvailable) Emerald50 else Sapphire50,
+                        border = BorderStroke(1.dp, if (anyPromoAvailable) Emerald200 else Sapphire200),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                text = when {
+                                    parsedQuota <= 0 && parsedYearlyQuota <= 0 ->
+                                        "Status: Semua Promo Nonaktif (pendaftar baru mendapat Trial Demo 3 Hari)"
+                                    previewRemaining > 0 ->
+                                        "Aktif: Gratis Selamanya sisa $previewRemaining dari $parsedQuota slot" +
+                                            if (parsedYearlyQuota > 0) " • lalu $parsedYearlyQuota slot Gratis 1 Tahun" else ""
+                                    previewYearlyRemaining > 0 ->
+                                        "Aktif: Gratis 1 Tahun sisa $previewYearlyRemaining dari $parsedYearlyQuota slot"
+                                    else ->
+                                        "Semua kuota promo sudah penuh ($effectiveUsed pelanggan terdaftar)"
+                                },
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (anyPromoAvailable) Emerald800 else Slate800
+                                )
+                            )
+                            Text(
+                                text = "Pelanggan terdaftar saat ini: $effectiveUsed akun (Urutan 1..$parsedQuota = Selamanya, ${parsedQuota + 1}..${parsedQuota + parsedYearlyQuota} = 1 Tahun)",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Slate600, fontSize = 11.sp)
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            viewModel.saveSuperAdminPromoQuotas(parsedQuota, parsedYearlyQuota) { _, msg ->
+                                onFeedback(msg)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_save_promo_quota_button")
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Simpan Kuota Promo", fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = { showPromoSqlDialog = true },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Lihat & Salin SQL Promo Supabase", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+
+        // Card 2: Rekening Donasi Pengembang
         item {
             Card(
                 shape = RoundedCornerShape(14.dp),
@@ -694,7 +883,9 @@ fun SuperAdminPaymentConfigTab(
                                     accountHolder = accountHolder,
                                     whatsappNumber = whatsappNumber,
                                     supportEmail = supportEmail,
-                                    notes = notes
+                                    notes = notes,
+                                    freeLifetimeQuota = parsedQuota,
+                                    freeYearlyQuota = parsedYearlyQuota
                                 )
                             ) { _, msg ->
                                 onFeedback(msg)
@@ -751,6 +942,50 @@ fun SuperAdminPaymentConfigTab(
         }
 
         item { Spacer(modifier = Modifier.height(72.dp)) }
+    }
+
+    if (showPromoSqlDialog) {
+        val sqlSnippet = remember { KasLiteSupportEmailHelper.buildPromoAndLicenseSqlSnippet() }
+        AlertDialog(
+            onDismissRequest = { showPromoSqlDialog = false },
+            title = { Text("SQL Promo Lisensi Gratis Supabase", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Jalankan SQL ini satu kali di Supabase Dashboard -> SQL Editor -> New Query agar promo Gratis Selamanya & Gratis 1 Tahun aktif dan terlindungi penuh di server:",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Slate100,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = sqlSnippet,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(sqlSnippet))
+                        onFeedback("SQL Promo Supabase disalin! Tempel & jalankan di SQL Editor Supabase.")
+                        showPromoSqlDialog = false
+                    }
+                ) {
+                    Text("Salin SQL")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPromoSqlDialog = false }) { Text("Tutup") }
+            }
+        )
     }
 
     if (showEdgeGuideDialog) {
