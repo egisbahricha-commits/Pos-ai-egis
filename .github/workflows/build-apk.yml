@@ -73,14 +73,14 @@ jobs:
       - name: Prepare debug keystore
         if: steps.check-apk.outputs.use_prebuilt != 'true'
         run: |
-          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+          if [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            echo "ERROR: File debug.keystore.base64 tidak ditemukan di repository!"
+            echo "Tanpa debug.keystore.base64 yang sama, APK hasil build akan memakai tanda tangan acak dan bentrok saat update."
+            exit 1
           fi
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v -keystore debug.keystore -storepass android \
-              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          keytool -list -v -keystore debug.keystore -storepass android | grep -E "Alias name|SHA256" || true
 
       - name: Install Gradle 9.3.1
         if: steps.check-apk.outputs.use_prebuilt != 'true'
