@@ -3856,7 +3856,12 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     private val _updateProgressMessage = MutableStateFlow<String?>(null)
     val updateProgressMessage: StateFlow<String?> = _updateProgressMessage.asStateFlow()
 
-    private fun parseVersionParts(rawVersion: String): List<Int> {
+    internal fun parseVersionParts(rawVersion: String): List<Int> {
+        val versionMatch = Regex("""v?(\d+(?:\.\d+)+)""", RegexOption.IGNORE_CASE).find(rawVersion)
+        val matched = versionMatch?.groupValues?.getOrNull(1)
+        if (!matched.isNullOrBlank()) {
+            return matched.split(".").mapNotNull { it.toIntOrNull() }
+        }
         return rawVersion.trim()
             .removePrefix("v")
             .removePrefix("V")
@@ -3864,7 +3869,12 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             .mapNotNull { segment -> segment.takeWhile { it.isDigit() }.toIntOrNull() }
     }
 
-    private fun isRemoteVersionNewer(remoteVersion: String, currentVersion: String): Boolean {
+    internal fun parseRemoteVersionCode(text: String): Int? {
+        val match = Regex("""(?:kode|code)\s*[:#]?\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)
+        return match?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    internal fun isRemoteVersionNewer(remoteVersion: String, currentVersion: String): Boolean {
         val remoteParts = parseVersionParts(remoteVersion)
         val currentParts = parseVersionParts(currentVersion)
         if (remoteParts.isEmpty()) return false
@@ -3876,6 +3886,63 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             if (r < c) return false
         }
         return false
+    }
+
+    internal fun selectBestApkDownloadUrl(releaseObj: org.json.JSONObject): String {
+        val assets = releaseObj.optJSONArray("assets") ?: org.json.JSONArray()
+        var preferredUrl = ""
+        var newestFallbackUrl = ""
+        var newestUpdatedAt = ""
+        for (i in 0 until assets.length()) {
+            val asset = assets.optJSONObject(i) ?: continue
+            val name = asset.optString("name", "").trim()
+            val url = asset.optString("browser_download_url", "").trim()
+            if (!name.endsWith(".apk", ignoreCase = true) || url.isBlank()) continue
+            if (name.equals("kaslite-pos.apk", ignoreCase = true)) {
+                preferredUrl = url
+                break
+            }
+            val updatedAt = asset.optString("updated_at", "")
+            if (newestFallbackUrl.isBlank() || updatedAt > newestUpdatedAt) {
+                newestFallbackUrl = url
+                newestUpdatedAt = updatedAt
+            }
+        }
+        return preferredUrl.ifBlank { newestFallbackUrl }.ifBlank { releaseObj.optString("html_url", "").trim() }
+    }
+
+    internal fun parseReleaseToUpdateInfo(
+        rootObj: org.json.JSONObject,
+        currentVersionName: String,
+        currentVersionCode: Int
+    ): Pair<Boolean, AppUpdateInfo> {
+        val tagName = rootObj.optString("tag_name", "").trim()
+        val releaseTitle = rootObj.optString("name", "").trim()
+        val releaseNotes = rootObj.optString("body", "Pembaruan sistem dan perbaikan bug KASLITE.")
+            .ifBlank { "Pembaruan sistem dan perbaikan bug KASLITE." }
+        val apkUrl = selectBestApkDownloadUrl(rootObj)
+
+        val resolvedVersionLabel = when {
+            parseVersionParts(tagName).isNotEmpty() -> tagName
+            parseVersionParts(releaseTitle).isNotEmpty() -> {
+                val ver = parseVersionParts(releaseTitle).joinToString(".")
+                "v$ver"
+            }
+            tagName.isNotBlank() -> tagName
+            else -> "v$currentVersionName"
+        }
+        val remoteCode = parseRemoteVersionCode("$releaseTitle\n$releaseNotes")
+        val hasNewerVersionName = isRemoteVersionNewer(resolvedVersionLabel, currentVersionName)
+        val hasNewerVersionCode = remoteCode != null && remoteCode > currentVersionCode
+        val hasNewerVersion = hasNewerVersionName || hasNewerVersionCode
+
+        val info = AppUpdateInfo(
+            latestVersionName = resolvedVersionLabel,
+            latestVersionCode = remoteCode ?: (currentVersionCode + if (hasNewerVersion) 1 else 0),
+            releaseNotes = releaseNotes,
+            apkDownloadUrl = apkUrl
+        )
+        return hasNewerVersion to info
     }
 
     private fun normalizeGitHubSlug(rawInput: String): String {
@@ -3909,6 +3976,24 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun fetchGitHubJson(urlStr: String): Pair<Int, String> {
+        val conn = (java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "KASLITE-POS-Android/${BuildConfig.VERSION_NAME}")
+        }
+        val code = conn.responseCode
+        val body = if (code in 200..299) {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        }
+        conn.disconnect()
+        return code to body
+    }
+
     fun checkForGitHubAppUpdate(
         githubRepoSlug: String = getSavedGitHubUpdateRepo(),
         onResult: (Boolean, String, AppUpdateInfo?) -> Unit
@@ -3924,15 +4009,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val urlStr = "https://api.github.com/repos/$normalizedSlug/releases/latest"
-                val conn = (java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 10_000
-                    readTimeout = 10_000
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "KASLITE-POS-Android/${BuildConfig.VERSION_NAME}")
-                }
-                val code = conn.responseCode
+                val (code, responseText) = fetchGitHubJson("https://api.github.com/repos/$normalizedSlug/releases/latest")
                 if (code !in 200..299) {
                     val hint = when (code) {
                         404 -> "Repo $normalizedSlug belum punya Release atau masih Private (HTTP 404)."
@@ -3941,39 +4018,40 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     throw IllegalStateException(hint)
                 }
-                val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                val rootObj = org.json.JSONObject(responseText)
-                val tagName = rootObj.optString("tag_name", "v${BuildConfig.VERSION_NAME}").trim()
-                val releaseNotes = rootObj.optString("body", "Pembaruan sistem dan perbaikan bug KASLITE.")
-                    .ifBlank { "Pembaruan sistem dan perbaikan bug KASLITE." }
+                val latestObj = org.json.JSONObject(responseText)
+                var (hasNewerVersion, updateInfo) = parseReleaseToUpdateInfo(
+                    latestObj,
+                    BuildConfig.VERSION_NAME,
+                    BuildConfig.VERSION_CODE
+                )
 
-                var apkUrl = ""
-                val assets = rootObj.optJSONArray("assets") ?: org.json.JSONArray()
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    val name = asset.optString("name", "")
-                    if (name.endsWith(".apk", ignoreCase = true)) {
-                        apkUrl = asset.optString("browser_download_url", "")
-                        break
+                // If /releases/latest used a non-version tag like 'latest-apk', scan recent releases for a versioned release too
+                if (!hasNewerVersion && parseVersionParts(updateInfo.latestVersionName).isEmpty()) {
+                    val (listCode, listText) = fetchGitHubJson("https://api.github.com/repos/$normalizedSlug/releases?per_page=10")
+                    if (listCode in 200..299) {
+                        val arr = org.json.JSONArray(listText)
+                        for (i in 0 until arr.length()) {
+                            val rel = arr.optJSONObject(i) ?: continue
+                            if (rel.optBoolean("draft", false) || rel.optBoolean("prerelease", false)) continue
+                            val (candidateNewer, candidateInfo) = parseReleaseToUpdateInfo(
+                                rel,
+                                BuildConfig.VERSION_NAME,
+                                BuildConfig.VERSION_CODE
+                            )
+                            if (candidateNewer && candidateInfo.apkDownloadUrl.isNotBlank()) {
+                                hasNewerVersion = true
+                                updateInfo = candidateInfo
+                                break
+                            }
+                        }
                     }
                 }
-                if (apkUrl.isBlank()) {
-                    apkUrl = rootObj.optString("html_url", "")
-                }
-
-                val hasNewerVersion = isRemoteVersionNewer(tagName, BuildConfig.VERSION_NAME)
-                val updateInfo = AppUpdateInfo(
-                    latestVersionName = tagName,
-                    latestVersionCode = BuildConfig.VERSION_CODE + if (hasNewerVersion) 1 else 0,
-                    releaseNotes = releaseNotes,
-                    apkDownloadUrl = apkUrl
-                )
 
                 withContext(Dispatchers.Main) {
                     _isCheckingUpdate.value = false
                     _updateProgressMessage.value = null
-                    if (hasNewerVersion && apkUrl.isNotBlank()) {
-                        onResult(true, "Versi baru $tagName tersedia!", updateInfo)
+                    if (hasNewerVersion && updateInfo.apkDownloadUrl.isNotBlank()) {
+                        onResult(true, "Versi baru ${updateInfo.latestVersionName} tersedia!", updateInfo)
                     } else {
                         onResult(false, "Aplikasi Anda sudah menggunakan versi terbaru (${BuildConfig.VERSION_NAME}).", updateInfo)
                     }

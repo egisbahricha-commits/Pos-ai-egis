@@ -639,7 +639,7 @@ fun SettingsScreen(viewModel: PosViewModel) {
                             Text("Periksa Pembaruan Aplikasi (GitHub)", fontWeight = FontWeight.Bold)
                         }
                     }
-                    if (isSuperAdmin) {
+                    if (isOwner || isSuperAdmin) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

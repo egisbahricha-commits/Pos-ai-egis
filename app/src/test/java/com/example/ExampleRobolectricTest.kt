@@ -1675,4 +1675,68 @@ class ExampleRobolectricTest {
         vm.clearCart()
         db.close()
     }
+
+    @Test
+    fun `test GitHub release parser prefers kaslite-pos apk and detects versioned and Kode updates`() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.ui.viewmodel.PosViewModel(app)
+
+        // Multi-asset JSON matching screenshot (stale gerai-una-pos-ai.apk listed before kaslite-pos.apk)
+        val multiAssetRelease = org.json.JSONObject(
+            """
+            {
+              "tag_name": "v1.4",
+              "name": "KASLITE POS v1.4 (Kode 5)",
+              "body": "Pembaruan KASLITE POS Versi 1.4 (Kode 5).",
+              "html_url": "https://github.com/egisbahricha-commits/Pos-ai-egis/releases/tag/v1.4",
+              "assets": [
+                {
+                  "name": "gerai-una-pos-ai.apk",
+                  "updated_at": "2026-11-22T10:00:00Z",
+                  "browser_download_url": "https://github.com/egisbahricha-commits/Pos-ai-egis/releases/download/v1.4/gerai-una-pos-ai.apk"
+                },
+                {
+                  "name": "kaslite-pos.apk",
+                  "updated_at": "2026-11-24T19:00:00Z",
+                  "browser_download_url": "https://github.com/egisbahricha-commits/Pos-ai-egis/releases/download/v1.4/kaslite-pos.apk"
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        val (hasNewer14, info14) = vm.parseReleaseToUpdateInfo(multiAssetRelease, "1.3", 4)
+        assertTrue("v1.4 should be detected as newer than 1.3", hasNewer14)
+        assertEquals("v1.4", info14.latestVersionName)
+        assertEquals(5, info14.latestVersionCode)
+        assertTrue(
+            "Must select kaslite-pos.apk instead of stale gerai-una-pos-ai.apk",
+            info14.apkDownloadUrl.endsWith("/kaslite-pos.apk")
+        )
+
+        // Legacy tag 'latest-apk' with version embedded in title
+        val legacyTagRelease = org.json.JSONObject(
+            """
+            {
+              "tag_name": "latest-apk",
+              "name": "KASLITE POS (Latest APK - v1.4)",
+              "body": "Kode 5",
+              "assets": [
+                {
+                  "name": "kaslite-pos.apk",
+                  "updated_at": "2026-11-24T19:00:00Z",
+                  "browser_download_url": "https://github.com/egisbahricha-commits/Pos-ai-egis/releases/download/latest-apk/kaslite-pos.apk"
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        val (hasNewerLegacy, infoLegacy) = vm.parseReleaseToUpdateInfo(legacyTagRelease, "1.3", 4)
+        assertTrue("Title version v1.4 should be detected even on latest-apk tag", hasNewerLegacy)
+        assertEquals("v1.4", infoLegacy.latestVersionName)
+        assertEquals(5, infoLegacy.latestVersionCode)
+
+        // Same version should not trigger false update
+        val (hasNewerSame, _) = vm.parseReleaseToUpdateInfo(multiAssetRelease, "1.4", 5)
+        assertFalse("Same version and code must not prompt update", hasNewerSame)
+    }
 }
