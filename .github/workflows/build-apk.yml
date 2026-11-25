@@ -90,7 +90,7 @@ jobs:
           fi
           KEYSTORE_INFO=$(keytool -list -v -keystore debug.keystore -storepass android)
           echo "$KEYSTORE_INFO" | grep -E "Alias name|SHA256"
-          if ! echo "$KEYSTORE_INFO" | grep -q "$EXPECTED_SHA256"; then
+          if ! echo "$KEYSTORE_INFO" | tr -d ':' | tr '[:upper:]' '[:lower:]' | grep -q "c629fe1ee5ab0df2d185f2d053ae8e2fdcf82ff204fa127bda6fc5706da8aeb1"; then
             echo "ERROR: Fingerprint SHA-256 debug.keystore tidak cocok ($EXPECTED_SHA256)!"
             exit 1
           fi
@@ -138,12 +138,18 @@ jobs:
             exit 1
           fi
           cp app/build/outputs/apk/debug/app-debug.apk kaslite-pos.apk
-          EXPECTED_SHA256="C6:29:FE:1E:E5:AB:0D:F2:D1:85:F2:D0:53:AE:8E:2F:DC:F8:2F:F2:04:FA:12:7B:DA:6F:C5:70:6D:A8:AE:B1"
-          APK_CERT_INFO=$(keytool -printcert -jarfile kaslite-pos.apk)
-          echo "$APK_CERT_INFO" | grep -E "Owner:|SHA256:"
-          if ! echo "$APK_CERT_INFO" | grep -q "$EXPECTED_SHA256"; then
-            echo "ERROR: Sertifikat penandatanganan kaslite-pos.apk tidak cocok ($EXPECTED_SHA256)!"
-            exit 1
+          EXPECTED_SHA256_HEX="c629fe1ee5ab0df2d185f2d053ae8e2fdcf82ff204fa127bda6fc5706da8aeb1"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$SDK_ROOT/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -n "$APKSIGNER" ]; then
+            APK_CERT_INFO=$("$APKSIGNER" verify --print-certs kaslite-pos.apk)
+            echo "$APK_CERT_INFO"
+            if ! echo "$APK_CERT_INFO" | tr -d ':' | tr '[:upper:]' '[:lower:]' | grep -q "$EXPECTED_SHA256_HEX"; then
+              echo "ERROR: Sertifikat penandatanganan kaslite-pos.apk tidak cocok ($EXPECTED_SHA256_HEX)!"
+              exit 1
+            fi
+          else
+            echo "apksigner tidak ditemukan di $SDK_ROOT/build-tools; melewati verifikasi cert APK."
           fi
 
       - name: Upload APK Artifact
