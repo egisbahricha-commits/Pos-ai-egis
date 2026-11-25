@@ -45,6 +45,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
@@ -132,6 +134,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.entity.AdminTierWithRanges
 import com.example.data.entity.ProductEntity
 import com.example.data.entity.ProductVariantEntity
 import com.example.data.entity.UnitConversionEntity
@@ -142,6 +145,7 @@ import com.example.hardware.DetectedScannerDevice
 import com.example.hardware.HardwareDeviceDiscovery
 import com.example.hardware.ScannerFeedbackPlayer
 import com.example.ui.components.BadgeType
+import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.ProductThumbnail
@@ -158,6 +162,7 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import kotlin.math.ceil
+import kotlin.math.roundToLong
 
 private sealed class ScanBannerState {
     data class Matched(
@@ -290,8 +295,8 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 if (scannerSettings.vibrateOnScan) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 ScannerFeedbackPlayer.playSuccess(context, scannerSettings.beepOnScan, scannerSettings.vibrateOnScan)
                 pendingSelection = outcome
-                flexiblePriceInput = if (outcome.product.sellingPrice > 0) {
-                    outcome.product.sellingPrice.toLong().toString()
+                flexiblePriceInput = if (!outcome.product.isFlexiblePrice && outcome.product.sellingPrice > 0) {
+                    outcome.product.sellingPrice.roundToLong().toString()
                 } else ""
                 if (fromCameraFrame) isPaused = true
             }
@@ -403,7 +408,7 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                     onBarcodeScanned = { code -> processScannedCode(code, fromCameraFrame = true) },
                     onQuickRegisterCode = { code -> quickRegisterBarcode = code },
                     onUndoLastMatched = { matched ->
-                        val existing = cart.find {
+                        val existing = cart.lastOrNull {
                             it.productId == matched.productId &&
                                 it.unitName.equals(matched.unitName, ignoreCase = true) &&
                                 it.variantId == matched.variantId
@@ -414,7 +419,8 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                                 unitName = existing.unitName,
                                 newQty = existing.quantity - 1.0,
                                 variantId = existing.variantId,
-                                bundleId = existing.bundleId
+                                bundleId = existing.bundleId,
+                                lineId = existing.lineId
                             )
                         }
                         scanBanner = null
@@ -446,10 +452,10 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                         )
                     },
                     onUpdateQty = { item, newQty ->
-                        viewModel.updateCartItemQuantity(item.productId, item.unitName, newQty, item.variantId, item.bundleId)
+                        viewModel.updateCartItemQuantity(item.productId, item.unitName, newQty, item.variantId, item.bundleId, lineId = item.lineId)
                     },
                     onRemoveItem = { item ->
-                        viewModel.removeFromCart(item.productId, item.unitName, item.variantId, item.bundleId)
+                        viewModel.removeFromCart(item.productId, item.unitName, item.variantId, item.bundleId, lineId = item.lineId)
                     },
                     onClearCart = { viewModel.clearCart() },
                     onManageProducts = { viewModel.navigateTo(Screen.MANAJEMEN_PRODUK) },
@@ -490,7 +496,7 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                     onBarcodeScanned = { code -> processScannedCode(code, fromCameraFrame = true) },
                     onQuickRegisterCode = { code -> quickRegisterBarcode = code },
                     onUndoLastMatched = { matched ->
-                        val existing = cart.find {
+                        val existing = cart.lastOrNull {
                             it.productId == matched.productId &&
                                 it.unitName.equals(matched.unitName, ignoreCase = true) &&
                                 it.variantId == matched.variantId
@@ -501,7 +507,8 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                                 unitName = existing.unitName,
                                 newQty = existing.quantity - 1.0,
                                 variantId = existing.variantId,
-                                bundleId = existing.bundleId
+                                bundleId = existing.bundleId,
+                                lineId = existing.lineId
                             )
                         }
                         scanBanner = null
@@ -533,10 +540,10 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                         )
                     },
                     onUpdateQty = { item, newQty ->
-                        viewModel.updateCartItemQuantity(item.productId, item.unitName, newQty, item.variantId, item.bundleId)
+                        viewModel.updateCartItemQuantity(item.productId, item.unitName, newQty, item.variantId, item.bundleId, lineId = item.lineId)
                     },
                     onRemoveItem = { item ->
-                        viewModel.removeFromCart(item.productId, item.unitName, item.variantId, item.bundleId)
+                        viewModel.removeFromCart(item.productId, item.unitName, item.variantId, item.bundleId, lineId = item.lineId)
                     },
                     onClearCart = { viewModel.clearCart() },
                     onManageProducts = { viewModel.navigateTo(Screen.MANAJEMEN_PRODUK) },
@@ -562,6 +569,7 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
     pendingSelection?.let { selection ->
         ScannedProductOptionDialog(
             selection = selection,
+            adminTiers = adminTiers,
             flexiblePriceInput = flexiblePriceInput,
             onFlexiblePriceChange = { flexiblePriceInput = it },
             onSelectVariant = { variant ->
@@ -578,25 +586,34 @@ fun BarcodeScanCartScreen(viewModel: PosViewModel) {
                 pendingSelection = null
                 if (continuousMode) isPaused = false
             },
-            onSelectBaseUnit = {
-                val customPrice = if (selection.product.isFlexiblePrice) {
-                    flexiblePriceInput.toDoubleOrNull() ?: selection.product.sellingPrice
-                } else null
-                val tierSvc = selection.product.adminTierGroupId?.let { gid ->
-                    adminTiers.find { it.service.id == gid }
-                }
-                val calc = TierPricingResolver.calculate(tierSvc, customPrice ?: selection.product.sellingPrice)
+            onConfirmDigitalOrFlexible = { nominal, storeAdmin, providerAdmin, agentFee ->
                 viewModel.addToCart(
                     product = selection.product,
-                    customPrice = customPrice,
-                    storeAdminFee = calc.storeAdminFee,
-                    providerAdminFee = calc.providerAdminFee,
-                    agentCommission = calc.agentCommission
+                    customPrice = nominal,
+                    storeAdminFee = storeAdmin,
+                    providerAdminFee = providerAdmin,
+                    agentCommission = agentFee,
+                    serviceCashAccountId = selection.product.serviceCashAccountId,
+                    serviceDirection = selection.product.serviceDirection
                 )
                 scanBanner = ScanBannerState.Matched(
                     code = selection.product.barcode,
                     productName = selection.product.name,
-                    unitPrice = customPrice ?: selection.product.sellingPrice,
+                    unitPrice = nominal + storeAdmin,
+                    productId = selection.product.id,
+                    unitName = selection.product.baseUnit,
+                    variantId = null,
+                    timestampMs = System.currentTimeMillis()
+                )
+                pendingSelection = null
+                if (continuousMode) isPaused = false
+            },
+            onSelectBaseUnit = {
+                viewModel.addToCart(product = selection.product)
+                scanBanner = ScanBannerState.Matched(
+                    code = selection.product.barcode,
+                    productName = selection.product.name,
+                    unitPrice = selection.product.sellingPrice,
                     productId = selection.product.id,
                     unitName = selection.product.baseUnit,
                     variantId = null,
@@ -1689,7 +1706,7 @@ private fun ScanCartDockPanel(
                     ) {
                         items(
                             items = cart,
-                            key = { "${it.productId}_${it.unitName}_${it.variantId ?: 0}_${it.bundleId ?: 0}" }
+                            key = { it.lineId }
                         ) { item ->
                             ScannedCartItemCard(
                                 item = item,
@@ -1783,6 +1800,7 @@ private fun ScannedCartItemCard(
     onIncrement: () -> Unit,
     onRemove: () -> Unit
 ) {
+    val isDigitalLine = item.serviceNominal != null || item.priceSource == "fleksibel" || item.storeAdminFee > 0.0
     val lineTotal = (item.unitPrice * item.quantity) + item.storeAdminFee
     val qtyText = if (item.quantity % 1.0 == 0.0) {
         item.quantity.toInt().toString()
@@ -1806,7 +1824,7 @@ private fun ScannedCartItemCard(
             ProductThumbnail(
                 imageUri = imageUri,
                 contentDescription = item.productName,
-                isDigital = item.serviceNominal != null,
+                isDigital = isDigitalLine,
                 size = 42.dp
             )
 
@@ -1817,45 +1835,68 @@ private fun ScannedCartItemCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = "Rp ${formatRupiah(item.unitPrice)} / ${item.unitName}${if (allowDecimal) " • timbang" else ""}",
-                    style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
-                )
-                Text(
-                    text = "Subtotal: Rp ${formatRupiah(lineTotal)}",
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = ModuleKasir).tabular()
-                )
+                if (isDigitalLine) {
+                    val dirLabel = if (item.serviceDirection == "TARIK") "Tarik Tunai" else "Transfer / Setor"
+                    Text(
+                        text = "$dirLabel: Rp ${formatRupiah(item.unitPrice)} • Admin Rp ${formatRupiah(item.storeAdminFee)}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = HeaderTeal, fontWeight = FontWeight.SemiBold)
+                    )
+                    Text(
+                        text = "Total: Rp ${formatRupiah(lineTotal)}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = ModuleKasir).tabular()
+                    )
+                } else {
+                    Text(
+                        text = "Rp ${formatRupiah(item.unitPrice)} / ${item.unitName}${if (allowDecimal) " • timbang" else ""}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
+                    )
+                    Text(
+                        text = "Subtotal: Rp ${formatRupiah(lineTotal)}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = ModuleKasir).tabular()
+                    )
+                }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Surface(
-                    onClick = onDecrement,
-                    shape = CircleShape,
-                    color = SurfaceWhite,
-                    border = BorderStroke(1.dp, BorderDefault),
-                    modifier = Modifier.size(36.dp)
+            if (isDigitalLine && item.quantity == 1.0) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("scanner_remove_item_${item.lineId}")
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Remove, contentDescription = "Kurangi", tint = Slate700, modifier = Modifier.size(16.dp))
-                    }
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "Hapus Item Digital", tint = Rose500, modifier = Modifier.size(20.dp))
                 }
-                Text(
-                    text = qtyText,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular(),
-                    modifier = Modifier.padding(horizontal = 4.dp)
-                )
-                Surface(
-                    onClick = onIncrement,
-                    shape = CircleShape,
-                    color = AccentBlue,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Add, contentDescription = "Tambah", tint = Color.White, modifier = Modifier.size(16.dp))
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Surface(
+                        onClick = onDecrement,
+                        shape = CircleShape,
+                        color = SurfaceWhite,
+                        border = BorderStroke(1.dp, BorderDefault),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Remove, contentDescription = "Kurangi", tint = Slate700, modifier = Modifier.size(16.dp))
+                        }
                     }
-                }
-                IconButton(onClick = onRemove, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Default.Delete, contentDescription = "Hapus Item", tint = Rose500, modifier = Modifier.size(18.dp))
+                    Text(
+                        text = qtyText,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Slate900).tabular(),
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    Surface(
+                        onClick = onIncrement,
+                        shape = CircleShape,
+                        color = AccentBlue,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Add, contentDescription = "Tambah", tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    IconButton(onClick = onRemove, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Default.Delete, contentDescription = "Hapus Item", tint = Rose500, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }
@@ -1865,13 +1906,24 @@ private fun ScannedCartItemCard(
 @Composable
 private fun ScannedProductOptionDialog(
     selection: BarcodeLookupOutcome.NeedsSelection,
+    adminTiers: List<AdminTierWithRanges>,
     flexiblePriceInput: String,
     onFlexiblePriceChange: (String) -> Unit,
     onSelectVariant: (ProductVariantEntity) -> Unit,
+    onConfirmDigitalOrFlexible: (nominal: Double, storeAdmin: Double, providerAdmin: Double, agentFee: Double) -> Unit,
     onSelectBaseUnit: () -> Unit,
     onSelectConversion: (UnitConversionEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val isDigitalService = selection.product.productType == "DIGITAL"
+    val isDigitalOrFlexible = isDigitalService || selection.product.isFlexiblePrice
+
+    val tierSvc = remember(adminTiers, selection.product.id) {
+        TierPricingResolver.resolveServiceGroup(adminTiers, selection.product.adminTierGroupId, selection.product.name)
+    }
+    var isManualAdminOverride by remember(selection.product.id) { mutableStateOf(false) }
+    var manualAdminText by remember(selection.product.id) { mutableStateOf("") }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(18.dp),
@@ -1880,8 +1932,11 @@ private fun ScannedProductOptionDialog(
         ) {
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Pilih Opsi: ${selection.product.name}",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Slate900)
+                    if (isDigitalService) selection.product.name else "Pilih Opsi: ${selection.product.name}",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDigitalService) HeaderTeal else Slate900
+                    )
                 )
 
                 if (selection.variants.isNotEmpty()) {
@@ -1907,18 +1962,122 @@ private fun ScannedProductOptionDialog(
                             }
                         }
                     }
-                } else if (selection.product.isFlexiblePrice) {
+                } else if (isDigitalOrFlexible) {
+                    val nominal = flexiblePriceInput.filter(Char::isDigit).toDoubleOrNull() ?: 0.0
+                    val initialCalc = TierPricingResolver.calculate(tierSvc, nominal)
+                    val effectiveOverride = if (isDigitalService && (isManualAdminOverride || initialCalc.matchedRange == null)) {
+                        manualAdminText.filter(Char::isDigit).toDoubleOrNull()
+                    } else null
+                    val calc = if (isDigitalService) {
+                        TierPricingResolver.calculate(tierSvc, nominal, effectiveOverride)
+                    } else {
+                        TierPricingResolver.calculate(null, nominal, 0.0)
+                    }
+
                     DesignLabeledTextField(
-                        label = "Nominal / Harga Jual (Rp)",
+                        label = if (isDigitalService) {
+                            if (selection.product.serviceDirection == "TARIK") "Nominal Tarik Tunai (Rp) *"
+                            else "Nominal Transfer / Transaksi (Rp) *"
+                        } else {
+                            "Nominal / Harga Jual (Rp) *"
+                        },
                         value = flexiblePriceInput,
-                        onValueChange = { onFlexiblePriceChange(it.filter(Char::isDigit)) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        onValueChange = { raw ->
+                            val digits = raw.filter(Char::isDigit)
+                            onFlexiblePriceChange(digits)
+                            if (isDigitalService && !isManualAdminOverride) {
+                                val nextNominal = digits.toDoubleOrNull() ?: 0.0
+                                val autoMatch = TierPricingResolver.findMatchingRange(tierSvc?.ranges.orEmpty(), nextNominal)
+                                manualAdminText = autoMatch?.storeAdminFee?.roundToLong()?.toString() ?: ""
+                            }
+                        },
+                        prefixText = "Rp ",
+                        placeholder = "mis. 500000",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.testTag("scanner_digital_nominal_input")
                     )
+
+                    if (isDigitalService) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(listOf(50_000L to "50rb", 100_000L to "100rb", 200_000L to "200rb", 500_000L to "500rb", 1_000_000L to "1jt", 2_000_000L to "2jt")) { (amt, label) ->
+                                DesignFilterChip(
+                                    label = label,
+                                    selected = nominal.toLong() == amt,
+                                    onClick = {
+                                        onFlexiblePriceChange(amt.toString())
+                                        isManualAdminOverride = false
+                                        val autoMatch = TierPricingResolver.findMatchingRange(tierSvc?.ranges.orEmpty(), amt.toDouble())
+                                        manualAdminText = autoMatch?.storeAdminFee?.roundToLong()?.toString() ?: ""
+                                    }
+                                )
+                            }
+                        }
+
+                        if (calc.matchedRange != null) {
+                            DesignStatusBadge(
+                                text = "✓ Admin otomatis: Rp ${formatRupiah(calc.storeAdminFee)}",
+                                type = BadgeType.SUCCESS
+                            )
+                        } else if (nominal > 0.0) {
+                            DesignStatusBadge(
+                                text = "Isi biaya admin manual jika ada",
+                                type = BadgeType.WARNING
+                            )
+                        }
+
+                        DesignLabeledTextField(
+                            label = if (calc.matchedRange != null && !isManualAdminOverride) "Biaya Admin (Otomatis)" else "Biaya Admin (Manual)",
+                            value = if (!isManualAdminOverride && calc.matchedRange != null) {
+                                calc.matchedRange.storeAdminFee.roundToLong().toString()
+                            } else {
+                                manualAdminText
+                            },
+                            onValueChange = { raw ->
+                                manualAdminText = raw.filter(Char::isDigit)
+                                isManualAdminOverride = true
+                            },
+                            prefixText = "Rp ",
+                            placeholder = "0",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.testTag("scanner_digital_admin_input")
+                        )
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Emerald50,
+                            border = BorderStroke(1.dp, Emerald200),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Total Tagihan Pelanggan", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Slate800)
+                                Text("Rp ${formatRupiah(calc.totalCustomerPayable)}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = HeaderTeal)
+                            }
+                        }
+                    }
+
                     Button(
-                        onClick = onSelectBaseUnit,
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentBlue, contentColor = Color.White),
+                        onClick = {
+                            onConfirmDigitalOrFlexible(
+                                nominal,
+                                calc.storeAdminFee,
+                                calc.providerAdminFee,
+                                calc.agentCommission
+                            )
+                        },
+                        enabled = nominal > 0.0,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isDigitalService) HeaderTeal else AccentBlue,
+                            contentColor = Color.White
+                        ),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("scanner_digital_confirm_btn")
                     ) {
                         Text("Tambahkan ke Keranjang", fontWeight = FontWeight.Bold)
                     }

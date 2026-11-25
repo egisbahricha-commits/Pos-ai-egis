@@ -165,16 +165,17 @@ fun ProductsScreen(viewModel: PosViewModel) {
 
     val filtered = remember(products, productVariants, searchQuery, selectedTypeTab, selectedStatusChip) {
         products.filter { p ->
-            val isDigital = p.productType == "DIGITAL" || p.isUnlimitedStock || p.hasNoStock
+            val isDigital = p.productType == "DIGITAL"
+            val noStock = isDigital || p.isUnlimitedStock || p.hasNoStock
             val matchesTab = when (selectedTypeTab) {
                 "FISIK" -> !isDigital
                 "DIGITAL" -> isDigital
                 else -> true
             }
             val matchesStatus = when (selectedStatusChip) {
-                "MENIPIS" -> !isDigital && p.stock > 0.0 && p.stock <= p.minStock
-                "HABIS" -> !isDigital && p.stock == 0.0
-                "MINUS" -> !isDigital && p.stock < 0.0
+                "MENIPIS" -> !noStock && p.stock > 0.0 && p.stock <= p.minStock
+                "HABIS" -> !noStock && p.stock == 0.0
+                "MINUS" -> !noStock && p.stock < 0.0
                 else -> true
             }
             val matchesQuery = matchesProductSearchQuery(p, searchQuery, productVariants)
@@ -527,10 +528,11 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                 val tiers = allTierPrices.filter { it.productId == product.id }.sortedBy { it.quantity }
                                 val variants = productVariants.filter { it.productId == product.id }
                                 val wholesales = wholesaleTiers.filter { it.productId == product.id }.sortedBy { it.minQty }
-                                val isDigital = product.productType == "DIGITAL" || product.isUnlimitedStock || product.hasNoStock
-                                val isMinus = !isDigital && product.stock < 0.0
-                                val isOut = !isDigital && product.stock == 0.0
-                                val isLow = !isDigital && product.stock > 0.0 && product.stock <= product.minStock
+                                val isDigital = product.productType == "DIGITAL"
+                                val noStock = isDigital || product.isUnlimitedStock || product.hasNoStock
+                                val isMinus = !noStock && product.stock < 0.0
+                                val isOut = !noStock && product.stock == 0.0
+                                val isLow = !noStock && product.stock > 0.0 && product.stock <= product.minStock
                                 val linkedTier = if (isDigital && product.adminTierGroupId != null) {
                                     adminTiers.find { it.service.id == product.adminTierGroupId }
                                 } else null
@@ -625,6 +627,7 @@ fun ProductsScreen(viewModel: PosViewModel) {
                                                 }
                                                 when {
                                                     isDigital -> DesignStatusBadge(text = if (product.serviceDirection == "TARIK") "Digital (Tarik)" else "Digital", type = BadgeType.INFO)
+                                                    noStock -> DesignStatusBadge(text = "Tanpa Stok", type = BadgeType.NORMAL)
                                                     isMinus -> DesignStatusBadge(text = "Stok minus ${product.stock.toInt()}", type = BadgeType.DANGER)
                                                     isOut -> DesignStatusBadge(text = "Habis", type = BadgeType.DANGER)
                                                     isLow -> DesignStatusBadge(text = "Menipis ${product.stock.toInt()}", type = BadgeType.WARNING)
@@ -1213,11 +1216,15 @@ fun AddEditProductDialog(
     var minStockText by remember(productKey) {
         mutableStateOf(initialProduct?.minStock?.let { "${it.toInt()}" } ?: "5")
     }
-    var isFlexiblePrice by remember(productKey) { mutableStateOf(initialProduct?.isFlexiblePrice ?: false) }
+    var isFlexiblePrice by remember(productKey, defaultDigital) {
+        mutableStateOf(initialProduct?.isFlexiblePrice ?: defaultDigital)
+    }
     var allowDecimalQty by remember(productKey) { mutableStateOf(initialProduct?.allowDecimalQty ?: false) }
-    var hasNoStock by remember(productKey) { mutableStateOf(initialProduct?.hasNoStock ?: false) }
+    var hasNoStock by remember(productKey) {
+        mutableStateOf(if (initialProduct?.productType == "DIGITAL") false else (initialProduct?.hasNoStock ?: false))
+    }
     var isDigitalProduct by remember(productKey, defaultDigital) {
-        mutableStateOf(defaultDigital || (initialProduct?.productType == "DIGITAL") || (initialProduct?.isUnlimitedStock == true))
+        mutableStateOf(defaultDigital || (initialProduct?.productType == "DIGITAL"))
     }
 
     var selectedTierGroupId by remember(productKey) { mutableStateOf(initialProduct?.adminTierGroupId) }
@@ -1225,7 +1232,7 @@ fun AddEditProductDialog(
     var serviceDirection by remember(productKey) { mutableStateOf(initialProduct?.serviceDirection ?: "SETOR") }
     var previewNominalText by remember(productKey) {
         val initSell = initialProduct?.sellingPrice ?: 0.0
-        mutableStateOf(if (initSell > 0.0) initSell.toLong().toString() else "345000")
+        mutableStateOf(if (initSell > 0.0) initSell.toLong().toString() else "500000")
     }
 
     val digitalTierRows = remember(productKey) { mutableStateListOf<DigitalTierRangeDraft>() }
@@ -1299,9 +1306,53 @@ fun AddEditProductDialog(
                     ProductDialogHeader(
                         isEdit = product != null,
                         isDigitalProduct = isDigitalProduct,
-                        onSelectDigital = { isDigitalProduct = it },
+                        onSelectDigital = { isDig ->
+                            isDigitalProduct = isDig
+                            if (isDig) {
+                                if (initialProduct == null || initialProduct.productType != "DIGITAL") {
+                                    isFlexiblePrice = true
+                                }
+                                if (category.isBlank() || category == "Makanan & Minuman" || category == "Umum") {
+                                    category = "Layanan Digital"
+                                }
+                                if (baseUnit.isBlank() || baseUnit == "pcs") {
+                                    baseUnit = "transaksi"
+                                }
+                                hasNoStock = false
+                            } else {
+                                if (initialProduct == null || initialProduct.productType != "DIGITAL") {
+                                    isFlexiblePrice = false
+                                } else {
+                                    isFlexiblePrice = false
+                                    hasNoStock = false
+                                }
+                                if (category == "Layanan Digital") {
+                                    category = "Makanan & Minuman"
+                                }
+                                if (baseUnit == "transaksi") {
+                                    baseUnit = "pcs"
+                                }
+                            }
+                        },
                         onDismiss = onDismiss
                     )
+                }
+
+                if (isDigitalProduct) {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Sapphire50,
+                            border = BorderStroke(1.dp, Sapphire200),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Mode Layanan Digital / Transfer / PPOB: tanpa stok fisik. Saat di kasir, masukkan nominal uang transfer dan biaya admin otomatis dihitung sesuai rentang.",
+                                style = MaterialTheme.typography.labelSmall.copy(color = Sapphire800, fontSize = 11.sp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
                 }
 
                 item {
@@ -1320,6 +1371,7 @@ fun AddEditProductDialog(
 
                 item {
                     ProductBasicFieldsSection(
+                        isDigitalProduct = isDigitalProduct,
                         name = name,
                         nameError = nameError,
                         category = category,
@@ -1396,25 +1448,25 @@ fun AddEditProductDialog(
                     )
                 }
 
-                item {
-                    ProductVariantsSection(
-                        variantRows = variantRows,
-                        defaultPriceText = sellingPriceText
-                    )
-                }
-
-                item {
-                    ProductWholesaleSection(wholesaleRows = wholesaleRows)
-                }
-
-                item {
-                    ProductTierQtySection(
-                        tierRows = tierRows,
-                        duplicateQtyKeys = duplicateQtyKeys
-                    )
-                }
-
                 if (!isDigitalProduct) {
+                    item {
+                        ProductVariantsSection(
+                            variantRows = variantRows,
+                            defaultPriceText = sellingPriceText
+                        )
+                    }
+
+                    item {
+                        ProductWholesaleSection(wholesaleRows = wholesaleRows)
+                    }
+
+                    item {
+                        ProductTierQtySection(
+                            tierRows = tierRows,
+                            duplicateQtyKeys = duplicateQtyKeys
+                        )
+                    }
+
                     item {
                         ProductUnitConversionsSection(
                             productId = product?.id ?: 0L,
@@ -1578,40 +1630,40 @@ private fun saveProductDialogForm(
         id = existingProductId,
         barcode = barcode,
         name = name.trim(),
-        category = category.trim().ifBlank { "Umum" },
-        baseUnit = baseUnit.trim().ifBlank { "pcs" },
-        purchasePrice = purchasePriceText.toDoubleOrNull() ?: 0.0,
-        sellingPrice = sellingPriceText.toDoubleOrNull() ?: 0.0,
+        category = category.trim().ifBlank { if (isDigitalProduct) "Layanan Digital" else "Umum" },
+        baseUnit = baseUnit.trim().ifBlank { if (isDigitalProduct) "transaksi" else "pcs" },
+        purchasePrice = if (isDigitalProduct && isFlexiblePrice) 0.0 else (purchasePriceText.toDoubleOrNull() ?: 0.0),
+        sellingPrice = if (isDigitalProduct && isFlexiblePrice) 0.0 else (sellingPriceText.toDoubleOrNull() ?: 0.0),
         stock = if (isDigitalProduct || hasNoStock) 999.0 else (stockText.toDoubleOrNull() ?: 0.0),
-        minStock = minStockText.toDoubleOrNull() ?: 5.0,
+        minStock = if (isDigitalProduct) 0.0 else (minStockText.toDoubleOrNull() ?: 5.0),
         productType = if (isDigitalProduct) "DIGITAL" else "FISIK",
         isUnlimitedStock = isDigitalProduct || hasNoStock,
         isFlexiblePrice = isFlexiblePrice,
         hasNoStock = isDigitalProduct || hasNoStock,
-        allowDecimalQty = allowDecimalQty,
+        allowDecimalQty = if (isDigitalProduct) false else allowDecimalQty,
         autoBarcode = autoBarcode,
-        specialPrice = specialPriceText.toDoubleOrNull(),
-        strikePrice = strikePriceText.toDoubleOrNull(),
+        specialPrice = if (isDigitalProduct) null else specialPriceText.toDoubleOrNull(),
+        strikePrice = if (isDigitalProduct) null else strikePriceText.toDoubleOrNull(),
         imageUri = imageUri,
         adminTierGroupId = if (isDigitalProduct) selectedTierGroupId else null,
         serviceCashAccountId = if (isDigitalProduct) selectedServiceCashId else null,
         serviceDirection = if (isDigitalProduct) serviceDirection else "SETOR"
     )
-    val parsedTiers = tierRows.mapNotNull { r ->
+    val parsedTiers = if (isDigitalProduct) emptyList() else tierRows.mapNotNull { r ->
         val q = r.qtyText.toDoubleOrNull()
         val p = r.totalPriceText.toDoubleOrNull()
         if (q != null && q > 0 && p != null && p >= 0) {
             ProductTierPriceEntity(productId = newProduct.id, quantity = q, totalPrice = p)
         } else null
     }
-    val parsedVariants = variantRows.mapNotNull { r ->
+    val parsedVariants = if (isDigitalProduct) emptyList() else variantRows.mapNotNull { r ->
         val sp = r.sellingPriceText.toDoubleOrNull() ?: 0.0
         val st = r.stockText.toDoubleOrNull() ?: 0.0
         if (r.name.isNotBlank()) {
             ProductVariantEntity(productId = newProduct.id, name = r.name.trim(), sellingPrice = sp, stock = st)
         } else null
     }
-    val parsedWholesales = wholesaleRows.mapNotNull { r ->
+    val parsedWholesales = if (isDigitalProduct) emptyList() else wholesaleRows.mapNotNull { r ->
         val mq = r.minQtyText.toDoubleOrNull()
         val ppu = r.pricePerUnitText.toDoubleOrNull()
         if (mq != null && mq > 0 && ppu != null && ppu >= 0) {
@@ -1635,7 +1687,14 @@ private fun saveProductDialogForm(
             )
         }
     } else null
-    onSave(newProduct, conversionsList.toList(), parsedTiers, parsedVariants, parsedWholesales, parsedDigitalTiers)
+    onSave(
+        newProduct,
+        if (isDigitalProduct) emptyList() else conversionsList.toList(),
+        parsedTiers,
+        parsedVariants,
+        parsedWholesales,
+        parsedDigitalTiers
+    )
 }
 
 @Composable
@@ -1736,6 +1795,7 @@ private fun ProductPhotoPickerCard(
 
 @Composable
 private fun ProductBasicFieldsSection(
+    isDigitalProduct: Boolean,
     name: String,
     nameError: Boolean,
     category: String,
@@ -1756,53 +1816,82 @@ private fun ProductBasicFieldsSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         DesignLabeledTextField(
-            label = "Nama produk *",
+            label = if (isDigitalProduct) "Nama layanan digital *" else "Nama produk *",
             value = name,
             onValueChange = onNameChange,
-            placeholder = "mis. Buku tulis",
+            placeholder = if (isDigitalProduct) "mis. Transfer Bank BRI / Top Up DANA" else "mis. Buku tulis",
             isError = nameError,
             errorMessage = "Nama wajib diisi"
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            DesignLabeledTextField(label = "Kategori", value = category, onValueChange = onCategoryChange, modifier = Modifier.weight(1.4f))
-            DesignLabeledTextField(label = "Satuan", value = baseUnit, onValueChange = onBaseUnitChange, modifier = Modifier.weight(1f))
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             DesignLabeledTextField(
-                label = "Harga modal",
-                value = purchasePriceText,
-                onValueChange = onPurchasePriceChange,
-                prefixText = "Rp ",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f)
+                label = "Kategori",
+                value = category,
+                onValueChange = onCategoryChange,
+                placeholder = if (isDigitalProduct) "Layanan Digital" else "Umum",
+                modifier = Modifier.weight(1.4f)
             )
             DesignLabeledTextField(
-                label = "Harga jual",
-                value = sellingPriceText,
-                onValueChange = onSellingPriceChange,
-                prefixText = "Rp ",
-                enabled = !isFlexiblePrice,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                label = "Satuan",
+                value = baseUnit,
+                onValueChange = onBaseUnitChange,
+                placeholder = if (isDigitalProduct) "transaksi" else "pcs",
                 modifier = Modifier.weight(1f)
             )
         }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            DesignLabeledTextField(
-                label = "Harga coret (opsional)",
-                value = strikePriceText,
-                onValueChange = onStrikePriceChange,
-                prefixText = "Rp ",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f)
-            )
-            DesignLabeledTextField(
-                label = "Harga khusus (opsional)",
-                value = specialPriceText,
-                onValueChange = onSpecialPriceChange,
-                prefixText = "Rp ",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f)
-            )
+        if (isDigitalProduct && isFlexiblePrice) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = BgCanvas,
+                border = BorderStroke(1.dp, BorderDefault),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Nominal uang transfer / tarik tunai diinput langsung saat melayani di Kasir (biaya admin otomatis dihitung dari rentang di bawah).",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Slate700, fontSize = 11.sp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                )
+            }
+        } else {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesignLabeledTextField(
+                    label = if (isDigitalProduct) "Modal penyedia (opsional)" else "Harga modal",
+                    value = purchasePriceText,
+                    onValueChange = onPurchasePriceChange,
+                    prefixText = "Rp ",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+                DesignLabeledTextField(
+                    label = if (isDigitalProduct) "Nominal layanan (Rp)" else "Harga jual",
+                    value = sellingPriceText,
+                    onValueChange = onSellingPriceChange,
+                    prefixText = "Rp ",
+                    enabled = !isFlexiblePrice,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        if (!isDigitalProduct) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesignLabeledTextField(
+                    label = "Harga coret (opsional)",
+                    value = strikePriceText,
+                    onValueChange = onStrikePriceChange,
+                    prefixText = "Rp ",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+                DesignLabeledTextField(
+                    label = "Harga khusus (opsional)",
+                    value = specialPriceText,
+                    onValueChange = onSpecialPriceChange,
+                    prefixText = "Rp ",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1810,8 +1899,18 @@ private fun ProductBasicFieldsSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Harga fleksibel", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = Slate900))
-                Text("Kasir isi nominal sendiri saat transaksi", style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp))
+                Text(
+                    if (isDigitalProduct) "Nominal fleksibel (input di kasir)" else "Harga fleksibel",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold, color = Slate900)
+                )
+                Text(
+                    if (isDigitalProduct) {
+                        "Kasir input uang yang ditransfer & admin otomatis mengikuti rentang"
+                    } else {
+                        "Kasir isi nominal sendiri saat transaksi"
+                    },
+                    style = MaterialTheme.typography.bodySmall.copy(color = Slate500, fontSize = 11.sp)
+                )
             }
             Switch(
                 checked = isFlexiblePrice,
@@ -1964,6 +2063,31 @@ private fun ProductDigitalServiceSection(
 
             if (digitalTierValidationError != null) {
                 DesignStatusBadge(text = digitalTierValidationError, type = BadgeType.DANGER)
+            }
+
+            if (digitalTierRows.isEmpty()) {
+                OutlinedButton(
+                    onClick = {
+                        onMarkTierModified()
+                        digitalTierRows.addAll(
+                            listOf(
+                                DigitalTierRangeDraft(minText = "1", maxText = "1000000", storeFeeText = "5000"),
+                                DigitalTierRangeDraft(minText = "1000001", maxText = "3000000", storeFeeText = "10000"),
+                                DigitalTierRangeDraft(minText = "3000001", maxText = "5000000", storeFeeText = "15000"),
+                                DigitalTierRangeDraft(minText = "5000001", maxText = "", storeFeeText = "20000")
+                            )
+                        )
+                        expandedTierIdx = 0
+                    },
+                    border = BorderStroke(1.dp, Emerald500.copy(alpha = 0.5f)),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = Emerald50, contentColor = Emerald700),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("product_digital_preset_tier_btn")
+                ) {
+                    Icon(Icons.Default.PriceCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Isi Preset Tarif Standar (1jt–5jt+)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
             }
 
             OutlinedButton(

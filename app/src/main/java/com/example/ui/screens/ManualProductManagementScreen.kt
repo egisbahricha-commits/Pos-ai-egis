@@ -78,6 +78,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.entity.AdminTierWithRanges
+import com.example.data.entity.CashAccountEntity
 import com.example.data.entity.ProductEntity
 import com.example.hardware.BarcodeInputSanitizer
 import com.example.hardware.ScannerSettings
@@ -87,6 +89,7 @@ import com.example.ui.components.BarcodeSearchBar
 import com.example.ui.components.DesignEmptyState
 import com.example.ui.components.DesignFilterChip
 import com.example.ui.components.DesignLabeledTextField
+import com.example.ui.components.DesignSegmentedTabs
 import com.example.ui.components.DesignStatusBadge
 import com.example.ui.components.ProductThumbnail
 import com.example.ui.components.ScannerSettingsDialog
@@ -103,6 +106,8 @@ import kotlin.math.roundToInt
 fun ManualProductManagementScreen(viewModel: PosViewModel) {
     val products by viewModel.products.collectAsStateWithLifecycle()
     val productVariants by viewModel.productVariants.collectAsStateWithLifecycle()
+    val adminTiers by viewModel.adminTiers.collectAsStateWithLifecycle()
+    val cashAccounts by viewModel.cashAccounts.collectAsStateWithLifecycle()
     val excelImportState by viewModel.excelImportState.collectAsStateWithLifecycle()
     val scannerSettings by viewModel.scannerSettings.collectAsStateWithLifecycle()
 
@@ -262,8 +267,10 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                         ManualProductFormContent(
                             editingProduct = selectedProduct,
                             existingProducts = products,
+                            adminTiers = adminTiers,
+                            cashAccounts = cashAccounts,
                             onGenerateBarcode = { viewModel.generateRandomBarcode() },
-                            onSave = { name, sell, buy, stock, minStock, barcode, category, unit, allowDecimal ->
+                            onSave = { name, sell, buy, stock, minStock, barcode, category, unit, allowDecimal, isDig, isFlex, tierId, cashAccId, dir ->
                                 viewModel.saveManualProduct(
                                     existingProduct = selectedProduct,
                                     name = name,
@@ -274,7 +281,12 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                                     barcode = barcode,
                                     category = category,
                                     baseUnit = unit,
-                                    allowDecimalQty = allowDecimal
+                                    allowDecimalQty = allowDecimal,
+                                    isDigital = isDig,
+                                    isFlexiblePrice = isFlex,
+                                    adminTierGroupId = tierId,
+                                    serviceCashAccountId = cashAccId,
+                                    serviceDirection = dir
                                 )
                                 selectedProduct = null
                             },
@@ -342,8 +354,10 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                 ManualProductFormContent(
                     editingProduct = selectedProduct,
                     existingProducts = products,
+                    adminTiers = adminTiers,
+                    cashAccounts = cashAccounts,
                     onGenerateBarcode = { viewModel.generateRandomBarcode() },
-                    onSave = { name, sell, buy, stock, minStock, barcode, category, unit, allowDecimal ->
+                    onSave = { name, sell, buy, stock, minStock, barcode, category, unit, allowDecimal, isDig, isFlex, tierId, cashAccId, dir ->
                         viewModel.saveManualProduct(
                             existingProduct = selectedProduct,
                             name = name,
@@ -354,7 +368,12 @@ fun ManualProductManagementScreen(viewModel: PosViewModel) {
                             barcode = barcode,
                             category = category,
                             baseUnit = unit,
-                            allowDecimalQty = allowDecimal
+                            allowDecimalQty = allowDecimal,
+                            isDigital = isDig,
+                            isFlexiblePrice = isFlex,
+                            adminTierGroupId = tierId,
+                            serviceCashAccountId = cashAccId,
+                            serviceDirection = dir
                         )
                         showFormDialog = false
                         selectedProduct = null
@@ -664,14 +683,17 @@ private fun ManualProductItemCard(
     onDecrementStock: () -> Unit,
     onIncrementStock: () -> Unit
 ) {
-    val isDigital = product.productType == "DIGITAL" || product.isUnlimitedStock || product.hasNoStock
+    val isDigitalService = product.productType == "DIGITAL"
+    val isDigital = isDigitalService || product.isUnlimitedStock || product.hasNoStock
     val stockBadgeType = when {
-        isDigital -> BadgeType.INFO
+        isDigitalService -> BadgeType.INFO
+        isDigital -> BadgeType.NORMAL
         product.stock <= 0.0 -> BadgeType.DANGER
         product.stock <= product.minStock -> BadgeType.WARNING
         else -> BadgeType.SUCCESS
     }
     val stockDisplay = when {
+        isDigitalService -> if (product.serviceDirection == "TARIK") "Digital (Tarik)" else "Digital"
         isDigital -> "Unlimited"
         product.allowDecimalQty || product.stock % 1.0 != 0.0 ->
             "Stok: ${String.format(java.util.Locale.US, "%.2f", product.stock).trimEnd('0').trimEnd('.')} ${product.baseUnit}"
@@ -765,13 +787,17 @@ private fun ManualProductItemCard(
             ) {
                 Column {
                     Text(
-                        text = "Rp ${formatRupiah(product.sellingPrice)} / ${product.baseUnit}",
+                        text = if (product.isFlexiblePrice) {
+                            "Nominal fleksibel / ${product.baseUnit}"
+                        } else {
+                            "Rp ${formatRupiah(product.sellingPrice)} / ${product.baseUnit}"
+                        },
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold,
                             color = Slate900
                         ).tabular()
                     )
-                    if (product.purchasePrice > 0.0) {
+                    if (product.purchasePrice > 0.0 && !(isDigitalService && product.isFlexiblePrice)) {
                         Text(
                             text = "Modal Rp ${formatRupiah(product.purchasePrice)}",
                             style = MaterialTheme.typography.labelSmall.copy(
@@ -836,6 +862,8 @@ private fun ManualProductItemCard(
 private fun ManualProductFormContent(
     editingProduct: ProductEntity?,
     existingProducts: List<ProductEntity>,
+    adminTiers: List<AdminTierWithRanges> = emptyList(),
+    cashAccounts: List<CashAccountEntity> = emptyList(),
     onGenerateBarcode: () -> String,
     onSave: (
         name: String,
@@ -846,16 +874,29 @@ private fun ManualProductFormContent(
         barcode: String,
         category: String,
         baseUnit: String,
-        allowDecimalQty: Boolean
+        allowDecimalQty: Boolean,
+        isDigital: Boolean,
+        isFlexiblePrice: Boolean,
+        adminTierGroupId: Long?,
+        serviceCashAccountId: Long?,
+        serviceDirection: String
     ) -> Unit,
     onCancelEdit: () -> Unit,
     showCloseButton: Boolean,
     modifier: Modifier = Modifier
 ) {
     val key = editingProduct?.id ?: -1L
+    var isDigital by remember(key) { mutableStateOf(editingProduct?.productType == "DIGITAL") }
+    var isFlexiblePrice by remember(key) { mutableStateOf(editingProduct?.isFlexiblePrice ?: false) }
+    var serviceDirection by remember(key) { mutableStateOf(editingProduct?.serviceDirection ?: "SETOR") }
+    var selectedTierGroupId by remember(key) { mutableStateOf(editingProduct?.adminTierGroupId) }
+    var selectedServiceCashId by remember(key) { mutableStateOf(editingProduct?.serviceCashAccountId) }
+
     var name by remember(key) { mutableStateOf(editingProduct?.name ?: "") }
     var sellingPriceText by remember(key) {
-        mutableStateOf(editingProduct?.sellingPrice?.let { "${it.toLong()}" } ?: "")
+        mutableStateOf(
+            editingProduct?.sellingPrice?.takeIf { !(editingProduct.isFlexiblePrice && it == 0.0) }?.let { "${it.toLong()}" } ?: ""
+        )
     }
     var purchasePriceText by remember(key) {
         mutableStateOf(
@@ -880,14 +921,16 @@ private fun ManualProductFormContent(
     var showValidationErrors by remember(key) { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
 
-    val validation = remember(name, sellingPriceText, stockText, barcode, editingProduct?.id, existingProducts) {
+    val validation = remember(name, sellingPriceText, stockText, barcode, editingProduct?.id, existingProducts, isDigital, isFlexiblePrice) {
         validateManualProductInput(
             name = name,
             sellingPriceText = sellingPriceText,
             stockText = stockText,
             barcode = barcode,
             editingProductId = editingProduct?.id,
-            existingProducts = existingProducts
+            existingProducts = existingProducts,
+            isDigital = isDigital,
+            isFlexiblePrice = isFlexiblePrice
         )
     }
 
@@ -934,119 +977,226 @@ private fun ManualProductFormContent(
 
         HorizontalDivider(color = BorderDefault)
 
+        DesignSegmentedTabs(
+            options = listOf("FISIK" to "Produk Fisik", "DIGITAL" to "Produk Digital"),
+            selectedKey = if (isDigital) "DIGITAL" else "FISIK",
+            onSelect = { next ->
+                val nextDigital = next == "DIGITAL"
+                isDigital = nextDigital
+                if (nextDigital) {
+                    if (editingProduct == null || editingProduct.productType != "DIGITAL") {
+                        isFlexiblePrice = true
+                    }
+                    if (category.isBlank() || category == "Umum") category = "Layanan Digital"
+                    if (baseUnit.isBlank() || baseUnit == "pcs") baseUnit = "transaksi"
+                    allowDecimalQty = false
+                } else {
+                    if (editingProduct == null || editingProduct.productType != "DIGITAL") {
+                        isFlexiblePrice = false
+                    }
+                    if (category == "Layanan Digital") category = "Umum"
+                    if (baseUnit == "transaksi") baseUnit = "pcs"
+                }
+            }
+        )
+
+        if (isDigital) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Sapphire50,
+                border = BorderStroke(1.dp, Sapphire200),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Mode Layanan Digital / Transfer / PPOB: tanpa stok fisik. Saat di kasir, masukkan nominal uang transfer dan admin otomatis mengikuti rentang.",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Sapphire800, fontSize = 11.sp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                )
+            }
+        }
+
         DesignLabeledTextField(
-            label = stringResource(R.string.manual_products_field_name),
+            label = if (isDigital) "Nama Layanan Digital *" else stringResource(R.string.manual_products_field_name),
             value = name,
             onValueChange = { name = it },
-            placeholder = "mis. Indomie Goreng 85g",
+            placeholder = if (isDigital) "mis. Transfer Bank BRI / Top Up DANA" else "mis. Indomie Goreng 85g",
             isError = showValidationErrors && validation.nameError != null,
             errorMessage = validation.nameError,
             modifier = Modifier.testTag("manual_field_name")
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            DesignLabeledTextField(
-                label = stringResource(R.string.manual_products_field_price),
-                value = sellingPriceText,
-                onValueChange = { sellingPriceText = it.filter(Char::isDigit) },
-                prefixText = "Rp ",
-                placeholder = "3500",
-                isError = showValidationErrors && validation.priceError != null,
-                errorMessage = validation.priceError,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("manual_field_price")
-            )
-            DesignLabeledTextField(
-                label = stringResource(R.string.manual_products_field_cost_price),
-                value = purchasePriceText,
-                onValueChange = { purchasePriceText = it.filter(Char::isDigit) },
-                prefixText = "Rp ",
-                placeholder = "2800",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("manual_field_cost_price")
-            )
-        }
-
-        if (parsedSell > 0.0 && parsedBuy > 0.0) {
-            val profit = parsedSell - parsedBuy
-            val marginPct = ((profit / parsedSell) * 100.0).roundToInt()
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = if (profit >= 0) Emerald50 else Rose100,
-                border = BorderStroke(1.dp, if (profit >= 0) Emerald200 else Rose500.copy(alpha = 0.3f)),
-                modifier = Modifier.fillMaxWidth()
+        if (isDigital) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Estimasi Laba: Rp ${formatRupiah(profit)} ($marginPct%)",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = if (profit >= 0) Emerald700 else Rose500
-                    ).tabular(),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Nominal fleksibel (input di kasir)",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = Slate800)
+                    )
+                    Text(
+                        text = "Kasir input berapa uang yang ditransfer & admin otomatis",
+                        style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
+                    )
+                }
+                Switch(
+                    checked = isFlexiblePrice,
+                    onCheckedChange = { isFlexiblePrice = it },
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = AccentBlue)
                 )
             }
         }
 
-        // Current Stock Level with +/- Stepper
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.Bottom
-        ) {
-            DesignLabeledTextField(
-                label = stringResource(R.string.manual_products_field_stock),
-                value = stockText,
-                onValueChange = { raw ->
-                    stockText = raw.filter { ch -> ch.isDigit() || ch == '.' || ch == '-' }
-                },
-                placeholder = "0",
-                isError = showValidationErrors && validation.stockError != null,
-                errorMessage = validation.stockError,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = if (allowDecimalQty) KeyboardType.Decimal else KeyboardType.Number
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("manual_field_stock")
-            )
-
-            OutlinedButton(
-                onClick = {
-                    val cur = stockText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
-                    val next = (cur - 1.0).coerceAtLeast(0.0)
-                    stockText = if (allowDecimalQty || next % 1.0 != 0.0) next.toString() else "${next.toInt()}"
-                },
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, BorderInput),
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier
-                    .size(50.dp)
-                    .testTag("manual_form_stock_minus")
+        if (!(isDigital && isFlexiblePrice)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.Remove, contentDescription = "Kurangi stok", tint = Slate700)
+                DesignLabeledTextField(
+                    label = if (isDigital) "Nominal Layanan (Rp) *" else stringResource(R.string.manual_products_field_price),
+                    value = sellingPriceText,
+                    onValueChange = { sellingPriceText = it.filter(Char::isDigit) },
+                    prefixText = "Rp ",
+                    placeholder = if (isDigital) "50000" else "3500",
+                    isError = showValidationErrors && validation.priceError != null,
+                    errorMessage = validation.priceError,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("manual_field_price")
+                )
+                DesignLabeledTextField(
+                    label = if (isDigital) "Modal Penyedia (Rp)" else stringResource(R.string.manual_products_field_cost_price),
+                    value = purchasePriceText,
+                    onValueChange = { purchasePriceText = it.filter(Char::isDigit) },
+                    prefixText = "Rp ",
+                    placeholder = if (isDigital) "49000" else "2800",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("manual_field_cost_price")
+                )
             }
 
-            Button(
-                onClick = {
-                    val cur = stockText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
-                    val next = cur + 1.0
-                    stockText = if (allowDecimalQty || next % 1.0 != 0.0) next.toString() else "${next.toInt()}"
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = ModuleProduk, contentColor = Color.White),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier
-                    .size(50.dp)
-                    .testTag("manual_form_stock_plus")
+            if (parsedSell > 0.0 && parsedBuy > 0.0) {
+                val profit = parsedSell - parsedBuy
+                val marginPct = ((profit / parsedSell) * 100.0).roundToInt()
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (profit >= 0) Emerald50 else Rose100,
+                    border = BorderStroke(1.dp, if (profit >= 0) Emerald200 else Rose500.copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Estimasi Laba: Rp ${formatRupiah(profit)} ($marginPct%)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = if (profit >= 0) Emerald700 else Rose500
+                        ).tabular(),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+
+        if (isDigital) {
+            DesignSegmentedTabs(
+                options = listOf("SETOR" to "Setor / Transfer", "TARIK" to "Tarik Tunai"),
+                selectedKey = serviceDirection,
+                onSelect = { serviceDirection = it }
+            )
+
+            Text("Grup Tarif Admin Otomatis:", style = MaterialTheme.typography.labelSmall.copy(color = Slate600))
+            if (adminTiers.isEmpty()) {
+                DesignStatusBadge(
+                    text = "Belum ada grup tarif — buat di menu Produk > Kelola Tarif",
+                    type = BadgeType.WARNING
+                )
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(adminTiers) { tier ->
+                        DesignFilterChip(
+                            label = "${tier.service.serviceName} (${tier.ranges.size})",
+                            selected = selectedTierGroupId == tier.service.id,
+                            onClick = {
+                                selectedTierGroupId = if (selectedTierGroupId == tier.service.id) null else tier.service.id
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (cashAccounts.isNotEmpty()) {
+                Text("Akun Kas Layanan Terkait:", style = MaterialTheme.typography.labelSmall.copy(color = Slate600))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(cashAccounts) { ca ->
+                        DesignFilterChip(
+                            label = ca.accountName,
+                            selected = selectedServiceCashId == ca.id,
+                            onClick = {
+                                selectedServiceCashId = if (selectedServiceCashId == ca.id) null else ca.id
+                            }
+                        )
+                    }
+                }
+            }
+        } else {
+            // Current Stock Level with +/- Stepper
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Tambah stok")
+                DesignLabeledTextField(
+                    label = stringResource(R.string.manual_products_field_stock),
+                    value = stockText,
+                    onValueChange = { raw ->
+                        stockText = raw.filter { ch -> ch.isDigit() || ch == '.' || ch == '-' }
+                    },
+                    placeholder = "0",
+                    isError = showValidationErrors && validation.stockError != null,
+                    errorMessage = validation.stockError,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (allowDecimalQty) KeyboardType.Decimal else KeyboardType.Number
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("manual_field_stock")
+                )
+
+                OutlinedButton(
+                    onClick = {
+                        val cur = stockText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
+                        val next = (cur - 1.0).coerceAtLeast(0.0)
+                        stockText = if (allowDecimalQty || next % 1.0 != 0.0) next.toString() else "${next.toInt()}"
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, BorderInput),
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier
+                        .size(50.dp)
+                        .testTag("manual_form_stock_minus")
+                ) {
+                    Icon(Icons.Default.Remove, contentDescription = "Kurangi stok", tint = Slate700)
+                }
+
+                Button(
+                    onClick = {
+                        val cur = stockText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
+                        val next = cur + 1.0
+                        stockText = if (allowDecimalQty || next % 1.0 != 0.0) next.toString() else "${next.toInt()}"
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ModuleProduk, contentColor = Color.White),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier
+                        .size(50.dp)
+                        .testTag("manual_form_stock_plus")
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Tambah stok")
+                }
             }
         }
 
@@ -1058,24 +1208,26 @@ private fun ManualProductFormContent(
                 label = stringResource(R.string.manual_products_field_category),
                 value = category,
                 onValueChange = { category = it },
-                placeholder = "Umum",
+                placeholder = if (isDigital) "Layanan Digital" else "Umum",
                 modifier = Modifier.weight(1.2f)
             )
             DesignLabeledTextField(
                 label = stringResource(R.string.manual_products_field_unit),
                 value = baseUnit,
                 onValueChange = { baseUnit = it },
-                placeholder = "pcs",
+                placeholder = if (isDigital) "transaksi" else "pcs",
                 modifier = Modifier.weight(0.9f)
             )
-            DesignLabeledTextField(
-                label = stringResource(R.string.manual_products_field_min_stock),
-                value = minStockText,
-                onValueChange = { minStockText = it.filter(Char::isDigit) },
-                placeholder = "5",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(0.9f)
-            )
+            if (!isDigital) {
+                DesignLabeledTextField(
+                    label = stringResource(R.string.manual_products_field_min_stock),
+                    value = minStockText,
+                    onValueChange = { minStockText = it.filter(Char::isDigit) },
+                    placeholder = "5",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(0.9f)
+                )
+            }
         }
 
         Row(
@@ -1122,29 +1274,31 @@ private fun ManualProductFormContent(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Stok Desimal (kg, liter, meter)",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = Slate800
+        if (!isDigital) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Stok Desimal (kg, liter, meter)",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = Slate800
+                        )
                     )
-                )
-                Text(
-                    text = "Aktifkan untuk barang timbang atau pecahan",
-                    style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
+                    Text(
+                        text = "Aktifkan untuk barang timbang atau pecahan",
+                        style = MaterialTheme.typography.labelSmall.copy(color = Slate500)
+                    )
+                }
+                Switch(
+                    checked = allowDecimalQty,
+                    onCheckedChange = { allowDecimalQty = it },
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = ModuleProduk)
                 )
             }
-            Switch(
-                checked = allowDecimalQty,
-                onCheckedChange = { allowDecimalQty = it },
-                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = ModuleProduk)
-            )
         }
 
         Spacer(modifier = Modifier.height(4.dp))
@@ -1168,10 +1322,10 @@ private fun ManualProductFormContent(
             Button(
                 onClick = {
                     if (validation.isValid) {
-                        val finalSell = sellingPriceText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
-                        val finalBuy = purchasePriceText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
-                        val finalStock = stockText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
-                        val finalMin = minStockText.trim().toDoubleOrNull() ?: 5.0
+                        val finalSell = if (isDigital && isFlexiblePrice) 0.0 else (sellingPriceText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0)
+                        val finalBuy = if (isDigital && isFlexiblePrice) 0.0 else (purchasePriceText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0)
+                        val finalStock = if (isDigital) 999.0 else (stockText.trim().replace(',', '.').toDoubleOrNull() ?: 0.0)
+                        val finalMin = if (isDigital) 0.0 else (minStockText.trim().toDoubleOrNull() ?: 5.0)
                         onSave(
                             name.trim(),
                             finalSell,
@@ -1179,9 +1333,14 @@ private fun ManualProductFormContent(
                             finalStock,
                             finalMin,
                             barcode.trim(),
-                            category.trim().ifBlank { "Umum" },
-                            baseUnit.trim().ifBlank { "pcs" },
-                            allowDecimalQty
+                            category.trim().ifBlank { if (isDigital) "Layanan Digital" else "Umum" },
+                            baseUnit.trim().ifBlank { if (isDigital) "transaksi" else "pcs" },
+                            if (isDigital) false else allowDecimalQty,
+                            isDigital,
+                            isFlexiblePrice,
+                            if (isDigital) selectedTierGroupId else null,
+                            if (isDigital) selectedServiceCashId else null,
+                            if (isDigital) serviceDirection else "SETOR"
                         )
                         if (!showCloseButton && editingProduct == null) {
                             name = ""

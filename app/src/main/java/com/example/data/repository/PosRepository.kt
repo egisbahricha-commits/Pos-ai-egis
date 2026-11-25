@@ -1636,6 +1636,7 @@ class PosRepository(private val db: GeraiUnaDatabase) {
         cart.forEach { item ->
             jsonArray.put(
                 JSONObject().apply {
+                    put("lineId", item.lineId)
                     put("id", item.productId)
                     put("name", item.productName)
                     put("unit", item.unitName)
@@ -1695,7 +1696,8 @@ data class CartItem(
     val providerAdminFee: Double = 0.0,
     val agentCommission: Double = 0.0,
     val serviceCashAccountId: Long? = null,
-    val serviceDirection: String = "SETOR"
+    val serviceDirection: String = "SETOR",
+    val lineId: String = java.util.UUID.randomUUID().toString()
 )
 
 data class PurchaseItemDraft(

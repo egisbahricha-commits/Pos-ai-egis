@@ -1476,4 +1476,203 @@ class ExampleRobolectricTest {
                 .contains("Samsung Tab A9")
         )
     }
+
+    @Test
+    fun `test digital product validation, barcode lookup, distinct cart lines, and multi-kas checkout`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, GeraiUnaDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val repo = PosRepository(db)
+
+        // 1. validateManualProductInput skips stock & sellingPrice when isDigital = true and isFlexiblePrice = true
+        val digitalFlexValid = validateManualProductInput(
+            name = "Transfer Bank BRI",
+            sellingPriceText = "",
+            stockText = "",
+            barcode = "DIG-BRI-01",
+            isDigital = true,
+            isFlexiblePrice = true
+        )
+        assertTrue("Digital flexible product should be valid with empty price & stock", digitalFlexValid.isValid)
+
+        val digitalFixedMissingPrice = validateManualProductInput(
+            name = "Pulsa 50rb",
+            sellingPriceText = "",
+            stockText = "",
+            barcode = "DIG-PLS-50",
+            isDigital = true,
+            isFlexiblePrice = false
+        )
+        assertFalse("Digital fixed product without price must require nominal", digitalFixedMissingPrice.isValid)
+        assertNotNull(digitalFixedMissingPrice.priceError)
+        assertNull(digitalFixedMissingPrice.stockError)
+
+        // 2. resolveBarcodeToCartMatch always requires nominal/tier confirmation for DIGITAL products
+        val digitalProd = ProductEntity(
+            id = 501L,
+            name = "Transfer Bank BRI",
+            barcode = "DIG-BRI-01",
+            category = "Layanan Digital",
+            baseUnit = "transaksi",
+            sellingPrice = 0.0,
+            stock = 999.0,
+            productType = "DIGITAL",
+            isUnlimitedStock = true,
+            hasNoStock = true,
+            isFlexiblePrice = false, // even when false, DIGITAL must never silently add Rp 0
+            serviceDirection = "SETOR",
+            isActive = true
+        )
+        val barcodeOutcome = resolveBarcodeToCartMatch(
+            rawCode = "DIG-BRI-01",
+            products = listOf(digitalProd),
+            variants = emptyList(),
+            conversions = emptyList()
+        )
+        assertTrue(
+            "Scanning a DIGITAL product must route to NeedsSelection instead of silent Rp 0 add",
+            barcodeOutcome is BarcodeLookupOutcome.NeedsSelection
+        )
+
+        // 3. Seed CashAccounts (Kas Toko default CASH + BRI Agen BANK) + AdminTier ranges + Digital product in DB
+        val cashTokoId = db.cashAccountDao().insertCashAccount(
+            CashAccountEntity(
+                accountName = "Kas Toko",
+                accountType = "CASH",
+                balance = 0.0,
+                isDefault = true,
+                isActive = true
+            )
+        )
+        val bankAccountId = db.cashAccountDao().insertCashAccount(
+            CashAccountEntity(
+                accountName = "BRI Agen",
+                accountType = "BANK",
+                balance = 10_000_000.0,
+                isDefault = false,
+                isActive = true
+            )
+        )
+        val tierServiceId = db.adminTierDao().insertService(
+            AdminTierServiceEntity(serviceName = "Transfer Bank", isActive = true)
+        )
+        db.adminTierDao().insertRange(
+            AdminTierRangeEntity(
+                serviceId = tierServiceId,
+                minAmount = 10_000.0,
+                maxAmount = 1_000_000.0,
+                storeAdminFee = 5_000.0,
+                providerAdminFee = 1_000.0,
+                agentCommission = 1_500.0
+            )
+        )
+        db.adminTierDao().insertRange(
+            AdminTierRangeEntity(
+                serviceId = tierServiceId,
+                minAmount = 1_000_001.0,
+                maxAmount = 5_000_000.0,
+                storeAdminFee = 10_000.0,
+                providerAdminFee = 1_500.0,
+                agentCommission = 2_000.0
+            )
+        )
+        val savedDigitalId = repo.insertProduct(
+            ProductEntity(
+                name = "Transfer Bank BRI",
+                barcode = "DIG-BRI-01",
+                category = "Layanan Digital",
+                baseUnit = "transaksi",
+                sellingPrice = 0.0,
+                stock = 999.0,
+                productType = "DIGITAL",
+                isUnlimitedStock = true,
+                hasNoStock = true,
+                isFlexiblePrice = true,
+                adminTierGroupId = tierServiceId,
+                serviceCashAccountId = bankAccountId,
+                serviceDirection = "SETOR",
+                isActive = true
+            )
+        )
+        val persistedDigital = db.productDao().getProductById(savedDigitalId)!!
+
+        // 4. Verify TierPricingResolver auto-calculates tiered admin fees by nominal
+        val svcEntity = db.adminTierDao().getAllServicesList().first { it.id == tierServiceId }
+        val loadedTiers = listOf(AdminTierWithRanges(svcEntity, db.adminTierDao().getRangesList(tierServiceId)))
+        val tierGroup = TierPricingResolver.resolveServiceGroup(loadedTiers, persistedDigital.adminTierGroupId, persistedDigital.name)
+        val calc500k = TierPricingResolver.calculate(tierGroup, 500_000.0)
+        val calc2_5m = TierPricingResolver.calculate(tierGroup, 2_500_000.0)
+        assertEquals(5_000.0, calc500k.storeAdminFee, 0.01)
+        assertEquals(10_000.0, calc2_5m.storeAdminFee, 0.01)
+
+        // 5. Verify PosViewModel keeps two digital transfers of the same service as distinct CartItem lines
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.ui.viewmodel.PosViewModel(app)
+        vm.clearCart()
+        vm.addToCart(
+            product = persistedDigital,
+            customPrice = 500_000.0,
+            storeAdminFee = calc500k.storeAdminFee,
+            providerAdminFee = calc500k.providerAdminFee,
+            agentCommission = calc500k.agentCommission,
+            serviceCashAccountId = bankAccountId,
+            serviceDirection = "SETOR"
+        )
+        vm.addToCart(
+            product = persistedDigital,
+            customPrice = 2_500_000.0,
+            storeAdminFee = calc2_5m.storeAdminFee,
+            providerAdminFee = calc2_5m.providerAdminFee,
+            agentCommission = calc2_5m.agentCommission,
+            serviceCashAccountId = bankAccountId,
+            serviceDirection = "SETOR"
+        )
+        val twoLines = vm.cart.value
+        assertEquals("Two digital transfers must stay separate cart lines", 2, twoLines.size)
+        assertTrue("Each cart item must have a distinct lineId", twoLines[0].lineId != twoLines[1].lineId)
+        assertEquals(500_000.0, twoLines[0].serviceNominal!!, 0.01)
+        assertEquals(2_500_000.0, twoLines[1].serviceNominal!!, 0.01)
+
+        // 6. Edit first line via updateDigitalCartItem & remove second line by lineId cleanly
+        vm.updateDigitalCartItem(
+            lineId = twoLines[0].lineId,
+            nominal = 1_500_000.0,
+            storeAdminFee = 10_000.0,
+            providerAdminFee = 1_500.0,
+            agentCommission = 2_000.0,
+            serviceCashAccountId = bankAccountId,
+            serviceDirection = "SETOR"
+        )
+        assertEquals(1_500_000.0, vm.cart.value[0].unitPrice, 0.01)
+        assertEquals(10_000.0, vm.cart.value[0].storeAdminFee, 0.01)
+
+        vm.removeFromCart(
+            productId = twoLines[1].productId,
+            unitName = twoLines[1].unitName,
+            lineId = twoLines[1].lineId
+        )
+        assertEquals(1, vm.cart.value.size)
+        assertEquals(twoLines[0].lineId, vm.cart.value[0].lineId)
+
+        // 7. Complete digital SETOR sale & verify stock untouched + bank balance deducted cleanly
+        val completed = repo.completeSale(
+            cashierName = "Kasir Test",
+            customer = null,
+            items = vm.cart.value,
+            paymentMethod = "TUNAI",
+            amountPaid = 1_510_000.0
+        )
+        assertEquals(1_510_000.0, completed.finalAmount, 0.01)
+        assertEquals(10_000.0, completed.storeAdminFee, 0.01)
+        assertEquals(999.0, db.productDao().getProductById(savedDigitalId)!!.stock, 0.01)
+        val updatedCashToko = db.cashAccountDao().getCashAccountById(cashTokoId)!!
+        val updatedBank = db.cashAccountDao().getCashAccountById(bankAccountId)!!
+        // Customer paid 1.510.000 TUNAI -> enters Kas Toko (0 + 1.510.000 = 1.510.000)
+        assertEquals(1_510_000.0, updatedCashToko.balance, 0.01)
+        // Bank BRI Agen: 10.000.000 - 1.500.000 (transfer) - 1.500 (provider admin) + 2.000 (agent commission) = 8.500.500
+        assertEquals(8_500_500.0, updatedBank.balance, 0.01)
+        vm.clearCart()
+        db.close()
+    }
 }

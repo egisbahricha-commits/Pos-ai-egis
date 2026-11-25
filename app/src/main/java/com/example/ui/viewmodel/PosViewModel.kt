@@ -239,23 +239,34 @@ fun validateManualProductInput(
     stockText: String,
     barcode: String,
     editingProductId: Long? = null,
-    existingProducts: List<ProductEntity> = emptyList()
+    existingProducts: List<ProductEntity> = emptyList(),
+    isDigital: Boolean = false,
+    isFlexiblePrice: Boolean = false
 ): ManualProductValidation {
     val cleanName = name.trim()
     val nameErr = if (cleanName.isEmpty()) "Nama produk wajib diisi" else null
 
     val parsedPrice = sellingPriceText.trim().replace(',', '.').toDoubleOrNull()
     val priceErr = when {
-        sellingPriceText.isBlank() -> "Harga jual wajib diisi"
+        isFlexiblePrice -> {
+            if (sellingPriceText.isNotBlank() && (parsedPrice == null || parsedPrice < 0.0)) {
+                "Nominal default tidak valid"
+            } else null
+        }
+        sellingPriceText.isBlank() -> if (isDigital) "Nominal layanan wajib diisi (atau aktifkan fleksibel)" else "Harga jual wajib diisi"
         parsedPrice == null || parsedPrice < 0.0 -> "Harga jual tidak valid"
         else -> null
     }
 
     val parsedStock = stockText.trim().replace(',', '.').toDoubleOrNull()
-    val stockErr = when {
-        stockText.isBlank() -> "Stok saat ini wajib diisi"
-        parsedStock == null -> "Angka stok tidak valid"
-        else -> null
+    val stockErr = if (isDigital) {
+        null
+    } else {
+        when {
+            stockText.isBlank() -> "Stok saat ini wajib diisi"
+            parsedStock == null -> "Angka stok tidak valid"
+            else -> null
+        }
     }
 
     val cleanBarcode = barcode.trim()
@@ -314,6 +325,7 @@ fun resolveBarcodeToCartMatch(
     val productConversions = conversions.filter { it.productId == matchedProduct.id }
     val activeVariants = variants.filter { it.productId == matchedProduct.id && it.isActive }
     return if ((matchedProduct.hasVariants && activeVariants.isNotEmpty()) ||
+        matchedProduct.productType == "DIGITAL" ||
         matchedProduct.isFlexiblePrice ||
         productConversions.isNotEmpty()
     ) {
@@ -1667,37 +1679,32 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val current = _cart.value.toMutableList()
         val targetVariantId = variant?.id
-        val index = current.indexOfFirst {
-            it.productId == product.id &&
-                    it.unitName.equals(unitName, ignoreCase = true) &&
-                    it.variantId == targetVariantId &&
-                    it.bundleId == null
-        }
+        val isDigitalProduct = product.productType == "DIGITAL"
+        val allowMerge = customPrice == null && !isDigitalProduct && !product.isFlexiblePrice
+        val index = if (allowMerge) {
+            current.indexOfFirst {
+                it.productId == product.id &&
+                        it.unitName.equals(unitName, ignoreCase = true) &&
+                        it.variantId == targetVariantId &&
+                        it.bundleId == null
+            }
+        } else -1
 
         val baseSellingPrice = variant?.sellingPrice ?: price
         val stockLimit = variant?.stock ?: product.stock
 
-        if (index >= 0 && customPrice == null) {
+        if (index >= 0) {
             val existing = current[index]
             val updatedQty = existing.quantity + 1.0
-            val (resolvedPrice, source) = if (product.isFlexiblePrice) {
-                existing.unitPrice to "fleksibel"
-            } else {
-                resolvePriceAndSource(product.id, unitName, multiplier, updatedQty, baseSellingPrice)
-            }
-            val isDigital = product.productType == "DIGITAL"
+            val (resolvedPrice, source) = resolvePriceAndSource(product.id, unitName, multiplier, updatedQty, baseSellingPrice)
             current[index] = existing.copy(
                 quantity = updatedQty,
                 unitPrice = resolvedPrice,
-                priceSource = source,
-                serviceNominal = if (isDigital) resolvedPrice * updatedQty else existing.serviceNominal,
-                storeAdminFee = if (isDigital) existing.storeAdminFee + storeAdminFee else existing.storeAdminFee,
-                providerAdminFee = if (isDigital) existing.providerAdminFee + providerAdminFee else existing.providerAdminFee,
-                agentCommission = if (isDigital) existing.agentCommission + agentCommission else existing.agentCommission
+                priceSource = source
             )
         } else {
             val (resolvedPrice, source) = when {
-                customPrice != null -> customPrice to if (product.isFlexiblePrice) "fleksibel" else "manual"
+                customPrice != null -> customPrice to if (product.isFlexiblePrice || isDigitalProduct) "fleksibel" else "manual"
                 else -> resolvePriceAndSource(product.id, unitName, multiplier, 1.0, baseSellingPrice)
             }
             current.add(
@@ -1712,7 +1719,7 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     variantId = variant?.id,
                     variantName = variant?.name ?: "",
                     priceSource = source,
-                    serviceNominal = if (product.productType == "DIGITAL") resolvedPrice else null,
+                    serviceNominal = if (isDigitalProduct) resolvedPrice else null,
                     storeAdminFee = storeAdminFee,
                     providerAdminFee = providerAdminFee,
                     agentCommission = agentCommission,
@@ -1722,6 +1729,34 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         _cart.value = current
+    }
+
+    fun updateDigitalCartItem(
+        lineId: String,
+        nominal: Double,
+        storeAdminFee: Double,
+        providerAdminFee: Double,
+        agentCommission: Double,
+        serviceCashAccountId: Long?,
+        serviceDirection: String
+    ) {
+        val current = _cart.value.toMutableList()
+        val index = current.indexOfFirst { it.lineId == lineId }
+        if (index >= 0) {
+            val item = current[index]
+            current[index] = item.copy(
+                unitPrice = nominal,
+                quantity = 1.0,
+                priceSource = "fleksibel",
+                serviceNominal = if (item.serviceNominal != null) nominal else null,
+                storeAdminFee = storeAdminFee,
+                providerAdminFee = providerAdminFee,
+                agentCommission = agentCommission,
+                serviceCashAccountId = serviceCashAccountId,
+                serviceDirection = serviceDirection
+            )
+            _cart.value = current
+        }
     }
 
     fun addBundleToCart(bundle: BundlePackageEntity) {
@@ -1753,19 +1788,24 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         unitName: String,
         newQty: Double,
         variantId: Long? = null,
-        bundleId: Long? = null
+        bundleId: Long? = null,
+        lineId: String? = null
     ) {
         if (newQty <= 0) {
-            removeFromCart(productId, unitName, variantId, bundleId)
+            removeFromCart(productId, unitName, variantId, bundleId, lineId)
             return
         }
         val baseProduct = products.value.find { it.id == productId }
         val current = _cart.value.toMutableList()
-        val index = current.indexOfFirst {
-            it.productId == productId &&
-                    it.unitName == unitName &&
-                    (variantId == null || it.variantId == variantId) &&
-                    (bundleId == null || it.bundleId == bundleId)
+        val index = if (lineId != null) {
+            current.indexOfFirst { it.lineId == lineId }
+        } else {
+            current.indexOfFirst {
+                it.productId == productId &&
+                        it.unitName == unitName &&
+                        (variantId == null || it.variantId == variantId) &&
+                        (bundleId == null || it.bundleId == bundleId)
+            }
         }
         if (index >= 0) {
             val item = current[index]
@@ -1797,9 +1837,18 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateCartItemManualTotal(productId: Long, unitName: String, totalAmount: Double) {
+    fun updateCartItemManualTotal(
+        productId: Long,
+        unitName: String,
+        totalAmount: Double,
+        lineId: String? = null
+    ) {
         val current = _cart.value.toMutableList()
-        val index = current.indexOfFirst { it.productId == productId && it.unitName == unitName }
+        val index = if (lineId != null) {
+            current.indexOfFirst { it.lineId == lineId }
+        } else {
+            current.indexOfFirst { it.productId == productId && it.unitName == unitName }
+        }
         if (index >= 0 && current[index].quantity > 0) {
             val item = current[index]
             current[index] = item.copy(unitPrice = totalAmount / item.quantity, priceSource = "manual")
@@ -1811,13 +1860,18 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         productId: Long,
         unitName: String,
         variantId: Long? = null,
-        bundleId: Long? = null
+        bundleId: Long? = null,
+        lineId: String? = null
     ) {
-        _cart.value = _cart.value.filterNot {
-            it.productId == productId &&
-                    it.unitName == unitName &&
-                    (variantId == null || it.variantId == variantId) &&
-                    (bundleId == null || it.bundleId == bundleId)
+        _cart.value = if (lineId != null) {
+            _cart.value.filterNot { it.lineId == lineId }
+        } else {
+            _cart.value.filterNot {
+                it.productId == productId &&
+                        it.unitName == unitName &&
+                        (variantId == null || it.variantId == variantId) &&
+                        (bundleId == null || it.bundleId == bundleId)
+            }
         }
     }
 
@@ -2108,7 +2162,8 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                                 providerAdminFee = obj.optDouble("providerAdminFee", 0.0),
                                 agentCommission = obj.optDouble("agentCommission", 0.0),
                                 serviceCashAccountId = if (obj.has("serviceCashAccountId") && !obj.isNull("serviceCashAccountId")) obj.optLong("serviceCashAccountId") else null,
-                                serviceDirection = obj.optString("serviceDirection", "SETOR")
+                                serviceDirection = obj.optString("serviceDirection", "SETOR"),
+                                lineId = obj.optString("lineId").ifBlank { java.util.UUID.randomUUID().toString() }
                             )
                         )
                     }
@@ -2362,14 +2417,22 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
         barcode: String,
         category: String,
         baseUnit: String,
-        allowDecimalQty: Boolean
+        allowDecimalQty: Boolean,
+        isDigital: Boolean = existingProduct?.productType == "DIGITAL",
+        isFlexiblePrice: Boolean = existingProduct?.isFlexiblePrice ?: isDigital,
+        adminTierGroupId: Long? = existingProduct?.adminTierGroupId,
+        serviceCashAccountId: Long? = existingProduct?.serviceCashAccountId,
+        serviceDirection: String = existingProduct?.serviceDirection ?: "SETOR"
     ) {
         val cleanName = name.trim()
         if (cleanName.isBlank() || sellingPrice < 0.0) return
 
-        val cleanCategory = category.trim().ifBlank { "Umum" }
-        val cleanUnit = baseUnit.trim().ifBlank { "pcs" }
+        val cleanCategory = category.trim().ifBlank { if (isDigital) "Layanan Digital" else "Umum" }
+        val cleanUnit = baseUnit.trim().ifBlank { if (isDigital) "transaksi" else "pcs" }
         val cleanBarcode = barcode.trim()
+        val effectiveStock = if (isDigital) 999.0 else stock
+        val effectiveMinStock = if (isDigital) 0.0 else minStock.coerceAtLeast(0.0)
+        val effectiveType = if (isDigital) "DIGITAL" else "FISIK"
 
         viewModelScope.launch {
             if (existingProduct == null) {
@@ -2378,39 +2441,61 @@ class PosViewModel(application: Application) : AndroidViewModel(application) {
                     barcode = cleanBarcode,
                     category = cleanCategory,
                     baseUnit = cleanUnit,
-                    purchasePrice = purchasePrice.coerceAtLeast(0.0),
+                    purchasePrice = if (isDigital && isFlexiblePrice) 0.0 else purchasePrice.coerceAtLeast(0.0),
                     sellingPrice = sellingPrice.coerceAtLeast(0.0),
-                    stock = stock,
-                    minStock = minStock.coerceAtLeast(0.0),
-                    productType = "FISIK",
-                    allowDecimalQty = allowDecimalQty,
+                    stock = effectiveStock,
+                    minStock = effectiveMinStock,
+                    productType = effectiveType,
+                    isUnlimitedStock = isDigital,
+                    hasNoStock = isDigital,
+                    isFlexiblePrice = isFlexiblePrice,
+                    allowDecimalQty = if (isDigital) false else allowDecimalQty,
+                    adminTierGroupId = if (isDigital) adminTierGroupId else null,
+                    serviceCashAccountId = if (isDigital) serviceCashAccountId else null,
+                    serviceDirection = if (isDigital) serviceDirection else "SETOR",
                     isActive = true
                 )
                 repository.insertProduct(created)
-                _userMessage.value = "Produk \"$cleanName\" disimpan ke database"
+                _userMessage.value = if (isDigital) {
+                    "Layanan digital \"$cleanName\" disimpan ke database"
+                } else {
+                    "Produk \"$cleanName\" disimpan ke database"
+                }
             } else {
-                val stockChanged = existingProduct.stock != stock
+                val stockChanged = !isDigital && existingProduct.stock != effectiveStock
+                val preservePhysicalNoStock = !isDigital && existingProduct.productType != "DIGITAL" && existingProduct.hasNoStock
                 val updated = existingProduct.copy(
                     name = cleanName,
                     barcode = cleanBarcode,
                     category = cleanCategory,
                     baseUnit = cleanUnit,
-                    purchasePrice = purchasePrice.coerceAtLeast(0.0),
+                    purchasePrice = if (isDigital && isFlexiblePrice) 0.0 else purchasePrice.coerceAtLeast(0.0),
                     sellingPrice = sellingPrice.coerceAtLeast(0.0),
-                    stock = stock,
-                    minStock = minStock.coerceAtLeast(0.0),
-                    allowDecimalQty = allowDecimalQty
+                    stock = effectiveStock,
+                    minStock = effectiveMinStock,
+                    productType = effectiveType,
+                    isUnlimitedStock = isDigital || preservePhysicalNoStock,
+                    hasNoStock = isDigital || preservePhysicalNoStock,
+                    isFlexiblePrice = isFlexiblePrice,
+                    allowDecimalQty = if (isDigital) false else allowDecimalQty,
+                    adminTierGroupId = if (isDigital) adminTierGroupId else null,
+                    serviceCashAccountId = if (isDigital) serviceCashAccountId else null,
+                    serviceDirection = if (isDigital) serviceDirection else "SETOR"
                 )
                 repository.updateProduct(updated)
                 if (stockChanged) {
                     repository.adjustStock(
                         productId = updated.id,
-                        newStock = stock,
+                        newStock = effectiveStock,
                         reason = "Pembaruan stok manual",
                         user = _activeUserName.value
                     )
                 }
-                _userMessage.value = "Produk \"$cleanName\" berhasil diperbarui"
+                _userMessage.value = if (isDigital) {
+                    "Layanan digital \"$cleanName\" berhasil diperbarui"
+                } else {
+                    "Produk \"$cleanName\" berhasil diperbarui"
+                }
             }
         }
     }
